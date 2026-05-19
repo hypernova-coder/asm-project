@@ -80,6 +80,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { UniformEntryDetails } from './uniform-entry-details';
 
 /* ───────── Types ───────── */
 
@@ -130,6 +131,8 @@ interface ItemsMap {
   helmet: boolean;
   bottle: boolean;
   safetyJacket: boolean;
+  mattress: boolean;
+  pillow: boolean;
 }
 
 const DEFAULT_ITEMS: ItemsMap = {
@@ -138,6 +141,8 @@ const DEFAULT_ITEMS: ItemsMap = {
   helmet: false,
   bottle: false,
   safetyJacket: false,
+  mattress: false,
+  pillow: false,
 };
 
 const ITEM_LABELS: Record<keyof ItemsMap, string> = {
@@ -146,6 +151,8 @@ const ITEM_LABELS: Record<keyof ItemsMap, string> = {
   helmet: 'Helmet',
   bottle: 'Bottle',
   safetyJacket: 'Safety Jacket',
+  mattress: 'Mattress',
+  pillow: 'Pillow',
 };
 
 const ITEM_ICONS: Record<keyof ItemsMap, string> = {
@@ -154,6 +161,8 @@ const ITEM_ICONS: Record<keyof ItemsMap, string> = {
   helmet: '🪖',
   bottle: '🧴',
   safetyJacket: '🦺',
+  mattress: '🛏️',
+  pillow: '🛋️',
 };
 
 /* ───────── Helpers ───────── */
@@ -167,6 +176,8 @@ function parseItems(itemsStr: string): ItemsMap {
       helmet: !!parsed.helmet,
       bottle: !!parsed.bottle,
       safetyJacket: !!parsed.safetyJacket,
+      mattress: !!parsed.mattress,
+      pillow: !!parsed.pillow,
     };
   } catch {
     return { ...DEFAULT_ITEMS };
@@ -702,6 +713,9 @@ export function UniformRegistryPage() {
   const [viewingEntry, setViewingEntry] = useState<UniformEntry | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
 
+  // Full-page entry details view
+  const [viewingEntryDetails, setViewingEntryDetails] = useState<UniformEntry | null>(null);
+
   // Delete dialog
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingEntry, setDeletingEntry] = useState<UniformEntry | null>(null);
@@ -1128,20 +1142,7 @@ export function UniformRegistryPage() {
 
   /* ── View Details ── */
   const openDetails = useCallback(async (entry: UniformEntry) => {
-    setViewingEntry(entry);
-    setDetailsDialogOpen(true);
-    setDetailsLoading(true);
-    try {
-      const res = await fetch(`/api/uniform-registry/${entry.id}`);
-      const json = await res.json();
-      if (json.success && json.data?.entry) {
-        setViewingEntry(json.data.entry);
-      }
-    } catch {
-      // Use list data
-    } finally {
-      setDetailsLoading(false);
-    }
+    setViewingEntryDetails(entry);
   }, []);
 
   /* ── Delete Entry ── */
@@ -1268,6 +1269,21 @@ export function UniformRegistryPage() {
   };
 
   /* ───────── RENDER ───────── */
+
+  // If viewing entry details page, show full-page details view instead of the list
+  if (viewingEntryDetails) {
+    return (
+      <UniformEntryDetails
+        entry={viewingEntryDetails}
+        onBack={() => setViewingEntryDetails(null)}
+        onRenew={(entry) => {
+          setViewingEntryDetails(null);
+          openRenewDialog(entry);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* Page Header */}

@@ -16,8 +16,8 @@ export async function GET(request: NextRequest) {
 
     if (search) {
       const orConditions: Record<string, unknown>[] = [
-        { employeeName: { contains: search } },
-        { documentNumber: { contains: search } },
+        { employeeName: { contains: search, mode: 'insensitive' } },
+        { documentNumber: { contains: search, mode: 'insensitive' } },
       ];
       const tokenNum = parseInt(search, 10);
       if (!isNaN(tokenNum)) {
