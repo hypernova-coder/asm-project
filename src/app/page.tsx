@@ -48,8 +48,18 @@ function LoadingScreen() {
   );
 }
 
-// Views accessible by normal admins
-const ADMIN_ALLOWED_VIEWS: AppView[] = ['dashboard', 'uniform_registry'];
+// Default views always accessible by admin users
+const ADMIN_DEFAULT_VIEWS: AppView[] = ['dashboard', 'uniform_registry'];
+
+function isAdminAllowedView(user: { role: string; allowedMenus?: string[] } | null, view: AppView): boolean {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  // Default views are always accessible
+  if (ADMIN_DEFAULT_VIEWS.includes(view)) return true;
+  // Check dynamic allowed menus
+  if (user.allowedMenus && user.allowedMenus.includes(view)) return true;
+  return false;
+}
 
 function MainLayout() {
   const { currentView, setCurrentView } = useAppStore();
@@ -58,14 +68,14 @@ function MainLayout() {
 
   // Redirect normal admins away from restricted views
   React.useEffect(() => {
-    if (user && user.role === 'admin' && !ADMIN_ALLOWED_VIEWS.includes(currentView)) {
+    if (user && user.role === 'admin' && !isAdminAllowedView(user, currentView)) {
       setCurrentView('dashboard');
     }
   }, [user, currentView, setCurrentView]);
 
   const renderView = () => {
     // Block normal admins from accessing restricted views
-    if (user && user.role === 'admin' && !ADMIN_ALLOWED_VIEWS.includes(currentView)) {
+    if (user && user.role === 'admin' && !isAdminAllowedView(user, currentView)) {
       return <DashboardPage />;
     }
 

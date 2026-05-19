@@ -17,6 +17,7 @@ export async function POST(request: NextRequest) {
     // Find user by email
     const user = await db.user.findUnique({
       where: { email: email.toLowerCase() },
+      include: { menuPermissions: { select: { menuId: true } } },
     });
 
     if (!user) {
@@ -36,15 +37,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Build response - include allowedMenus for admin users
+    const responseUser: Record<string, unknown> = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+    };
+
+    // For admin users, include their allowed menus
+    if (user.role === 'admin') {
+      responseUser.allowedMenus = user.menuPermissions.map((p) => p.menuId);
+    }
+
     return NextResponse.json({
       success: true,
       data: {
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-        },
+        user: responseUser,
       },
     });
   } catch (error: unknown) {

@@ -11,6 +11,15 @@ import {
   Mail,
   Lock,
   Crown,
+  Settings2,
+  LayoutDashboard,
+  Users,
+  Building2,
+  Calendar,
+  Bell,
+  FileText,
+  Ban,
+  Shirt,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -53,6 +62,25 @@ import {
 } from '@/components/ui/table';
 import { useAuthStore } from '@/store/auth-store';
 import { useToast } from '@/hooks/use-toast';
+import { Checkbox } from '@/components/ui/checkbox';
+import { cn } from '@/lib/utils';
+
+// Menu items that super admin can grant to normal admins
+const MANAGEABLE_MENU_ITEMS = [
+  { id: 'employees', label: 'Employees', icon: Users, description: 'Manage employee records' },
+  { id: 'sites', label: 'Sites', icon: Building2, description: 'Manage work sites' },
+  { id: 'attendance', label: 'Attendance', icon: Calendar, description: 'Track daily attendance' },
+  { id: 'leave_requests', label: 'Leave Requests', icon: FileText, description: 'Manage leave applications' },
+  { id: 'cancellation_requests', label: 'Cancellations', icon: Ban, description: 'Manage cancellation requests' },
+  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'View warnings, fines & leave requests' },
+  { id: 'admins', label: 'Admin Management', icon: Shield, description: 'Manage admin accounts' },
+];
+
+// Always visible items (not manageable - always shown to everyone)
+const ALWAYS_VISIBLE_ITEMS = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'uniform_registry', label: 'Uniform Registry', icon: Shirt },
+];
 
 interface Admin {
   id: string;
@@ -96,6 +124,13 @@ export function AdminPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingAdmin, setDeletingAdmin] = useState<Admin | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Permissions dialog state
+  const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
+  const [permissionsAdmin, setPermissionsAdmin] = useState<Admin | null>(null);
+  const [selectedMenus, setSelectedMenus] = useState<string[]>([]);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [permissionsSaving, setPermissionsSaving] = useState(false);
 
   // Fetch admins (now includes super_admins too)
   const fetchAdmins = useCallback(async () => {
@@ -330,6 +365,75 @@ export function AdminPage() {
     }
   }
 
+  // Open permissions dialog for an admin
+  async function handleManagePermissions(admin: Admin) {
+    setPermissionsAdmin(admin);
+    setPermissionsLoading(true);
+    setPermissionsDialogOpen(true);
+    setSelectedMenus([]);
+
+    try {
+      const res = await fetch(`/api/admin-menu-permissions?userId=${admin.id}`);
+      const data = await res.json();
+      if (data.success) {
+        setSelectedMenus(data.data.permissions || []);
+      }
+    } catch {
+      // ignore - start with empty
+    } finally {
+      setPermissionsLoading(false);
+    }
+  }
+
+  // Save permissions
+  async function handleSavePermissions() {
+    if (!permissionsAdmin) return;
+    setPermissionsSaving(true);
+    try {
+      const res = await fetch('/api/admin-menu-permissions', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: permissionsAdmin.id,
+          menuIds: selectedMenus,
+          requesterId: user?.id,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast({
+          title: 'Permissions Updated',
+          description: `Menu access for ${permissionsAdmin.name} has been updated. They will see changes on next login.`,
+        });
+        setPermissionsDialogOpen(false);
+        setPermissionsAdmin(null);
+      } else {
+        toast({
+          title: 'Error',
+          description: data.error || 'Failed to update permissions',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({
+        title: 'Error',
+        description: 'Failed to connect to the server',
+        variant: 'destructive',
+      });
+    } finally {
+      setPermissionsSaving(false);
+    }
+  }
+
+  // Toggle a menu item in permissions
+  function toggleMenu(menuId: string) {
+    setSelectedMenus((prev) =>
+      prev.includes(menuId)
+        ? prev.filter((id) => id !== menuId)
+        : [...prev, menuId]
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* Page Header */}
@@ -526,6 +630,16 @@ export function AdminPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleManagePermissions(admin)}
+                            className="h-8 w-8 p-0 text-slate-400 hover:text-green-400 hover:bg-green-500/10"
+                            title="Manage Menu Access"
+                          >
+                            <Settings2 className="h-4 w-4" />
+                            <span className="sr-only">Manage Permissions</span>
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -797,6 +911,124 @@ export function AdminPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Menu Permissions Dialog */}
+      <Dialog open={permissionsDialogOpen} onOpenChange={setPermissionsDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-slate-200 sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Settings2 className="h-5 w-5 text-green-400" />
+              Manage Menu Access
+            </DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Select which sidebar menus <span className="text-white font-medium">{permissionsAdmin?.name}</span> can access. Changes take effect on next login.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {/* Always visible items */}
+            <div>
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Always Accessible</p>
+              <div className="space-y-2">
+                {ALWAYS_VISIBLE_ITEMS.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-3 rounded-lg bg-slate-700/30 border border-slate-700/50 px-3 py-2.5"
+                    >
+                      <Icon className="h-4 w-4 text-slate-500 shrink-0" />
+                      <span className="text-sm text-slate-400">{item.label}</span>
+                      <Badge className="ml-auto bg-slate-700 text-slate-400 text-[10px] border-0">Default</Badge>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Manageable items */}
+            <div>
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Grant Access To</p>
+              {permissionsLoading ? (
+                <div className="space-y-2">
+                  {[1, 2, 3].map((i) => (
+                    <Skeleton key={i} className="h-10 w-full bg-slate-700 rounded-lg" />
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[320px] overflow-y-auto custom-scrollbar pr-1">
+                  {MANAGEABLE_MENU_ITEMS.map((item) => {
+                    const Icon = item.icon;
+                    const isChecked = selectedMenus.includes(item.id);
+                    return (
+                      <div
+                        key={item.id}
+                        className={cn(
+                          'flex items-center gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-all',
+                          isChecked
+                            ? 'bg-green-500/10 border-green-500/30 hover:bg-green-500/15'
+                            : 'bg-slate-900/50 border-slate-700/50 hover:bg-slate-700/30'
+                        )}
+                        onClick={() => toggleMenu(item.id)}
+                      >
+                        <Checkbox
+                          checked={isChecked}
+                          onCheckedChange={() => toggleMenu(item.id)}
+                          className={cn(
+                            'border-2',
+                            isChecked ? 'border-green-500 bg-green-500 text-white' : 'border-slate-600'
+                          )}
+                        />
+                        <Icon className={cn('h-4 w-4 shrink-0', isChecked ? 'text-green-400' : 'text-slate-500')} />
+                        <div className="flex-1 min-w-0">
+                          <span className={cn('text-sm font-medium', isChecked ? 'text-white' : 'text-slate-300')}>
+                            {item.label}
+                          </span>
+                          <p className="text-[11px] text-slate-500 truncate">{item.description}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Summary */}
+            {!permissionsLoading && (
+              <div className="rounded-lg bg-slate-900/50 border border-slate-700/50 px-3 py-2 text-xs text-slate-400">
+                <span className="text-white font-medium">{selectedMenus.length}</span> additional menu{selectedMenus.length !== 1 ? 's' : ''} selected
+                {' · '}<span className="text-white font-medium">{ALWAYS_VISIBLE_ITEMS.length + selectedMenus.length}</span> total accessible
+              </div>
+            )}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="ghost"
+              onClick={() => setPermissionsDialogOpen(false)}
+              className="text-slate-400 hover:text-white hover:bg-slate-700"
+              disabled={permissionsSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSavePermissions}
+              disabled={permissionsSaving || permissionsLoading}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              {permissionsSaving ? (
+                <span className="flex items-center gap-2">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  Saving...
+                </span>
+              ) : (
+                <>
+                  <Settings2 className="h-4 w-4 mr-2" />
+                  Save Permissions
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

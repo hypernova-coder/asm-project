@@ -88,9 +88,18 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
     onNavigate?.();
   };
 
-  const filteredNavItems = navItems.filter(
-    (item) => !item.roles || (user && item.roles.includes(user.role))
-  );
+  const filteredNavItems = navItems.filter((item) => {
+    // Super admin sees everything
+    if (user?.role === 'super_admin') return true;
+    // Items without roles restriction are always visible (dashboard, uniform_registry)
+    if (!item.roles) return true;
+    // For admin users, check their allowedMenus
+    if (user?.role === 'admin' && user.allowedMenus) {
+      return user.allowedMenus.includes(item.id);
+    }
+    // Default: hide restricted items
+    return false;
+  });
 
   return (
     <div className="flex h-full flex-col bg-slate-900 border-r border-slate-700/50">
