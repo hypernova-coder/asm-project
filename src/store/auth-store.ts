@@ -7,7 +7,6 @@ export interface UserSession {
   email: string;
   name: string;
   role: UserRole;
-  allowedMenus?: string[]; // Menu IDs accessible by admin users (super_admin has all)
 }
 
 interface AuthState {
