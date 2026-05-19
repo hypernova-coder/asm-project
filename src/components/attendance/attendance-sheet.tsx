@@ -665,7 +665,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                 ) : (
                   <>
                     <div className="relative border border-black bg-gray-200 p-2">
-                      <h1 className="text-[15px] font-bold text-center text-black tracking-[0.08em] uppercase">
+                      <h1 className="text-[14px] font-bold text-center text-black tracking-[0.08em] uppercase">
                         ARABIAN SHIELD MANPOWER
                       </h1>
                       <div className="mt-1 text-center py-1 text-[13px] font-bold tracking-[0.15em] uppercase" style={{ background: HEADER_BG, color: HEADER_TEXT }}>
@@ -735,11 +735,11 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                     <table className="w-full border-collapse text-[12px] uppercase">
                       <thead>
                         <tr style={{ background: HEADER_BG, color: HEADER_TEXT }}>
-                          <th className="border border-black px-2 py-1.5 text-center font-bold w-12 uppercase">SL. NO</th>
-                          <th className="border border-black px-2 py-1.5 text-left font-bold uppercase">NAME</th>
-                          <th className="border border-black px-2 py-1.5 text-center font-bold w-24 uppercase">EMP. CODE</th>
-                          <th className="border border-black px-2 py-1.5 text-left font-bold w-40 uppercase">TRADE</th>
-                          <th className="border border-black px-2 py-1.5 text-center font-bold w-40 uppercase">SIGNATURE</th>
+                          <th className="border border-black px-2 py-1.5 text-center font-bold w-12 text-[13px] uppercase">SL. NO</th>
+                          <th className="border border-black px-2 py-1.5 text-left font-bold text-[13px] uppercase">NAME</th>
+                          <th className="border border-black px-2 py-1.5 text-center font-bold w-24 text-[13px] uppercase">EMP. CODE</th>
+                          <th className="border border-black px-2 py-1.5 text-left font-bold w-40 text-[13px] uppercase">TRADE</th>
+                          <th className="border border-black px-2 py-1.5 text-center font-bold w-40 text-[13px] uppercase">SIGNATURE</th>
                         </tr>
                       </thead>
                       <tbody>

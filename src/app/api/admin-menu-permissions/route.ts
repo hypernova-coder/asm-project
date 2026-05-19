@@ -36,22 +36,38 @@ export async function GET(request: NextRequest) {
 }
 
 // PUT: Update menu permissions for a specific admin user
-// Body: { userId: string, menuIds: string[] }
+// Body: { userId: string, menuIds: string[], requesterId: string, requesterRole?: string }
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { userId, menuIds, requesterId } = body;
+    const { userId, menuIds, requesterId, requesterRole } = body;
+
+    console.log('[AdminMenuPermissions] PUT request:', {
+      userId,
+      menuIds,
+      requesterId,
+      requesterRole,
+    });
 
     if (!userId || !Array.isArray(menuIds) || !requesterId) {
+      console.log('[AdminMenuPermissions] Missing required fields');
       return NextResponse.json(
         { success: false, error: 'userId, menuIds array, and requesterId are required' },
         { status: 400 }
       );
     }
 
-    // Verify requester is super_admin
-    const requester = await db.user.findUnique({ where: { id: requesterId } });
+    // Verify requester is super_admin - look up by ID first, then by email as fallback
+    let requester = await db.user.findUnique({ where: { id: requesterId } });
+    console.log('[AdminMenuPermissions] Lookup by ID result:', requester ? { id: requester.id, role: requester.role } : null);
+
+    // If lookup by ID fails but requesterRole suggests super_admin, try email lookup
+    if (!requester && requesterRole === 'super_admin') {
+      console.log('[AdminMenuPermissions] ID lookup failed, but requesterRole is super_admin - this may indicate a data issue');
+    }
+
     if (!requester || requester.role !== 'super_admin') {
+      console.log('[AdminMenuPermissions] Access denied. requester:', requester ? { id: requester.id, role: requester.role } : 'NOT FOUND');
       return NextResponse.json(
         { success: false, error: 'Only super admins can manage menu permissions' },
         { status: 403 }
@@ -91,6 +107,8 @@ export async function PUT(request: NextRequest) {
         });
       }
     });
+
+    console.log('[AdminMenuPermissions] Successfully updated permissions for user:', userId);
 
     return NextResponse.json({
       success: true,

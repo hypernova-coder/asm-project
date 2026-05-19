@@ -388,6 +388,17 @@ export function AdminPage() {
   // Save permissions
   async function handleSavePermissions() {
     if (!permissionsAdmin) return;
+
+    // Validate that the current user has the required data
+    if (!user?.id) {
+      toast({
+        title: 'Error',
+        description: 'Your session data is incomplete. Please log out and log back in.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setPermissionsSaving(true);
     try {
       const res = await fetch('/api/admin-menu-permissions', {
@@ -396,7 +407,8 @@ export function AdminPage() {
         body: JSON.stringify({
           userId: permissionsAdmin.id,
           menuIds: selectedMenus,
-          requesterId: user?.id,
+          requesterId: user.id,
+          requesterRole: user.role,
         }),
       });
       const data = await res.json();
