@@ -1,0 +1,10 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = "npx prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/"
+
+[deploy]
+startCommand = "node railway-start.js"
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
