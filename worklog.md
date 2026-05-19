@@ -107,3 +107,59 @@ Stage Summary:
 - Admin account (asm@test.com / 123456) added to database
 - All API endpoints tested and working
 - No lint errors
+
+---
+Task ID: 5
+Agent: Main
+Task: Change employee removal behavior in Sites page from "Delete" to "Remove"
+
+Work Log:
+- Added `UserMinus` icon import from lucide-react
+- Renamed state variables: `showDeleteEmpDialog` → `showRemoveEmpDialog`, `deleteEmpLoading` → `removeEmpLoading`
+- Renamed handler function: `handleDeleteEmployees` → `handleRemoveEmployees`
+- Changed removal logic from `DELETE /api/employees/${id}` to `PUT /api/employees/${id}` with `{ currentSite: null }`
+- Added team leader check: if employee is team leader of the current site, also sets `isTeamLeader: false` and `teamLeaderSiteId: null`
+- Updated button: "Delete (N)" with Trash2 icon → "Remove (N)" with UserMinus icon
+- Updated confirmation dialog title: "Delete Employees" → "Remove Employees"
+- Updated dialog description: warns about idle status instead of permanent deletion
+- Changed dialog icon color from red-400 to amber-400 (warning instead of danger)
+- Updated toast messages: "Deleted" / "employee(s) deleted" → "Removed" / "employee(s) removed from site and set to idle"
+- Updated confirm button text: "Delete" / "Deleting..." → "Remove" / "Removing..."
+- Lint check passes with no errors
+
+Stage Summary:
+- Employee removal from site now uses PUT (set currentSite to null) instead of DELETE
+- Employees are set to idle status rather than deleted from the database
+- Team leaders who are removed also have their team leader status cleared
+- All UI labels changed from "Delete" to "Remove" with appropriate messaging
+- No lint errors
+
+---
+Task ID: 2
+Agent: Code Agent
+Task: Rewrite attendance sheet component with professional A4 portrait format and all improvements
+
+Work Log:
+- Changed PDF/download orientation from landscape to portrait A4 (210mm x 297mm)
+- Changed sheet container maxWidth from 297mm to 210mm, minHeight from 210mm to 297mm
+- Made all table cells editable inline (Sl. No, NAME, CODE, TRADE, SIGNATURE) including empty rows
+- Made info section fields editable: Client Name, Project Name, Date, Strength (all use inline input)
+- CODE column now starts EMPTY for every employee (was showing employeeId), users can type manually
+- Changed Back button from ghost variant to solid black (`bg-black text-white hover:bg-gray-800`) with white arrow and text, clearly visible
+- Added `align` prop to EditableCell for center-aligned cells
+- Increased minimum row padding from 20 to 25 rows (MIN_ROWS constant)
+- Added A4 constants (A4_WIDTH_MM=210, A4_HEIGHT_MM=297, PRINT_MARGIN_MM=15)
+- PDF generation uses `orientation: 'portrait'` with proper 10mm margins and content scaling
+- Print CSS uses `@page { size: A4 portrait; margin: 15mm; }` for proper print margins
+- Professional styling: darker header bar (bg-gray-800), consistent text sizing (text-[13px]), cleaner borders
+- All empty rows now have EditableCell inputs so they can be filled in manually
+- No lint errors
+
+Stage Summary:
+- Attendance sheet is now A4 portrait with proper dimensions
+- All fields are editable (table cells + info section)
+- CODE column is empty by default for all employees
+- Back button is solid black, highly visible
+- PDF download produces proper A4 portrait with margins
+- Print uses portrait A4 with 15mm margins
+- Professional corporate document design throughout
