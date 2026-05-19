@@ -14,10 +14,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Find user by email
+    // Find user by email (without include to avoid stale Prisma cache issues)
     const user = await db.user.findUnique({
       where: { email: email.toLowerCase() },
-      include: { menuPermissions: { select: { menuId: true } } },
     });
 
     if (!user) {
@@ -45,9 +44,18 @@ export async function POST(request: NextRequest) {
       role: user.role,
     };
 
-    // For admin users, include their allowed menus
+    // For admin users, fetch their allowed menus separately
     if (user.role === 'admin') {
-      responseUser.allowedMenus = user.menuPermissions.map((p) => p.menuId);
+      try {
+        const permissions = await db.adminMenuPermission.findMany({
+          where: { userId: user.id },
+          select: { menuId: true },
+        });
+        responseUser.allowedMenus = permissions.map((p) => p.menuId);
+      } catch {
+        // If menuPermissions table doesn't exist yet, just continue without menus
+        responseUser.allowedMenus = [];
+      }
     }
 
     return NextResponse.json({
