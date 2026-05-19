@@ -90,7 +90,6 @@ export async function PUT(request: NextRequest) {
             userId,
             menuId,
           })),
-          skipDuplicates: true,
         });
       }
     });

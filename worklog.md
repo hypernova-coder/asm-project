@@ -216,3 +216,22 @@ Stage Summary:
 - Dashboard and Uniform Registry are always accessible to all users
 - Changes take effect when the admin user logs in again (permissions stored in DB, fetched on login)
 - Code pushed to GitHub: commit 6d415c1
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix "Failed to update permissions" error when super admin updates sidebar menu permissions for normal admins
+
+Work Log:
+- Investigated the API endpoint at /api/admin-menu-permissions
+- Found GET request also returning 500 error
+- Checked dev server logs and found: `TypeError: Cannot read properties of undefined (reading 'findMany')` at db.adminMenuPermission
+- Root cause 1: Prisma Client was cached without the AdminMenuPermission model - fixed by clearing .next cache and regenerating Prisma Client
+- Root cause 2: `skipDuplicates: true` parameter in createMany() is not supported in SQLite with Prisma 6.19.2 - caused `Unknown argument 'skipDuplicates'` error
+- Removed `skipDuplicates: true` from the createMany call in the PUT handler (line 93 of route.ts)
+- The parameter was unnecessary anyway since we delete all existing permissions before creating new ones in a transaction
+- Verified all APIs work correctly: GET returns permissions, PUT updates them, GET confirms the update
+
+Stage Summary:
+- Fixed the database error by removing unsupported `skipDuplicates` Prisma parameter
+- Both GET and PUT endpoints now work correctly
+- Admin menu permissions can be saved and retrieved successfully
