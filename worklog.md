@@ -186,3 +186,33 @@ Stage Summary:
 - Total row removed from first table in both PDF/print and viewport
 - Content will no longer be cut off during printing due to proper 1cm margins
 - All lint checks pass
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Add super admin menu permission management for admin users
+
+Work Log:
+- Added AdminMenuPermission model to Prisma schema with userId+menuId unique constraint
+- Ran bun run db:push to sync database
+- Created /api/admin-menu-permissions API route (GET for fetching, PUT for updating with super_admin verification)
+- Updated /api/auth/login to include menuPermissions for admin users in login response
+- Added allowedMenus field to UserSession interface in auth-store
+- Updated app-sidebar.tsx filtering logic to check user.allowedMenus for admin users
+- Updated page.tsx guard to use dynamic isAdminAllowedView() function instead of hardcoded ADMIN_ALLOWED_VIEWS
+- Added Manage Menu Access dialog in admin-page.tsx with:
+  - Always Accessible section (Dashboard, Uniform Registry - shown with "Default" badge)
+  - Grant Access To section with 7 manageable menu items as checkboxes
+  - Summary bar showing selected count and total accessible
+  - Green Save button
+- Added Settings2 (gear) button for each admin row to open permissions dialog
+- Created Checkbox UI component at src/components/ui/checkbox.tsx
+- All lint checks pass
+- Committed and pushed to GitHub
+
+Stage Summary:
+- Super admins can now select which sidebar menus each admin user can access
+- 7 manageable items: Employees, Sites, Attendance, Leave Requests, Cancellations, Notifications, Admin Management
+- Dashboard and Uniform Registry are always accessible to all users
+- Changes take effect when the admin user logs in again (permissions stored in DB, fetched on login)
+- Code pushed to GitHub: commit 6d415c1
