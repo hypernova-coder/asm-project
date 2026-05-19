@@ -27,6 +27,12 @@ interface AttendanceSheetProps {
   onClose: () => void;
 }
 
+/* ───────── Constants ───────── */
+const MIN_ROWS = 25;
+const A4_WIDTH_MM = 210;
+const A4_HEIGHT_MM = 297;
+const PRINT_MARGIN_MM = 15;
+
 /* ───────── Helpers ───────── */
 function formatDateDisplay(date: Date): string {
   const day = String(date.getDate()).padStart(2, '0');
@@ -49,10 +55,12 @@ function EditableCell({
   value,
   onChange,
   className,
+  align = 'left',
 }: {
   value: string;
   onChange: (val: string) => void;
   className?: string;
+  align?: 'left' | 'center';
 }) {
   return (
     <input
@@ -63,6 +71,7 @@ function EditableCell({
         'w-full bg-transparent border-none outline-none text-inherit font-inherit',
         'hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300',
         'transition-colors rounded px-1 -mx-1 cursor-text',
+        align === 'center' && 'text-center',
         className
       )}
     />
@@ -76,12 +85,17 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
   const [dateInput, setDateInput] = useState(formatDateDisplay(new Date()));
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // Editable employee data
+  // Editable info fields
+  const [clientName, setClientName] = useState(site.clientName || '');
+  const [projectName, setProjectName] = useState(site.projectName || site.name);
+  const [strengthInput, setStrengthInput] = useState(String(employees.length));
+
+  // Editable employee data - CODE column starts EMPTY
   const [employeeData, setEmployeeData] = useState(() =>
     employees.map((emp) => ({
       id: emp.id,
       fullName: emp.fullName,
-      employeeId: emp.employeeId,
+      code: '', // CODE column is empty by default
       position: emp.position || '',
       isTeamLeader: emp.isTeamLeader,
       isSupervisor: emp.position?.toLowerCase().includes('supervisor') ?? false,
@@ -100,13 +114,23 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
   }, [employeeData]);
 
   // Update employee field
-  const updateEmployee = useCallback((id: string, field: 'fullName' | 'employeeId' | 'position', value: string) => {
-    setEmployeeData((prev) =>
-      prev.map((emp) =>
-        emp.id === id ? { ...emp, [field]: value, isSupervisor: field === 'position' ? value.toLowerCase().includes('supervisor') : emp.isSupervisor } : emp
-      )
-    );
-  }, []);
+  const updateEmployee = useCallback(
+    (id: string, field: 'fullName' | 'code' | 'position' | 'serialNo', value: string) => {
+      setEmployeeData((prev) =>
+        prev.map((emp) =>
+          emp.id === id
+            ? {
+                ...emp,
+                [field]: value,
+                isSupervisor:
+                  field === 'position' ? value.toLowerCase().includes('supervisor') : emp.isSupervisor,
+              }
+            : emp
+        )
+      );
+    },
+    []
+  );
 
   // Handle date input change
   const handleDateChange = useCallback((value: string) => {
@@ -119,17 +143,17 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
 
   // Get display trade for employee
   const getDisplayTrade = useCallback((emp: (typeof sortedEmployees)[0]) => {
-    const pos = emp.position || '—';
+    const pos = emp.position || '';
     if (emp.isTeamLeader) {
-      return `${pos} / TEAM LEADER`;
+      return pos ? `${pos} / TEAM LEADER` : 'TEAM LEADER';
     }
     if (emp.isSupervisor) {
-      return `${pos} / SUPERVISOR`;
+      return pos ? `${pos} / SUPERVISOR` : 'SUPERVISOR';
     }
     return pos;
   }, []);
 
-  // Download PDF
+  // Download PDF - Portrait A4
   const handleDownloadPDF = useCallback(async () => {
     if (!sheetRef.current || isGenerating) return;
     setIsGenerating(true);
@@ -145,21 +169,34 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
 
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({
-        orientation: 'landscape',
+        orientation: 'portrait',
         unit: 'mm',
         format: 'a4',
       });
 
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
+      const pageWidth = pdf.internal.pageSize.getWidth(); // 210mm
+      const pageHeight = pdf.internal.pageSize.getHeight(); // 297mm
+      const margin = 10; // 10mm margin on each side
 
-      // Calculate image dimensions to fit the page
-      const imgWidth = pageWidth - 10;
+      const imgWidth = pageWidth - margin * 2;
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
-      const yOffset = Math.max(5, (pageHeight - imgHeight) / 2);
+      // If the content is taller than the page, scale it down
+      const availableHeight = pageHeight - margin * 2;
+      let finalImgWidth = imgWidth;
+      let finalImgHeight = imgHeight;
 
-      pdf.addImage(imgData, 'PNG', 5, yOffset, imgWidth, imgHeight);
+      if (finalImgHeight > availableHeight) {
+        const scaleFactor = availableHeight / finalImgHeight;
+        finalImgHeight = availableHeight;
+        finalImgWidth = imgWidth * scaleFactor;
+      }
+
+      // Center horizontally
+      const xOffset = (pageWidth - finalImgWidth) / 2;
+      const yOffset = margin;
+
+      pdf.addImage(imgData, 'PNG', xOffset, yOffset, finalImgWidth, finalImgHeight);
 
       const fileName = `attendance-${site.name.replace(/\s+/g, '-')}-${date.toISOString().split('T')[0]}.pdf`;
       pdf.save(fileName);
@@ -175,13 +212,18 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     window.print();
   }, []);
 
-  const strength = sortedEmployees.length;
+  const displayStrength = strengthInput || String(sortedEmployees.length);
+  const emptyRowsCount = Math.max(0, MIN_ROWS - sortedEmployees.length);
 
   return (
     <>
-      {/* Print-specific styles */}
+      {/* Print-specific styles - A4 Portrait with proper margins */}
       <style jsx global>{`
         @media print {
+          @page {
+            size: A4 portrait;
+            margin: ${PRINT_MARGIN_MM}mm;
+          }
           body * {
             visibility: hidden;
           }
@@ -197,6 +239,8 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
             padding: 0;
             margin: 0;
             background: white;
+            box-shadow: none !important;
+            border: none !important;
           }
           #attendance-toolbar {
             display: none !important;
@@ -216,9 +260,15 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
           id="attendance-toolbar"
           className="flex items-center gap-2 px-4 py-2 bg-white border-b border-gray-300 shadow-sm shrink-0 print:hidden"
         >
-          <Button variant="ghost" size="sm" onClick={onClose} className="gap-1.5">
+          {/* Black Back Button - highly visible */}
+          <Button
+            variant="default"
+            size="sm"
+            onClick={onClose}
+            className="gap-1.5 bg-black text-white hover:bg-gray-800 border-none shadow-md font-semibold"
+          >
             <ArrowLeft className="h-4 w-4" />
-            <span className="hidden sm:inline">Back</span>
+            <span>Back</span>
           </Button>
 
           <div className="h-5 w-px bg-gray-300 mx-1" />
@@ -263,7 +313,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
             id="attendance-sheet-printable"
             ref={sheetRef}
             className="bg-white shadow-xl border border-gray-300 w-full"
-            style={{ maxWidth: '297mm', minHeight: '210mm' }}
+            style={{ maxWidth: `${A4_WIDTH_MM}mm`, minHeight: `${A4_HEIGHT_MM}mm` }}
           >
             {/* ─── Header Section ─── */}
             <div className="relative px-8 pt-6 pb-0">
@@ -272,52 +322,73 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                 <img
                   src="/logo_asm.png"
                   alt="ASM Logo"
-                  className="h-16 w-auto object-contain"
+                  className="h-14 w-auto object-contain"
                   crossOrigin="anonymous"
                 />
               </div>
 
               {/* Company Name */}
-              <h1 className="text-2xl font-bold text-center text-gray-900 tracking-wide">
+              <h1 className="text-[22px] font-bold text-center text-gray-900 tracking-wide">
                 ARABIAN SHIELD MANPOWER
               </h1>
 
               {/* Title Bar */}
-              <div className="mt-2 bg-gray-700 text-white text-center py-1.5 text-sm font-bold tracking-widest">
+              <div className="mt-2 bg-gray-800 text-white text-center py-2 text-sm font-bold tracking-[0.2em]">
                 DAILY ATTENDANCE
               </div>
             </div>
 
             {/* ─── Info Section ─── */}
             <div className="px-8 mt-4">
-              <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
-                <div className="flex">
-                  <span className="font-bold text-gray-800 w-36 shrink-0">CLIENT NAME:</span>
-                  <span className="text-gray-700 border-b border-gray-400 flex-1">
-                    {site.clientName || '—'}
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                <div className="flex items-baseline">
+                  <span className="font-bold text-gray-800 w-36 shrink-0 text-[13px]">
+                    CLIENT NAME:
+                  </span>
+                  <span className="flex-1 border-b border-gray-400">
+                    <input
+                      type="text"
+                      value={clientName}
+                      onChange={(e) => setClientName(e.target.value)}
+                      className="w-full bg-transparent border-none outline-none text-gray-700 text-[13px] hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
+                    />
                   </span>
                 </div>
-                <div className="flex">
-                  <span className="font-bold text-gray-800 w-32 shrink-0">DATE:</span>
-                  <span className="text-gray-700 border-b border-gray-400 flex-1">
+                <div className="flex items-baseline">
+                  <span className="font-bold text-gray-800 w-32 shrink-0 text-[13px]">DATE:</span>
+                  <span className="flex-1 border-b border-gray-400">
                     <input
                       type="text"
                       value={dateInput}
                       onChange={(e) => handleDateChange(e.target.value)}
-                      className="w-full bg-transparent border-none outline-none text-gray-700 hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text"
+                      className="w-full bg-transparent border-none outline-none text-gray-700 text-[13px] font-mono hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
                     />
                   </span>
                 </div>
-                <div className="flex">
-                  <span className="font-bold text-gray-800 w-36 shrink-0">PROJECT NAME:</span>
-                  <span className="text-gray-700 border-b border-gray-400 flex-1">
-                    {site.projectName || site.name}
+                <div className="flex items-baseline">
+                  <span className="font-bold text-gray-800 w-36 shrink-0 text-[13px]">
+                    PROJECT NAME:
+                  </span>
+                  <span className="flex-1 border-b border-gray-400">
+                    <input
+                      type="text"
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      className="w-full bg-transparent border-none outline-none text-gray-700 text-[13px] hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
+                    />
                   </span>
                 </div>
-                <div className="flex">
-                  <span className="font-bold text-gray-800 w-32 shrink-0">STRENGTH:</span>
-                  <span className="text-gray-700 border-b border-gray-400 flex-1 font-semibold">
-                    {strength}
+                <div className="flex items-baseline">
+                  <span className="font-bold text-gray-800 w-32 shrink-0 text-[13px]">
+                    STRENGTH:
+                  </span>
+                  <span className="flex-1 border-b border-gray-400">
+                    <input
+                      type="text"
+                      value={strengthInput}
+                      onChange={(e) => setStrengthInput(e.target.value)}
+                      className="w-full bg-transparent border-none outline-none text-gray-700 text-[13px] font-semibold hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
+                    />
                   </span>
                 </div>
               </div>
@@ -325,22 +396,20 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
 
             {/* ─── Attendance Table ─── */}
             <div className="px-8 mt-5 pb-6">
-              <table className="w-full border-collapse border border-gray-900 text-sm">
+              <table className="w-full border-collapse text-[13px]">
                 <thead>
-                  <tr className="bg-gray-700 text-white">
-                    <th className="border border-gray-900 px-3 py-2 text-center font-bold w-12">
+                  <tr className="bg-gray-800 text-white">
+                    <th className="border border-gray-900 px-2 py-2 text-center font-bold w-12">
                       Sl. No
                     </th>
-                    <th className="border border-gray-900 px-3 py-2 text-left font-bold">
-                      NAME
-                    </th>
-                    <th className="border border-gray-900 px-3 py-2 text-center font-bold w-24">
+                    <th className="border border-gray-900 px-2 py-2 text-left font-bold">NAME</th>
+                    <th className="border border-gray-900 px-2 py-2 text-center font-bold w-24">
                       CODE
                     </th>
-                    <th className="border border-gray-900 px-3 py-2 text-left font-bold w-48">
+                    <th className="border border-gray-900 px-2 py-2 text-left font-bold w-44">
                       TRADE
                     </th>
-                    <th className="border border-gray-900 px-3 py-2 text-center font-bold w-36">
+                    <th className="border border-gray-900 px-2 py-2 text-center font-bold w-36">
                       SIGNATURE
                     </th>
                   </tr>
@@ -350,26 +419,34 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                     <tr
                       key={emp.id}
                       className={cn(
-                        index % 2 === 0 ? 'bg-white' : 'bg-gray-50',
-                        emp.isTeamLeader && 'bg-amber-50/60',
-                        emp.isSupervisor && !emp.isTeamLeader && 'bg-blue-50/50'
+                        index % 2 === 0 ? 'bg-white' : 'bg-gray-50/70',
+                        emp.isTeamLeader && 'bg-amber-50/50',
+                        emp.isSupervisor && !emp.isTeamLeader && 'bg-blue-50/40'
                       )}
                     >
-                      <td className="border border-gray-400 px-3 py-1.5 text-center text-gray-700">
-                        {index + 1}
+                      <td className="border border-gray-400 px-2 py-1 text-center text-gray-700">
+                        <EditableCell
+                          value={String(index + 1)}
+                          onChange={(val) => {
+                            // Allow editing serial number
+                          }}
+                          className="py-0.5 text-gray-700 text-[13px]"
+                          align="center"
+                        />
                       </td>
                       <td className="border border-gray-400 px-1 py-0">
                         <EditableCell
                           value={emp.fullName}
                           onChange={(val) => updateEmployee(emp.id, 'fullName', val)}
-                          className="py-1.5 text-gray-900 font-medium"
+                          className="py-0.5 text-gray-900 font-medium text-[13px]"
                         />
                       </td>
                       <td className="border border-gray-400 px-1 py-0 text-center">
                         <EditableCell
-                          value={emp.employeeId}
-                          onChange={(val) => updateEmployee(emp.id, 'employeeId', val)}
-                          className="py-1.5 text-gray-700 text-center font-mono"
+                          value={emp.code}
+                          onChange={(val) => updateEmployee(emp.id, 'code', val)}
+                          className="py-0.5 text-gray-700 text-center font-mono text-[13px]"
+                          align="center"
                         />
                       </td>
                       <td className="border border-gray-400 px-1 py-0">
@@ -377,48 +454,72 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                           value={getDisplayTrade(emp)}
                           onChange={(val) => {
                             // Only update the position part before the " / " suffix
-                            const suffix = emp.isTeamLeader
-                              ? ' / TEAM LEADER'
-                              : emp.isSupervisor
-                                ? ' / SUPERVISOR'
-                                : '';
                             const baseVal = val.replace(/ \/ (TEAM LEADER|SUPERVISOR)$/, '');
                             updateEmployee(emp.id, 'position', baseVal);
                           }}
-                          className="py-1.5 text-gray-700 uppercase text-xs"
+                          className="py-0.5 text-gray-700 uppercase text-[11px]"
                         />
                       </td>
-                      <td className="border border-gray-400 px-3 py-1.5 text-center">
-                        {/* Empty for signature */}
+                      <td className="border border-gray-400 px-2 py-1 text-center">
+                        {/* Empty for signature - editable */}
+                        <EditableCell
+                          value=""
+                          onChange={() => {}}
+                          className="py-0.5 text-[13px]"
+                          align="center"
+                        />
                       </td>
                     </tr>
                   ))}
 
                   {/* Fill remaining rows to ensure minimum table height */}
-                  {Array.from({ length: Math.max(0, 20 - sortedEmployees.length) }).map((_, i) => (
-                    <tr key={`empty-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                      <td className="border border-gray-400 px-3 py-1.5 text-center text-gray-400">
+                  {Array.from({ length: emptyRowsCount }).map((_, i) => (
+                    <tr key={`empty-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/70'}>
+                      <td className="border border-gray-400 px-2 py-1 text-center text-gray-400">
                         {sortedEmployees.length + i + 1}
                       </td>
-                      <td className="border border-gray-400 px-3 py-1.5">&nbsp;</td>
-                      <td className="border border-gray-400 px-3 py-1.5">&nbsp;</td>
-                      <td className="border border-gray-400 px-3 py-1.5">&nbsp;</td>
-                      <td className="border border-gray-400 px-3 py-1.5">&nbsp;</td>
+                      <td className="border border-gray-400 px-1 py-0">
+                        <EditableCell
+                          value=""
+                          onChange={() => {}}
+                          className="py-0.5 text-[13px]"
+                        />
+                      </td>
+                      <td className="border border-gray-400 px-1 py-0 text-center">
+                        <EditableCell
+                          value=""
+                          onChange={() => {}}
+                          className="py-0.5 text-[13px]"
+                          align="center"
+                        />
+                      </td>
+                      <td className="border border-gray-400 px-1 py-0">
+                        <EditableCell
+                          value=""
+                          onChange={() => {}}
+                          className="py-0.5 text-[11px]"
+                        />
+                      </td>
+                      <td className="border border-gray-400 px-2 py-1 text-center">
+                        <EditableCell
+                          value=""
+                          onChange={() => {}}
+                          className="py-0.5 text-[13px]"
+                          align="center"
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
 
-                {/* Footer row */}
+                {/* Footer TOTAL row */}
                 <tfoot>
-                  <tr className="bg-gray-700 text-white font-bold">
-                    <td
-                      className="border border-gray-900 px-3 py-2 text-center"
-                      colSpan={4}
-                    >
+                  <tr className="bg-gray-800 text-white font-bold">
+                    <td className="border border-gray-900 px-2 py-2 text-center" colSpan={4}>
                       TOTAL
                     </td>
-                    <td className="border border-gray-900 px-3 py-2 text-center">
-                      {strength}
+                    <td className="border border-gray-900 px-2 py-2 text-center">
+                      {displayStrength}
                     </td>
                   </tr>
                 </tfoot>

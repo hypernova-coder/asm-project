@@ -6,6 +6,7 @@ import {
   Users,
   Eye,
   Trash2,
+  UserMinus,
   Plus,
   Search,
   Star,
@@ -467,9 +468,9 @@ export function SitesPage() {
   const [empSearch, setEmpSearch] = useState('');
   const [selectedEmps, setSelectedEmps] = useState<Set<string>>(new Set());
 
-  // Delete employees state
-  const [showDeleteEmpDialog, setShowDeleteEmpDialog] = useState(false);
-  const [deleteEmpLoading, setDeleteEmpLoading] = useState(false);
+  // Remove employees state
+  const [showRemoveEmpDialog, setShowRemoveEmpDialog] = useState(false);
+  const [removeEmpLoading, setRemoveEmpLoading] = useState(false);
 
   // Add employee state
   const [allEmployees, setAllEmployees] = useState<AllEmployee[]>([]);
@@ -691,30 +692,40 @@ export function SitesPage() {
     }
   }, [deleteSiteTarget, fetchSites]);
 
-  /* ── Delete selected employees ── */
-  const handleDeleteEmployees = useCallback(async () => {
+  /* ── Remove selected employees from site ── */
+  const handleRemoveEmployees = useCallback(async () => {
     if (selectedEmps.size === 0) return;
     try {
-      setDeleteEmpLoading(true);
+      setRemoveEmpLoading(true);
+      // Remove from site by setting currentSite to null (not deleting from database)
       await Promise.all(
-        Array.from(selectedEmps).map((id) =>
-          fetch(`/api/employees/${id}`, { method: 'DELETE' })
-        )
+        Array.from(selectedEmps).map(async (id) => {
+          const emp = siteEmployees.find(e => e.id === id);
+          const isTeamLeaderOfSite = emp?.isTeamLeader && emp?.currentSite === viewSite?.name;
+          await fetch(`/api/employees/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              currentSite: null,
+              ...(isTeamLeaderOfSite ? { isTeamLeader: false, teamLeaderSiteId: null } : {}),
+            }),
+          });
+        })
       );
-      setShowDeleteEmpDialog(false);
+      setShowRemoveEmpDialog(false);
       setSelectedEmps(new Set());
       if (viewSite) {
         fetchSiteEmployees(viewSite.name);
         fetchAllEmployees();
       }
       fetchSites();
-      toast({ title: 'Deleted', description: `${selectedEmps.size} employee(s) deleted.` });
+      toast({ title: 'Removed', description: `${selectedEmps.size} employee(s) removed from site and set to idle.` });
     } catch {
-      toast({ title: 'Error', description: 'Failed to delete employees', variant: 'destructive' });
+      toast({ title: 'Error', description: 'Failed to remove employees', variant: 'destructive' });
     } finally {
-      setDeleteEmpLoading(false);
+      setRemoveEmpLoading(false);
     }
-  }, [selectedEmps, viewSite, fetchSiteEmployees, fetchAllEmployees, fetchSites]);
+  }, [selectedEmps, viewSite, siteEmployees, fetchSiteEmployees, fetchAllEmployees, fetchSites]);
 
   /* ── Add employee to site ── */
   const handleAddEmployee = useCallback(async (employee: AllEmployee) => {
@@ -982,10 +993,10 @@ export function SitesPage() {
                 <Button
                   variant="destructive"
                   className="gap-2"
-                  onClick={() => setShowDeleteEmpDialog(true)}
+                  onClick={() => setShowRemoveEmpDialog(true)}
                 >
-                  <Trash2 className="h-4 w-4" />
-                  Delete ({selectedEmps.size})
+                  <UserMinus className="h-4 w-4" />
+                  Remove ({selectedEmps.size})
                 </Button>
               )}
             </div>
@@ -1269,29 +1280,29 @@ export function SitesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Selected Employees Confirmation */}
-      <Dialog open={showDeleteEmpDialog} onOpenChange={setShowDeleteEmpDialog}>
+      {/* Remove Selected Employees Confirmation */}
+      <Dialog open={showRemoveEmpDialog} onOpenChange={setShowRemoveEmpDialog}>
         <DialogContent className="bg-slate-800 border-slate-700 text-slate-200">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-white">
-              <AlertTriangle className="h-5 w-5 text-red-400" />
-              Delete {selectedEmps.size} {selectedEmps.size === 1 ? 'Employee' : 'Employees'}
+              <AlertTriangle className="h-5 w-5 text-amber-400" />
+              Remove {selectedEmps.size} {selectedEmps.size === 1 ? 'Employee' : 'Employees'}
             </DialogTitle>
             <DialogDescription className="text-slate-400">
-              Are you sure you want to delete {selectedEmps.size}{' '}
-              {selectedEmps.size === 1 ? 'employee' : 'employees'} from this site? This action cannot be undone.
+              Are you sure you want to remove {selectedEmps.size}{' '}
+              {selectedEmps.size === 1 ? 'employee' : 'employees'} from this site? They will be removed from the site and set to idle status. They will not be deleted from the database.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setShowDeleteEmpDialog(false)}
+              onClick={() => setShowRemoveEmpDialog(false)}
               className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600"
             >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDeleteEmployees} disabled={deleteEmpLoading}>
-              {deleteEmpLoading ? 'Deleting...' : 'Delete'}
+            <Button variant="destructive" onClick={handleRemoveEmployees} disabled={removeEmpLoading}>
+              {removeEmpLoading ? 'Removing...' : 'Remove'}
             </Button>
           </DialogFooter>
         </DialogContent>
