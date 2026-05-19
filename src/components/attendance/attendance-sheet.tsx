@@ -208,20 +208,7 @@ function buildPageHtml(params: {
     }
   });
 
-  html += `</tbody>`;
-
-  if (isLastPage) {
-    html += `
-      <tfoot>
-        <tr class="total-row">
-          <td colspan="4" style="text-align:center;">TOTAL</td>
-          <td style="text-align:center;">${upper(strengthInput || String(sortedEmployees.length))}</td>
-        </tr>
-      </tfoot>
-    `;
-  }
-
-  html += `</table>`;
+  html += `</tbody></table>`;
 
   // Extra Employees Table (only on last page)
   if (isLastPage && extraRows.length > 0) {
@@ -270,7 +257,10 @@ function getPrintCSS(): string {
       page-break-after: always;
       page-break-inside: avoid;
       position: relative;
+      width: 794px;
       min-height: 1123px;
+      padding: 38px;
+      box-sizing: border-box;
     }
     .page:last-child {
       page-break-after: auto;
@@ -299,14 +289,7 @@ function getPrintCSS(): string {
     .even-row { background: #f3f4f6; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .team-leader { background: #fffbeb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .supervisor { background: #eff6ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .total-row {
-      background: ${HEADER_BG} !important;
-      color: ${HEADER_TEXT} !important;
-      font-weight: bold;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-    .total-row td { border-color: #000; }
+
     .page-info { text-align: right; font-size: 10px; color: #6b7280; margin-top: 4px; }
     @media print {
       body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -416,8 +399,8 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
         strengthInput,
         sortedEmployees,
         getDisplayTrade,
-        contentWidth: '730px',
-        contentPadding: '20px',
+        contentWidth: '794px',
+        contentPadding: '38px',
         isFirstPage,
         isLastPage,
         serialOffset,
@@ -518,8 +501,6 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     }, 600);
   }, [generateAllPagesHtml]);
 
-  const displayStrength = upper(strengthInput || String(sortedEmployees.length));
-
   return (
     <>
       {/* Global print styles */}
@@ -541,9 +522,10 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
             left: 0;
             top: 0;
             width: 100%;
-            padding: 0;
+            padding: 10mm;
             margin: 0;
             background: white;
+            box-sizing: border-box;
           }
           #attendance-toolbar {
             display: none !important;
@@ -615,13 +597,13 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                 key={pageIdx}
                 id={pageIdx === 0 ? 'attendance-sheet-printable' : undefined}
                 ref={(el) => { pageRefs.current[pageIdx] = el; }}
-                className="bg-white shadow-xl border border-gray-300 w-full"
-                style={{ maxWidth: `${A4_WIDTH_MM}mm`, minHeight: `${A4_HEIGHT_MM}mm` }}
+                className="bg-white shadow-xl border border-gray-300 w-full p-[10mm]"
+                style={{ maxWidth: `${A4_WIDTH_MM}mm`, minHeight: `${A4_HEIGHT_MM}mm`, boxSizing: 'border-box' }}
               >
                 {/* Header Section */}
                 {isFirstPage ? (
                   <>
-                    <div className="relative border border-black bg-gray-200 mx-10 mt-6 p-2">
+                    <div className="relative border border-black bg-gray-200 p-2">
                       <div className="absolute top-1 right-2">
                         <img
                           src="/logo_asm.png"
@@ -639,7 +621,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                     </div>
 
                     {/* Info Section */}
-                    <div className="mx-10 mt-4 text-[12px] uppercase">
+                    <div className="mt-4 text-[12px] uppercase">
                       <div className="flex items-baseline mb-1.5">
                         <span className="font-bold text-gray-900 w-36 shrink-0">&#8226; CLIENT NAME :</span>
                         <span className="flex-1 border-b border-gray-500">
@@ -668,7 +650,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                   </>
                 ) : (
                   <>
-                    <div className="relative border border-black bg-gray-200 mx-10 mt-6 p-2">
+                    <div className="relative border border-black bg-gray-200 p-2">
                       <h1 className="text-[15px] font-bold text-center text-black tracking-[0.08em] uppercase">
                         ARABIAN SHIELD MANPOWER
                       </h1>
@@ -676,7 +658,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                         DAILY ATTENDANCE
                       </div>
                     </div>
-                    <div className="mx-10 mt-3 flex justify-between text-[11px] uppercase text-gray-600">
+                    <div className="mt-3 flex justify-between text-[11px] uppercase text-gray-600">
                       <span><strong>CLIENT:</strong> {upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> {upper(projectName)}</span>
                       <span><strong>DATE:</strong> {upper(dateInput)}</span>
                     </div>
@@ -684,7 +666,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                 )}
 
                 {/* Main Employee Table */}
-                <div className="mx-10 mt-4 pb-2">
+                <div className="mt-4 pb-2">
                   <table className="w-full border-collapse text-[11px] uppercase">
                     <thead>
                       <tr style={{ background: HEADER_BG, color: HEADER_TEXT }}>
@@ -727,20 +709,12 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                       })}
                     </tbody>
 
-                    {isLastPage && (
-                      <tfoot>
-                        <tr style={{ background: HEADER_BG, color: HEADER_TEXT }} className="font-bold uppercase">
-                          <td className="border border-black px-2 py-2 text-center" colSpan={4}>TOTAL</td>
-                          <td className="border border-black px-2 py-2 text-center uppercase">{displayStrength}</td>
-                        </tr>
-                      </tfoot>
-                    )}
                   </table>
                 </div>
 
                 {/* Extra Employees Table (only on last page) */}
                 {isLastPage && (
-                  <div className="mx-10 mt-3 pb-4">
+                  <div className="mt-3 pb-4">
                     <div className="text-[11px] font-bold uppercase tracking-[0.05em] text-black mb-1">
                       EXTRA EMPLOYEES(IF ANY)
                     </div>
@@ -772,7 +746,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                   </div>
                 )}
 
-                <div className="mx-10 text-right text-[10px] text-gray-400 mt-2 pb-4 uppercase">
+                <div className="text-right text-[10px] text-gray-400 mt-2 pb-4 uppercase">
                   PAGE {pageIdx + 1} OF {pages.length}
                 </div>
               </div>

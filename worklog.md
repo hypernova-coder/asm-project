@@ -163,3 +163,26 @@ Stage Summary:
 - PDF download produces proper A4 portrait with margins
 - Print uses portrait A4 with 15mm margins
 - Professional corporate document design throughout
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix attendance sheet PDF/print to match viewport, add 1cm border, remove total row
+
+Work Log:
+- Changed PDF page dimensions: contentWidth from 730px to 794px (full A4 width), contentPadding from 20px to 38px (1cm at 96dpi)
+- Updated getPrintCSS() to include explicit width:794px, padding:38px, box-sizing:border-box on .page class
+- Removed TOTAL row (tfoot) from buildPageHtml() function (PDF/print HTML generation)
+- Removed .total-row CSS styles from getPrintCSS()
+- Added p-[10mm] padding to viewport page container div with box-sizing:border-box
+- Removed mx-10 and mt-6 from all inner viewport elements (header, info section, table, extra table, page info)
+- Removed TOTAL row from viewport JSX tfoot section
+- Removed unused displayStrength variable
+- Updated global print styles to include padding:10mm and box-sizing:border-box
+- Confirmed notification page already has "Add New Warning" and "Add New Fine" buttons
+
+Stage Summary:
+- PDF and viewport now have matching 1cm (10mm/38px) borders on all sides
+- Total row removed from first table in both PDF/print and viewport
+- Content will no longer be cut off during printing due to proper 1cm margins
+- All lint checks pass
