@@ -5,6 +5,8 @@ import { ArrowLeft, Download, Printer, Calendar, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import html2canvas from 'html2canvas-pro';
+import jsPDF from 'jspdf';
 
 /* ───────── Types ───────── */
 interface AttendanceSheetProps {
@@ -26,14 +28,14 @@ interface AttendanceSheetProps {
 }
 
 /* ───────── Constants ───────── */
-// A4 dimensions in mm
 const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
-const PRINT_MARGIN_MM = 12;
+// Content margin in mm (built into the content, @page margin is 0 to suppress browser headers/footers)
+const CONTENT_MARGIN_MM = 12;
 
-// How many employee rows fit per A4 page (empirical for 13px font with borders)
+// How many employee rows fit per A4 page
 const ROWS_PER_PAGE = 28;
-const EXTRA_ROWS = 5; // extra blank rows after employees
+const EXTRA_ROWS = 5;
 
 /* ───────── Helpers ───────── */
 function formatDateDisplay(date: Date): string {
@@ -52,7 +54,6 @@ function parseDateInput(value: string): Date {
   return new Date();
 }
 
-/** Force uppercase for display */
 function upper(val: string): string {
   return val.toUpperCase();
 }
@@ -97,9 +98,221 @@ function chunkRows<T>(items: T[], perPage: number): T[][] {
   return chunks;
 }
 
+/* ───────── Build page HTML (shared by Print & PDF) ───────── */
+function buildPageHtml(params: {
+  pages: Array<Array<{ type: string; id?: string; fullName?: string; code?: string; position?: string; isTeamLeader?: boolean; isSupervisor?: boolean }>>;
+  pageIdx: number;
+  clientName: string;
+  projectName: string;
+  dateInput: string;
+  strengthInput: string;
+  sortedEmployees: Array<{ isTeamLeader: boolean; isSupervisor?: boolean; position?: string }>;
+  getDisplayTrade: (emp: { isTeamLeader: boolean; isSupervisor?: boolean; position?: string }) => string;
+  contentWidth: string;
+  contentPadding: string;
+}): string {
+  const { pages, pageIdx, clientName, projectName, dateInput, strengthInput, sortedEmployees, getDisplayTrade, contentWidth, contentPadding } = params;
+  const pageRows = pages[pageIdx];
+  const isLastPage = pageIdx === pages.length - 1;
+  const serialOffset = pageIdx === 0 ? 0 : pages.slice(0, pageIdx).flat().length;
+
+  let html = `<div class="page" style="width:${contentWidth}; padding:${contentPadding};">`;
+
+  // Header
+  html += `
+    <div style="position:relative; margin-bottom:8px;">
+      ${pageIdx === 0 ? '<div style="position:absolute; top:0; right:0;"><img src="/logo_asm.png" alt="ASM" style="height:40px; width:auto;" /></div>' : ''}
+      <div class="header-title">ARABIAN SHIELD MANPOWER</div>
+      <div class="header-bar">DAILY ATTENDANCE</div>
+    </div>
+  `;
+
+  // Info
+  if (pageIdx === 0) {
+    html += `
+      <div class="info-grid">
+        <div class="info-item"><span class="info-label">CLIENT NAME:</span><span class="info-value">${upper(clientName)}</span></div>
+        <div class="info-item"><span class="info-label">DATE:</span><span class="info-value">${upper(dateInput)}</span></div>
+        <div class="info-item"><span class="info-label">PROJECT NAME:</span><span class="info-value">${upper(projectName)}</span></div>
+        <div class="info-item"><span class="info-label">STRENGTH:</span><span class="info-value">${upper(strengthInput || String(sortedEmployees.length))}</span></div>
+      </div>
+    `;
+  } else {
+    html += `
+      <div style="display:flex; justify-content:space-between; font-size:10px; margin-bottom:8px; text-transform:uppercase; color:#374151;">
+        <span><strong>CLIENT:</strong> ${upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> ${upper(projectName)}</span>
+        <span><strong>DATE:</strong> ${upper(dateInput)}</span>
+      </div>
+    `;
+  }
+
+  // Table
+  html += `
+    <table>
+      <thead>
+        <tr>
+          <th style="width:40px;">SL. NO</th>
+          <th style="text-align:left;">NAME</th>
+          <th style="width:70px;">CODE</th>
+          <th style="width:140px; text-align:left;">TRADE</th>
+          <th style="width:100px;">SIGNATURE</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  const firstExtraIdx = pageRows.findIndex(r => r.type === 'extra');
+
+  pageRows.forEach((row, idx) => {
+    const serialNo = serialOffset + idx + 1;
+    const isEven = idx % 2 === 1;
+
+    if (row.type === 'employee') {
+      const trade = getDisplayTrade(row as { isTeamLeader: boolean; isSupervisor?: boolean; position?: string });
+      const rowClass = row.isTeamLeader
+        ? 'team-leader'
+        : row.isSupervisor
+        ? 'supervisor'
+        : isEven ? 'even-row' : '';
+
+      html += `
+        <tr class="${rowClass}">
+          <td style="text-align:center;">${serialNo}</td>
+          <td>${upper(row.fullName || '')}</td>
+          <td style="text-align:center;">${upper(row.code || '')}</td>
+          <td>${upper(trade)}</td>
+          <td style="text-align:center;"></td>
+        </tr>
+      `;
+    } else {
+      const isSeparator = idx === firstExtraIdx && pageRows.some(r => r.type === 'employee');
+      const sepClass = isSeparator ? 'extra-separator' : (isEven ? 'even-row' : '');
+      html += `
+        <tr class="${sepClass}">
+          <td style="text-align:center; color:#9ca3af;">${serialNo}</td>
+          <td></td><td></td><td></td><td></td>
+        </tr>
+      `;
+    }
+  });
+
+  html += `</tbody>`;
+
+  if (isLastPage) {
+    html += `
+      <tfoot>
+        <tr class="total-row">
+          <td colspan="4" style="text-align:center;">TOTAL</td>
+          <td style="text-align:center;">${upper(strengthInput || String(sortedEmployees.length))}</td>
+        </tr>
+      </tfoot>
+    `;
+  }
+
+  html += `</table>`;
+  html += `<div class="page-info">PAGE ${pageIdx + 1} OF ${pages.length}</div>`;
+  html += `</div>`;
+
+  return html;
+}
+
+/* ───────── Shared CSS for print/iframe ───────── */
+function getPrintCSS(): string {
+  return `
+    @page {
+      size: A4 portrait;
+      margin: 0;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; background: white; }
+    .page {
+      page-break-after: always;
+      page-break-inside: avoid;
+      position: relative;
+    }
+    .page:last-child {
+      page-break-after: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    thead tr {
+      background: #1f2937 !important;
+      color: white !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    th, td {
+      border: 1px solid #374151;
+      padding: 4px 6px;
+    }
+    th {
+      font-weight: bold;
+      text-align: center;
+      font-size: 11px;
+    }
+    .extra-separator td {
+      border-top: 2px solid #1f2937 !important;
+      background: #f9fafb;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .even-row { background: #f9fafb; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .team-leader { background: #fffbeb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .supervisor { background: #eff6ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .total-row {
+      background: #1f2937 !important;
+      color: white !important;
+      font-weight: bold;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .total-row td { border-color: #111827; }
+    .header-title {
+      font-size: 18px;
+      font-weight: bold;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .header-bar {
+      background: #1f2937;
+      color: white;
+      text-align: center;
+      padding: 6px;
+      font-size: 12px;
+      font-weight: bold;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 24px;
+      font-size: 12px;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+    }
+    .info-item { display: flex; align-items: baseline; padding: 2px 0; }
+    .info-label { font-weight: bold; width: 110px; flex-shrink: 0; font-size: 11px; }
+    .info-value { flex: 1; border-bottom: 1px solid #9ca3af; padding: 1px 4px; font-size: 11px; min-height: 16px; }
+    .page-info { text-align: right; font-size: 10px; color: #6b7280; margin-top: 4px; }
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  `;
+}
+
 /* ───────── Main Component ───────── */
 export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetProps) {
-  const sheetRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const [date, setDate] = useState<Date>(new Date());
   const [dateInput, setDateInput] = useState(formatDateDisplay(new Date()));
   const [isGenerating, setIsGenerating] = useState(false);
@@ -109,19 +322,19 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
   const [projectName, setProjectName] = useState(site.projectName || site.name);
   const [strengthInput, setStrengthInput] = useState(String(employees.length));
 
-  // Editable employee data - CODE column starts EMPTY
+  // Editable employee data
   const [employeeData, setEmployeeData] = useState(() =>
     employees.map((emp) => ({
       id: emp.id,
       fullName: emp.fullName,
-      code: '', // CODE column is empty by default
+      code: '',
       position: emp.position || '',
       isTeamLeader: emp.isTeamLeader,
       isSupervisor: emp.position?.toLowerCase().includes('supervisor') ?? false,
     }))
   );
 
-  // Sort employees: Team Leader first, then Supervisor, then rest alphabetically
+  // Sort
   const sortedEmployees = useMemo(() => {
     return [...employeeData].sort((a, b) => {
       if (a.isTeamLeader && !b.isTeamLeader) return -1;
@@ -132,18 +345,12 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     });
   }, [employeeData]);
 
-  // Update employee field
   const updateEmployee = useCallback(
     (id: string, field: 'fullName' | 'code' | 'position' | 'serialNo', value: string) => {
       setEmployeeData((prev) =>
         prev.map((emp) =>
           emp.id === id
-            ? {
-                ...emp,
-                [field]: value,
-                isSupervisor:
-                  field === 'position' ? value.toLowerCase().includes('supervisor') : emp.isSupervisor,
-              }
+            ? { ...emp, [field]: value, isSupervisor: field === 'position' ? value.toLowerCase().includes('supervisor') : emp.isSupervisor }
             : emp
         )
       );
@@ -151,28 +358,20 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     []
   );
 
-  // Handle date input change
   const handleDateChange = useCallback((value: string) => {
     setDateInput(value);
     const parsed = parseDateInput(value);
-    if (!isNaN(parsed.getTime())) {
-      setDate(parsed);
-    }
+    if (!isNaN(parsed.getTime())) setDate(parsed);
   }, []);
 
-  // Get display trade for employee (ALL UPPERCASE)
-  const getDisplayTrade = useCallback((emp: (typeof sortedEmployees)[0]) => {
+  const getDisplayTrade = useCallback((emp: { isTeamLeader: boolean; isSupervisor?: boolean; position?: string }) => {
     const pos = emp.position || '';
-    if (emp.isTeamLeader) {
-      return pos ? `${pos} / TEAM LEADER` : 'TEAM LEADER';
-    }
-    if (emp.isSupervisor) {
-      return pos ? `${pos} / SUPERVISOR` : 'SUPERVISOR';
-    }
+    if (emp.isTeamLeader) return pos ? `${pos} / TEAM LEADER` : 'TEAM LEADER';
+    if (emp.isSupervisor) return pos ? `${pos} / SUPERVISOR` : 'SUPERVISOR';
     return pos;
   }, []);
 
-  // ── Build row list: employees + 5 extra blank rows ──
+  // Build rows: employees + 5 extra
   const allRows = useMemo(() => {
     const rows: Array<{
       type: 'employee' | 'extra';
@@ -184,49 +383,35 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
       isSupervisor?: boolean;
     }> = sortedEmployees.map((emp) => ({
       type: 'employee' as const,
-      id: emp.id,
-      fullName: emp.fullName,
-      code: emp.code,
-      position: emp.position,
-      isTeamLeader: emp.isTeamLeader,
-      isSupervisor: emp.isSupervisor,
+      ...emp,
     }));
-    // Add 5 extra blank rows
-    for (let i = 0; i < EXTRA_ROWS; i++) {
-      rows.push({ type: 'extra' });
-    }
+    for (let i = 0; i < EXTRA_ROWS; i++) rows.push({ type: 'extra' });
     return rows;
   }, [sortedEmployees]);
 
-  // ── Chunk rows into pages ──
-  // First page has fewer rows because of the header/info section
-  const FIRST_PAGE_ROWS = ROWS_PER_PAGE - 6; // account for header space
+  // Chunk into pages
+  const FIRST_PAGE_ROWS = ROWS_PER_PAGE - 6;
   const pages = useMemo(() => {
-    if (allRows.length <= FIRST_PAGE_ROWS) {
-      return [allRows];
-    }
-    const result: typeof allRows[] = [];
-    result.push(allRows.slice(0, FIRST_PAGE_ROWS));
+    if (allRows.length <= FIRST_PAGE_ROWS) return [allRows];
+    const result: typeof allRows[] = [allRows.slice(0, FIRST_PAGE_ROWS)];
     const remaining = allRows.slice(FIRST_PAGE_ROWS);
-    const remainingChunks = chunkRows(remaining, ROWS_PER_PAGE);
-    result.push(...remainingChunks);
+    result.push(...chunkRows(remaining, ROWS_PER_PAGE));
     return result;
   }, [allRows]);
 
-  // ── Download PDF using print-based approach ──
+  /* ── Download PDF directly (jsPDF + html2canvas) ── */
   const handleDownloadPDF = useCallback(async () => {
     if (isGenerating) return;
     setIsGenerating(true);
 
     try {
-      // Use the browser's print-to-PDF functionality which handles page breaks natively
-      // Create an iframe to isolate the print content
+      // Create a hidden iframe to render the pages at print quality
       const iframe = document.createElement('iframe');
       iframe.style.position = 'fixed';
       iframe.style.left = '-9999px';
       iframe.style.top = '-9999px';
-      iframe.style.width = `${A4_WIDTH_MM}mm`;
-      iframe.style.height = `${A4_HEIGHT_MM}mm`;
+      iframe.style.width = '794px'; // ~210mm
+      iframe.style.height = '1123px'; // ~297mm
       document.body.appendChild(iframe);
 
       const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
@@ -236,285 +421,62 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
         return;
       }
 
-      // Build the HTML content for printing
-      const printableEl = sheetRef.current;
-      if (!printableEl) {
-        document.body.removeChild(iframe);
-        setIsGenerating(false);
-        return;
-      }
+      const contentWidthPx = '770px'; // 794 - 12*2 padding
+      const contentPadding = '12px';
 
       iframeDoc.open();
-      iframeDoc.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            @page {
-              size: A4 portrait;
-              margin: ${PRINT_MARGIN_MM}mm;
-            }
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { font-family: Arial, Helvetica, sans-serif; background: white; }
-            .page {
-              width: ${A4_WIDTH_MM - PRINT_MARGIN_MM * 2}mm;
-              min-height: ${A4_HEIGHT_MM - PRINT_MARGIN_MM * 2}mm;
-              page-break-after: always;
-              page-break-inside: avoid;
-              position: relative;
-            }
-            .page:last-child {
-              page-break-after: auto;
-            }
-            table {
-              width: 100%;
-              border-collapse: collapse;
-              font-size: 11px;
-              text-transform: uppercase;
-            }
-            thead tr {
-              background: #1f2937 !important;
-              color: white !important;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-            th, td {
-              border: 1px solid #374151;
-              padding: 4px 6px;
-            }
-            th {
-              font-weight: bold;
-              text-align: center;
-              font-size: 11px;
-            }
-            .extra-separator td {
-              border-top: 2px solid #1f2937 !important;
-              background: #f9fafb;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-            .even-row { background: #f9fafb; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .team-leader { background: #fffbeb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .supervisor { background: #eff6ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            .total-row {
-              background: #1f2937 !important;
-              color: white !important;
-              font-weight: bold;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-            .total-row td {
-              border-color: #111827;
-            }
-            .header-title {
-              font-size: 18px;
-              font-weight: bold;
-              text-align: center;
-              text-transform: uppercase;
-              letter-spacing: 0.05em;
-              margin-bottom: 6px;
-            }
-            .header-bar {
-              background: #1f2937;
-              color: white;
-              text-align: center;
-              padding: 6px;
-              font-size: 12px;
-              font-weight: bold;
-              letter-spacing: 0.15em;
-              text-transform: uppercase;
-              margin-bottom: 12px;
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-            }
-            .info-grid {
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 4px 24px;
-              font-size: 12px;
-              margin-bottom: 10px;
-              text-transform: uppercase;
-            }
-            .info-item {
-              display: flex;
-              align-items: baseline;
-              padding: 2px 0;
-            }
-            .info-label {
-              font-weight: bold;
-              width: 110px;
-              flex-shrink: 0;
-              font-size: 11px;
-            }
-            .info-value {
-              flex: 1;
-              border-bottom: 1px solid #9ca3af;
-              padding: 1px 4px;
-              font-size: 11px;
-              min-height: 16px;
-            }
-            .logo-container {
-              position: absolute;
-              top: 0;
-              right: 0;
-            }
-            .page-info {
-              text-align: right;
-              font-size: 10px;
-              color: #6b7280;
-              margin-top: 4px;
-            }
-            @media print {
-              body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-            }
-          </style>
-        </head>
-        <body>
-      `);
+      iframeDoc.write(`<!DOCTYPE html><html><head><style>${getPrintCSS()}</style></head><body>`);
 
-      // Render each page
-      pages.forEach((pageRows, pageIdx) => {
-        const isLastPage = pageIdx === pages.length - 1;
-        const serialOffset = pageIdx === 0 ? 0 : pages.slice(0, pageIdx).flat().length;
-
-        iframeDoc.write(`<div class="page">`);
-
-        // Header on every page
-        iframeDoc.write(`
-          <div style="position: relative; margin-bottom: 8px;">
-            ${pageIdx === 0 ? `<div class="logo-container"><img src="/logo_asm.png" alt="ASM" style="height: 40px; width: auto;" /></div>` : ''}
-            <div class="header-title">ARABIAN SHIELD MANPOWER</div>
-            <div class="header-bar">DAILY ATTENDANCE</div>
-          </div>
-        `);
-
-        // Info section on every page (condensed on continuation pages)
-        if (pageIdx === 0) {
-          iframeDoc.write(`
-            <div class="info-grid">
-              <div class="info-item">
-                <span class="info-label">CLIENT NAME:</span>
-                <span class="info-value">${upper(clientName)}</span>
-              </div>
-              <div class="info-item">
-                <span class="info-label">DATE:</span>
-                <span class="info-value">${upper(dateInput)}</span>
-              </div>
-              <div class="info-item">
-                <span class="info-label">PROJECT NAME:</span>
-                <span class="info-value">${upper(projectName)}</span>
-              </div>
-              <div class="info-item">
-                <span class="info-label">STRENGTH:</span>
-                <span class="info-value">${upper(strengthInput || String(sortedEmployees.length))}</span>
-              </div>
-            </div>
-          `);
-        } else {
-          // Continuation page - small header
-          iframeDoc.write(`
-            <div style="display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 8px; text-transform: uppercase; color: #374151;">
-              <span><strong>CLIENT:</strong> ${upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> ${upper(projectName)}</span>
-              <span><strong>DATE:</strong> ${upper(dateInput)}</span>
-            </div>
-          `);
-        }
-
-        // Table
-        iframeDoc.write(`
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 40px;">SL. NO</th>
-                <th style="text-align: left;">NAME</th>
-                <th style="width: 70px;">CODE</th>
-                <th style="width: 140px; text-align: left;">TRADE</th>
-                <th style="width: 100px;">SIGNATURE</th>
-              </tr>
-            </thead>
-            <tbody>
-        `);
-
-        // Find if this page contains the transition from employees to extra rows
-        const employeeCount = sortedEmployees.length;
-
-        pageRows.forEach((row, idx) => {
-          const serialNo = serialOffset + idx + 1;
-          const isEven = idx % 2 === 1;
-
-          if (row.type === 'employee') {
-            const trade = getDisplayTrade(row as typeof sortedEmployees[0] & { type: string });
-            const rowClass = (row as typeof sortedEmployees[0] & { type: string }).isTeamLeader
-              ? 'team-leader'
-              : (row as typeof sortedEmployees[0] & { type: string }).isSupervisor
-              ? 'supervisor'
-              : isEven ? 'even-row' : '';
-
-            iframeDoc.write(`
-              <tr class="${rowClass}">
-                <td style="text-align: center;">${serialNo}</td>
-                <td>${upper(row.fullName || '')}</td>
-                <td style="text-align: center;">${upper(row.code || '')}</td>
-                <td>${upper(trade)}</td>
-                <td style="text-align: center;"></td>
-              </tr>
-            `);
-          } else {
-            // Extra row - add separator line before the first extra row
-            const isSeparator = idx === pageRows.findIndex(r => r.type === 'extra') &&
-                                pageRows.some(r => r.type === 'employee');
-            const separatorClass = isSeparator ? 'extra-separator' : (isEven ? 'even-row' : '');
-            iframeDoc.write(`
-              <tr class="${separatorClass}">
-                <td style="text-align: center; color: #9ca3af;">${serialNo}</td>
-                <td></td>
-                <td></td>
-                <td></td>
-                <td></td>
-              </tr>
-            `);
-          }
-        });
-
-        iframeDoc.write(`</tbody>`);
-
-        // Add TOTAL row on the last page
-        if (isLastPage) {
-          const displayStrength = upper(strengthInput || String(sortedEmployees.length));
-          iframeDoc.write(`
-            <tfoot>
-              <tr class="total-row">
-                <td colspan="4" style="text-align: center;">TOTAL</td>
-                <td style="text-align: center;">${displayStrength}</td>
-              </tr>
-            </tfoot>
-          `);
-        }
-
-        iframeDoc.write(`</table>`);
-
-        // Page number
-        iframeDoc.write(`
-          <div class="page-info">PAGE ${pageIdx + 1} OF ${pages.length}</div>
-        `);
-
-        iframeDoc.write(`</div>`);
+      pages.forEach((_, pageIdx) => {
+        iframeDoc.write(buildPageHtml({
+          pages,
+          pageIdx,
+          clientName,
+          projectName,
+          dateInput,
+          strengthInput,
+          sortedEmployees,
+          getDisplayTrade,
+          contentWidth: contentWidthPx,
+          contentPadding,
+        }));
       });
 
       iframeDoc.write(`</body></html>`);
       iframeDoc.close();
 
-      // Wait for images to load
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Wait for render
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
-      // Print the iframe
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
+      // Render each page to canvas and build PDF
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth(); // 210
+      const pageHeight = pdf.internal.pageSize.getHeight(); // 297
+
+      const pageDivs = iframeDoc.querySelectorAll('.page');
+
+      for (let i = 0; i < pageDivs.length; i++) {
+        if (i > 0) pdf.addPage();
+
+        const canvas = await html2canvas(pageDivs[i] as HTMLElement, {
+          scale: 2,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#ffffff',
+          logging: false,
+        });
+
+        const imgData = canvas.toDataURL('image/png');
+        // Fit image to full A4 page (no browser headers/footers since we control the PDF)
+        pdf.addImage(imgData, 'PNG', 0, 0, pageWidth, pageHeight);
+      }
+
+      // Save PDF directly - no print dialog
+      const fileName = `attendance-${site.name.replace(/\s+/g, '-')}-${date.toISOString().split('T')[0]}.pdf`;
+      pdf.save(fileName);
 
       // Clean up
-      setTimeout(() => {
-        document.body.removeChild(iframe);
-      }, 1000);
+      document.body.removeChild(iframe);
     } catch (error) {
       console.error('Error generating PDF:', error);
     } finally {
@@ -522,15 +484,14 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     }
   }, [isGenerating, site.name, date, clientName, projectName, dateInput, strengthInput, sortedEmployees, pages, getDisplayTrade]);
 
-  // Print
+  /* ── Print with @page margin:0 to suppress browser headers/footers ── */
   const handlePrint = useCallback(() => {
-    // Create an iframe for proper A4 printing with page breaks
     const iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
     iframe.style.left = '-9999px';
     iframe.style.top = '-9999px';
-    iframe.style.width = `${A4_WIDTH_MM}mm`;
-    iframe.style.height = `${A4_HEIGHT_MM}mm`;
+    iframe.style.width = '794px';
+    iframe.style.height = '1123px';
     document.body.appendChild(iframe);
 
     const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
@@ -539,276 +500,50 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
       return;
     }
 
+    const contentWidthPx = '770px';
+    const contentPadding = '12px';
+
     iframeDoc.open();
-    iframeDoc.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          @page {
-            size: A4 portrait;
-            margin: ${PRINT_MARGIN_MM}mm;
-          }
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body { font-family: Arial, Helvetica, sans-serif; background: white; }
-          .page {
-            width: ${A4_WIDTH_MM - PRINT_MARGIN_MM * 2}mm;
-            page-break-after: always;
-            page-break-inside: avoid;
-            position: relative;
-            padding-bottom: 8mm;
-          }
-          .page:last-child {
-            page-break-after: auto;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 11px;
-            text-transform: uppercase;
-          }
-          thead tr {
-            background: #1f2937 !important;
-            color: white !important;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-          th, td {
-            border: 1px solid #374151;
-            padding: 4px 6px;
-          }
-          th {
-            font-weight: bold;
-            text-align: center;
-            font-size: 11px;
-          }
-          .extra-separator td {
-            border-top: 2px solid #1f2937 !important;
-            background: #f9fafb;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-          .even-row { background: #f9fafb; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .team-leader { background: #fffbeb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .supervisor { background: #eff6ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .total-row {
-            background: #1f2937 !important;
-            color: white !important;
-            font-weight: bold;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-          .total-row td {
-            border-color: #111827;
-          }
-          .header-title {
-            font-size: 18px;
-            font-weight: bold;
-            text-align: center;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 6px;
-          }
-          .header-bar {
-            background: #1f2937;
-            color: white;
-            text-align: center;
-            padding: 6px;
-            font-size: 12px;
-            font-weight: bold;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            margin-bottom: 12px;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-          .info-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 4px 24px;
-            font-size: 12px;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-          }
-          .info-item {
-            display: flex;
-            align-items: baseline;
-            padding: 2px 0;
-          }
-          .info-label {
-            font-weight: bold;
-            width: 110px;
-            flex-shrink: 0;
-            font-size: 11px;
-          }
-          .info-value {
-            flex: 1;
-            border-bottom: 1px solid #9ca3af;
-            padding: 1px 4px;
-            font-size: 11px;
-            min-height: 16px;
-          }
-          .logo-container {
-            position: absolute;
-            top: 0;
-            right: 0;
-          }
-          .page-info {
-            text-align: right;
-            font-size: 10px;
-            color: #6b7280;
-            margin-top: 4px;
-          }
-          @media print {
-            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          }
-        </style>
-      </head>
-      <body>
-    `);
+    iframeDoc.write(`<!DOCTYPE html><html><head><style>${getPrintCSS()}</style></head><body>`);
 
-    // Render each page
-    pages.forEach((pageRows, pageIdx) => {
-      const isLastPage = pageIdx === pages.length - 1;
-      const serialOffset = pageIdx === 0 ? 0 : pages.slice(0, pageIdx).flat().length;
-
-      iframeDoc.write(`<div class="page">`);
-
-      // Header on every page
-      iframeDoc.write(`
-        <div style="position: relative; margin-bottom: 8px;">
-          ${pageIdx === 0 ? `<div class="logo-container"><img src="/logo_asm.png" alt="ASM" style="height: 40px; width: auto;" /></div>` : ''}
-          <div class="header-title">ARABIAN SHIELD MANPOWER</div>
-          <div class="header-bar">DAILY ATTENDANCE</div>
-        </div>
-      `);
-
-      // Info section
-      if (pageIdx === 0) {
-        iframeDoc.write(`
-          <div class="info-grid">
-            <div class="info-item">
-              <span class="info-label">CLIENT NAME:</span>
-              <span class="info-value">${upper(clientName)}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">DATE:</span>
-              <span class="info-value">${upper(dateInput)}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">PROJECT NAME:</span>
-              <span class="info-value">${upper(projectName)}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">STRENGTH:</span>
-              <span class="info-value">${upper(strengthInput || String(sortedEmployees.length))}</span>
-            </div>
-          </div>
-        `);
-      } else {
-        iframeDoc.write(`
-          <div style="display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 8px; text-transform: uppercase; color: #374151;">
-            <span><strong>CLIENT:</strong> ${upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> ${upper(projectName)}</span>
-            <span><strong>DATE:</strong> ${upper(dateInput)}</span>
-          </div>
-        `);
-      }
-
-      // Table
-      iframeDoc.write(`
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 40px;">SL. NO</th>
-              <th style="text-align: left;">NAME</th>
-              <th style="width: 70px;">CODE</th>
-              <th style="width: 140px; text-align: left;">TRADE</th>
-              <th style="width: 100px;">SIGNATURE</th>
-            </tr>
-          </thead>
-          <tbody>
-      `);
-
-      const employeeCount = sortedEmployees.length;
-
-      pageRows.forEach((row, idx) => {
-        const serialNo = serialOffset + idx + 1;
-        const isEven = idx % 2 === 1;
-
-        if (row.type === 'employee') {
-          const trade = getDisplayTrade(row as typeof sortedEmployees[0] & { type: string });
-          const rowClass = (row as typeof sortedEmployees[0] & { type: string }).isTeamLeader
-            ? 'team-leader'
-            : (row as typeof sortedEmployees[0] & { type: string }).isSupervisor
-            ? 'supervisor'
-            : isEven ? 'even-row' : '';
-
-          iframeDoc.write(`
-            <tr class="${rowClass}">
-              <td style="text-align: center;">${serialNo}</td>
-              <td>${upper(row.fullName || '')}</td>
-              <td style="text-align: center;">${upper(row.code || '')}</td>
-              <td>${upper(trade)}</td>
-              <td style="text-align: center;"></td>
-            </tr>
-          `);
-        } else {
-          const isSeparator = idx === pageRows.findIndex(r => r.type === 'extra') &&
-                              pageRows.some(r => r.type === 'employee');
-          const separatorClass = isSeparator ? 'extra-separator' : (isEven ? 'even-row' : '');
-          iframeDoc.write(`
-            <tr class="${separatorClass}">
-              <td style="text-align: center; color: #9ca3af;">${serialNo}</td>
-              <td></td>
-              <td></td>
-              <td></td>
-              <td></td>
-            </tr>
-          `);
-        }
-      });
-
-      iframeDoc.write(`</tbody>`);
-
-      if (isLastPage) {
-        const displayStrength = upper(strengthInput || String(sortedEmployees.length));
-        iframeDoc.write(`
-          <tfoot>
-            <tr class="total-row">
-              <td colspan="4" style="text-align: center;">TOTAL</td>
-              <td style="text-align: center;">${displayStrength}</td>
-            </tr>
-          </tfoot>
-        `);
-      }
-
-      iframeDoc.write(`</table>`);
-      iframeDoc.write(`
-        <div class="page-info">PAGE ${pageIdx + 1} OF ${pages.length}</div>
-      `);
-      iframeDoc.write(`</div>`);
+    pages.forEach((_, pageIdx) => {
+      iframeDoc.write(buildPageHtml({
+        pages,
+        pageIdx,
+        clientName,
+        projectName,
+        dateInput,
+        strengthInput,
+        sortedEmployees,
+        getDisplayTrade,
+        contentWidth: contentWidthPx,
+        contentPadding,
+      }));
     });
 
     iframeDoc.write(`</body></html>`);
     iframeDoc.close();
 
-    // Wait for content to render
     setTimeout(() => {
       iframe.contentWindow?.focus();
       iframe.contentWindow?.print();
       setTimeout(() => {
         document.body.removeChild(iframe);
-      }, 1000);
-    }, 500);
+      }, 2000);
+    }, 600);
   }, [clientName, projectName, dateInput, strengthInput, sortedEmployees, pages, getDisplayTrade]);
 
   const displayStrength = upper(strengthInput || String(sortedEmployees.length));
 
   return (
     <>
-      {/* Print-specific styles */}
+      {/* Global print styles - suppress browser headers/footers */}
       <style jsx global>{`
         @media print {
+          @page {
+            size: A4 portrait;
+            margin: 0;
+          }
           body * {
             visibility: hidden;
           }
@@ -837,7 +572,6 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
           id="attendance-toolbar"
           className="flex items-center gap-2 px-4 py-2 bg-white border-b border-gray-300 shadow-sm shrink-0 print:hidden"
         >
-          {/* Black Back Button */}
           <Button
             variant="default"
             size="sm"
@@ -894,13 +628,12 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
               <div
                 key={pageIdx}
                 id={pageIdx === 0 ? 'attendance-sheet-printable' : undefined}
-                ref={pageIdx === 0 ? sheetRef : undefined}
+                ref={(el) => { pageRefs.current[pageIdx] = el; }}
                 className="bg-white shadow-xl border border-gray-300 w-full"
                 style={{ maxWidth: `${A4_WIDTH_MM}mm`, minHeight: `${A4_HEIGHT_MM}mm` }}
               >
                 {/* Header Section */}
                 <div className="relative px-8 pt-6 pb-0">
-                  {/* Logo */}
                   {pageIdx === 0 && (
                     <div className="absolute top-4 right-8">
                       <img
@@ -912,12 +645,10 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                     </div>
                   )}
 
-                  {/* Company Name */}
                   <h1 className="text-[22px] font-bold text-center text-gray-900 tracking-wide uppercase">
                     ARABIAN SHIELD MANPOWER
                   </h1>
 
-                  {/* Title Bar */}
                   <div className="mt-2 bg-gray-800 text-white text-center py-2 text-sm font-bold tracking-[0.2em] uppercase">
                     DAILY ATTENDANCE
                   </div>
@@ -928,9 +659,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                   <div className="px-8 mt-4">
                     <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
                       <div className="flex items-baseline">
-                        <span className="font-bold text-gray-800 w-36 shrink-0 text-[13px] uppercase">
-                          CLIENT Name:
-                        </span>
+                        <span className="font-bold text-gray-800 w-36 shrink-0 text-[13px] uppercase">CLIENT NAME:</span>
                         <span className="flex-1 border-b border-gray-400">
                           <input
                             type="text"
@@ -941,7 +670,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                         </span>
                       </div>
                       <div className="flex items-baseline">
-                        <span className="font-bold text-gray-800 w-32 shrink-0 text-[13px] uppercase">Date:</span>
+                        <span className="font-bold text-gray-800 w-32 shrink-0 text-[13px] uppercase">DATE:</span>
                         <span className="flex-1 border-b border-gray-400">
                           <input
                             type="text"
@@ -952,9 +681,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                         </span>
                       </div>
                       <div className="flex items-baseline">
-                        <span className="font-bold text-gray-800 w-36 shrink-0 text-[13px] uppercase">
-                          Project Name:
-                        </span>
+                        <span className="font-bold text-gray-800 w-36 shrink-0 text-[13px] uppercase">PROJECT NAME:</span>
                         <span className="flex-1 border-b border-gray-400">
                           <input
                             type="text"
@@ -965,9 +692,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                         </span>
                       </div>
                       <div className="flex items-baseline">
-                        <span className="font-bold text-gray-800 w-32 shrink-0 text-[13px] uppercase">
-                          Strength:
-                        </span>
+                        <span className="font-bold text-gray-800 w-32 shrink-0 text-[13px] uppercase">STRENGTH:</span>
                         <span className="flex-1 border-b border-gray-400">
                           <input
                             type="text"
@@ -980,14 +705,9 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                     </div>
                   </div>
                 ) : (
-                  /* Continuation page - condensed header */
                   <div className="px-8 mt-3 flex justify-between text-[11px] uppercase text-gray-600">
-                    <span>
-                      <strong>Client:</strong> {upper(clientName)} &nbsp;&nbsp; <strong>Project:</strong> {upper(projectName)}
-                    </span>
-                    <span>
-                      <strong>Date:</strong> {upper(dateInput)}
-                    </span>
+                    <span><strong>CLIENT:</strong> {upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> {upper(projectName)}</span>
+                    <span><strong>DATE:</strong> {upper(dateInput)}</span>
                   </div>
                 )}
 
@@ -996,27 +716,17 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                   <table className="w-full border-collapse text-[12px] uppercase">
                     <thead>
                       <tr className="bg-gray-800 text-white">
-                        <th className="border border-gray-900 px-2 py-1.5 text-center font-bold w-12 uppercase">
-                          Sl. No
-                        </th>
-                        <th className="border border-gray-900 px-2 py-1.5 text-left font-bold uppercase">Name</th>
-                        <th className="border border-gray-900 px-2 py-1.5 text-center font-bold w-24 uppercase">
-                          Code
-                        </th>
-                        <th className="border border-gray-900 px-2 py-1.5 text-left font-bold w-44 uppercase">
-                          Trade
-                        </th>
-                        <th className="border border-gray-900 px-2 py-1.5 text-center font-bold w-36 uppercase">
-                          Signature
-                        </th>
+                        <th className="border border-gray-900 px-2 py-1.5 text-center font-bold w-12 uppercase">SL. NO</th>
+                        <th className="border border-gray-900 px-2 py-1.5 text-left font-bold uppercase">NAME</th>
+                        <th className="border border-gray-900 px-2 py-1.5 text-center font-bold w-24 uppercase">CODE</th>
+                        <th className="border border-gray-900 px-2 py-1.5 text-left font-bold w-44 uppercase">TRADE</th>
+                        <th className="border border-gray-900 px-2 py-1.5 text-center font-bold w-36 uppercase">SIGNATURE</th>
                       </tr>
                     </thead>
                     <tbody>
                       {pageRows.map((row, idx) => {
                         const serialNo = serialOffset + idx + 1;
                         const isEven = idx % 2 === 1;
-
-                        // Find if this is the first extra row (for separator)
                         const firstExtraIdx = pageRows.findIndex(r => r.type === 'extra');
                         const isSeparatorRow = row.type === 'extra' && idx === firstExtraIdx && pageRows.some(r => r.type === 'employee');
 
@@ -1030,9 +740,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                                 row.isSupervisor && !row.isTeamLeader && 'bg-blue-50/40'
                               )}
                             >
-                              <td className="border border-gray-400 px-2 py-1 text-center text-gray-700">
-                                {serialNo}
-                              </td>
+                              <td className="border border-gray-400 px-2 py-1 text-center text-gray-700">{serialNo}</td>
                               <td className="border border-gray-400 px-1 py-0">
                                 <EditableCell
                                   value={upper(row.fullName || '')}
@@ -1062,95 +770,31 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                                 />
                               </td>
                               <td className="border border-gray-400 px-2 py-1 text-center">
-                                <EditableCell
-                                  value=""
-                                  onChange={() => {}}
-                                  className="py-0.5 text-[12px]"
-                                  align="center"
-                                />
+                                <EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" align="center" />
                               </td>
                             </tr>
                           );
                         } else {
-                          // Extra blank row
                           return (
                             <tr
                               key={`extra-${pageIdx}-${idx}`}
-                              className={cn(
-                                isSeparatorRow ? 'bg-gray-100/80' : (isEven ? 'bg-gray-50/70' : 'bg-white'),
-                              )}
+                              className={cn(isSeparatorRow ? 'bg-gray-100/80' : (isEven ? 'bg-gray-50/70' : 'bg-white'))}
                             >
                               {isSeparatorRow ? (
                                 <>
-                                  <td className="border-t-2 border-b border-gray-600 px-2 py-1 text-center text-gray-400 text-[12px]">
-                                    {serialNo}
-                                  </td>
-                                  <td className="border-t-2 border-b border-gray-600 px-1 py-0">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[12px]"
-                                    />
-                                  </td>
-                                  <td className="border-t-2 border-b border-gray-600 px-1 py-0 text-center">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[12px]"
-                                      align="center"
-                                    />
-                                  </td>
-                                  <td className="border-t-2 border-b border-gray-600 px-1 py-0">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[11px]"
-                                    />
-                                  </td>
-                                  <td className="border-t-2 border-b border-gray-600 px-2 py-1 text-center">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[12px]"
-                                      align="center"
-                                    />
-                                  </td>
+                                  <td className="border-t-2 border-b border-gray-600 px-2 py-1 text-center text-gray-400 text-[12px]">{serialNo}</td>
+                                  <td className="border-t-2 border-b border-gray-600 px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" /></td>
+                                  <td className="border-t-2 border-b border-gray-600 px-1 py-0 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" align="center" /></td>
+                                  <td className="border-t-2 border-b border-gray-600 px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
+                                  <td className="border-t-2 border-b border-gray-600 px-2 py-1 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" align="center" /></td>
                                 </>
                               ) : (
                                 <>
-                                  <td className="border border-gray-400 px-2 py-1 text-center text-gray-400 text-[12px]">
-                                    {serialNo}
-                                  </td>
-                                  <td className="border border-gray-400 px-1 py-0">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[12px]"
-                                    />
-                                  </td>
-                                  <td className="border border-gray-400 px-1 py-0 text-center">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[12px]"
-                                      align="center"
-                                    />
-                                  </td>
-                                  <td className="border border-gray-400 px-1 py-0">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[11px]"
-                                    />
-                                  </td>
-                                  <td className="border border-gray-400 px-2 py-1 text-center">
-                                    <EditableCell
-                                      value=""
-                                      onChange={() => {}}
-                                      className="py-0.5 text-[12px]"
-                                      align="center"
-                                    />
-                                  </td>
+                                  <td className="border border-gray-400 px-2 py-1 text-center text-gray-400 text-[12px]">{serialNo}</td>
+                                  <td className="border border-gray-400 px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" /></td>
+                                  <td className="border border-gray-400 px-1 py-0 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" align="center" /></td>
+                                  <td className="border border-gray-400 px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
+                                  <td className="border border-gray-400 px-2 py-1 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[12px]" align="center" /></td>
                                 </>
                               )}
                             </tr>
@@ -1159,24 +803,18 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                       })}
                     </tbody>
 
-                    {/* TOTAL row on last page */}
                     {isLastPage && (
                       <tfoot>
                         <tr className="bg-gray-800 text-white font-bold uppercase">
-                          <td className="border border-gray-900 px-2 py-2 text-center" colSpan={4}>
-                            TOTAL
-                          </td>
-                          <td className="border border-gray-900 px-2 py-2 text-center uppercase">
-                            {displayStrength}
-                          </td>
+                          <td className="border border-gray-900 px-2 py-2 text-center" colSpan={4}>TOTAL</td>
+                          <td className="border border-gray-900 px-2 py-2 text-center uppercase">{displayStrength}</td>
                         </tr>
                       </tfoot>
                     )}
                   </table>
 
-                  {/* Page info */}
                   <div className="text-right text-[10px] text-gray-400 mt-2 uppercase">
-                    Page {pageIdx + 1} of {pages.length}
+                    PAGE {pageIdx + 1} OF {pages.length}
                   </div>
                 </div>
               </div>
