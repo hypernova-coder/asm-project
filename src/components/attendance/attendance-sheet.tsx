@@ -229,6 +229,7 @@ function getPrintCSS(): string {
       page-break-after: always;
       page-break-inside: avoid;
       position: relative;
+      min-height: 1123px;
     }
     .page:last-child {
       page-break-after: auto;
