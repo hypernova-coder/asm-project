@@ -25,7 +25,6 @@ import {
   SheetContent,
   SheetHeader,
   SheetTitle,
-  SheetTrigger,
 } from '@/components/ui/sheet';
 import { useAuthStore, type UserRole } from '@/store/auth-store';
 import { useAppStore, type AppView } from '@/store/app-store';
@@ -36,7 +35,7 @@ interface NavItem {
   id: AppView;
   label: string;
   icon: React.ElementType;
-  roles?: UserRole[];
+  roles?: UserRole[]; // If specified, only these roles can see it. No roles = everyone can see.
 }
 
 const navItems: NavItem[] = [
@@ -88,17 +87,10 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
     onNavigate?.();
   };
 
+  // Simple role-based filtering: admin sees only items without roles restriction
   const filteredNavItems = navItems.filter((item) => {
-    // Super admin sees everything
-    if (user?.role === 'super_admin') return true;
-    // Items without roles restriction are always visible (dashboard, uniform_registry)
-    if (!item.roles) return true;
-    // For admin users, check their allowedMenus
-    if (user?.role === 'admin' && user.allowedMenus) {
-      return user.allowedMenus.includes(item.id);
-    }
-    // Default: hide restricted items
-    return false;
+    if (!item.roles) return true; // Everyone can see
+    return item.roles.includes(user?.role as UserRole); // Only specified roles
   });
 
   return (

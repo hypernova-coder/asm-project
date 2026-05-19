@@ -48,16 +48,15 @@ function LoadingScreen() {
   );
 }
 
-// Default views always accessible by admin users
-const ADMIN_DEFAULT_VIEWS: AppView[] = ['dashboard', 'uniform_registry'];
+// Views that admin users can access (dashboard + uniform_registry)
+const ADMIN_ALLOWED_VIEWS: AppView[] = ['dashboard', 'uniform_registry'];
 
-function isAdminAllowedView(user: { role: string; allowedMenus?: string[] } | null, view: AppView): boolean {
-  if (!user) return false;
-  if (user.role === 'super_admin') return true;
-  // Default views are always accessible
-  if (ADMIN_DEFAULT_VIEWS.includes(view)) return true;
-  // Check dynamic allowed menus
-  if (user.allowedMenus && user.allowedMenus.includes(view)) return true;
+// Views that only super_admin can access
+const SUPER_ADMIN_ONLY_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'leave_requests', 'cancellation_requests', 'notifications', 'admins'];
+
+function isViewAllowedForRole(role: string | undefined, view: AppView): boolean {
+  if (role === 'super_admin') return true;
+  if (role === 'admin') return ADMIN_ALLOWED_VIEWS.includes(view);
   return false;
 }
 
@@ -66,16 +65,16 @@ function MainLayout() {
   const { user } = useAuthStore();
   const isMobile = useIsMobile();
 
-  // Redirect normal admins away from restricted views (also reacts to permission changes)
+  // Redirect admin users away from restricted views
   React.useEffect(() => {
-    if (user && user.role === 'admin' && !isAdminAllowedView(user, currentView)) {
+    if (user && !isViewAllowedForRole(user.role, currentView)) {
       setCurrentView('dashboard');
     }
-  }, [user, currentView, setCurrentView, user?.allowedMenus]);
+  }, [user, currentView, setCurrentView]);
 
   const renderView = () => {
-    // Block normal admins from accessing restricted views
-    if (user && user.role === 'admin' && !isAdminAllowedView(user, currentView)) {
+    // Block admin users from accessing restricted views
+    if (user && !isViewAllowedForRole(user.role, currentView)) {
       return <DashboardPage />;
     }
 
@@ -105,7 +104,7 @@ function MainLayout() {
 
   return (
     <div className="flex min-h-screen bg-slate-900">
-      {!isMobile && <AppSidebar />}
+      <AppSidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <AppHeader />
         <main className="flex-1 p-4 md:p-6 overflow-auto">{renderView()}</main>
