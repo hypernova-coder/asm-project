@@ -1,5 +1,5 @@
 [build]
-buildCommand = "npx prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/"
+buildCommand = "node scripts/switch-db.js postgresql && npx prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/"
 
 [deploy]
 startCommand = "node railway-start.js"
