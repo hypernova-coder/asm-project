@@ -32,6 +32,8 @@ const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
 const ROWS_PER_PAGE = 28;
 const EXTRA_ROWS = 5;
+const HEADER_BG = '#bbbcbd';
+const HEADER_TEXT = '#000';
 
 /* ───────── Helpers ───────── */
 function formatDateDisplay(date: Date): string {
@@ -94,10 +96,25 @@ function chunkRows<T>(items: T[], perPage: number): T[][] {
   return chunks;
 }
 
+/* ───────── Table Header HTML (shared) ───────── */
+function tableHeaderHtml(): string {
+  return `
+    <tr>
+      <th style="width:40px;">SL. NO</th>
+      <th style="text-align:left;">NAME</th>
+      <th style="width:70px;">CODE</th>
+      <th style="width:140px; text-align:left;">TRADE</th>
+      <th style="width:100px;">SIGNATURE</th>
+    </tr>
+  `;
+}
+
 /* ───────── Build page HTML (shared by Print & PDF) ───────── */
 function buildPageHtml(params: {
-  pages: Array<Array<{ type: string; id?: string; fullName?: string; code?: string; position?: string; isTeamLeader?: boolean; isSupervisor?: boolean }>>;
+  employeeRows: Array<{ type: string; id?: string; fullName?: string; code?: string; position?: string; isTeamLeader?: boolean; isSupervisor?: boolean }>;
+  extraRows: Array<{ type: string }>;
   pageIdx: number;
+  totalPages: number;
   clientName: string;
   projectName: string;
   dateInput: string;
@@ -106,47 +123,51 @@ function buildPageHtml(params: {
   getDisplayTrade: (emp: { isTeamLeader: boolean; isSupervisor?: boolean; position?: string }) => string;
   contentWidth: string;
   contentPadding: string;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  serialOffset: number;
 }): string {
-  const { pages, pageIdx, clientName, projectName, dateInput, strengthInput, sortedEmployees, getDisplayTrade, contentWidth, contentPadding } = params;
-  const pageRows = pages[pageIdx];
-  const isLastPage = pageIdx === pages.length - 1;
-  const serialOffset = pageIdx === 0 ? 0 : pages.slice(0, pageIdx).flat().length;
+  const { employeeRows, extraRows, pageIdx, totalPages, clientName, projectName, dateInput, strengthInput, sortedEmployees, getDisplayTrade, contentWidth, contentPadding, isFirstPage, isLastPage, serialOffset } = params;
 
   let html = `<div class="page" style="width:${contentWidth}; padding:${contentPadding};">`;
 
-  // Header - Light gray bordered box matching the image
-  html += `
-    <div style="position:relative; border:1px solid #000; background:#E8E8E8; padding:8px 12px; margin-bottom:8px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">
-      ${pageIdx === 0 ? '<div style="position:absolute; top:4px; right:8px;"><img src="/logo_asm.png" alt="ASM" style="height:36px; width:auto;" /></div>' : ''}
-      <div style="font-size:16px; font-weight:bold; text-align:center; text-transform:uppercase; letter-spacing:0.08em; color:#000;">ARABIAN SHIELD MANPOWER</div>
-      <div style="background:#6B7280; color:white; text-align:center; padding:5px; font-size:11px; font-weight:bold; letter-spacing:0.15em; text-transform:uppercase; margin-top:6px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">DAILY ATTENDANCE</div>
-    </div>
-  `;
+  // Header - Light gray bordered box
+  if (isFirstPage) {
+    html += `
+      <div style="position:relative; border:1px solid #000; background:#E8E8E8; padding:8px 12px; margin-bottom:8px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">
+        <div style="position:absolute; top:4px; right:8px;"><img src="/logo_asm.png" alt="ASM" style="height:36px; width:auto;" /></div>
+        <div style="font-size:16px; font-weight:bold; text-align:center; text-transform:uppercase; letter-spacing:0.08em; color:#000;">ARABIAN SHIELD MANPOWER</div>
+        <div style="background:${HEADER_BG}; color:${HEADER_TEXT}; text-align:center; padding:5px; font-size:11px; font-weight:bold; letter-spacing:0.15em; text-transform:uppercase; margin-top:6px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">DAILY ATTENDANCE</div>
+      </div>
+    `;
 
-  // Info Section
-  if (pageIdx === 0) {
+    // Info Section
     html += `
       <div style="font-size:11px; text-transform:uppercase; margin-bottom:8px; line-height:1.8; padding:0 4px;">
         <div style="display:flex; align-items:baseline; margin-bottom:2px;">
-          <span style="font-weight:bold; width:120px; flex-shrink:0;">&#8226; CLIENT NAME :</span>
+          <span style="font-weight:bold; width:130px; flex-shrink:0;">&#8226; CLIENT NAME :</span>
           <span style="flex:1; border-bottom:1px solid #555; padding:0 4px; min-height:16px;">${upper(clientName)}</span>
         </div>
         <div style="display:flex; align-items:baseline; margin-bottom:2px;">
-          <span style="font-weight:bold; width:120px; flex-shrink:0;">&#8226; PROJECT NAME :</span>
+          <span style="font-weight:bold; width:130px; flex-shrink:0;">&#8226; PROJECT NAME :</span>
           <span style="flex:1; border-bottom:1px solid #555; padding:0 4px; min-height:16px;">${upper(projectName)}</span>
         </div>
         <div style="display:flex; align-items:baseline; margin-bottom:2px;">
-          <span style="font-weight:bold; width:120px; flex-shrink:0;">&#8226; DATE :</span>
+          <span style="font-weight:bold; width:130px; flex-shrink:0;">&#8226; DATE :</span>
           <span style="flex:1; border-bottom:1px solid #555; padding:0 4px; min-height:16px;">${upper(dateInput)}</span>
         </div>
         <div style="display:flex; align-items:baseline; margin-bottom:2px;">
-          <span style="font-weight:bold; width:120px; flex-shrink:0;">&#8226; STRENGTH :</span>
+          <span style="font-weight:bold; width:130px; flex-shrink:0;">&#8226; STRENGTH :</span>
           <span style="flex:1; border-bottom:1px solid #555; padding:0 4px; min-height:16px; font-weight:bold;">${upper(strengthInput || String(sortedEmployees.length))}</span>
         </div>
       </div>
     `;
   } else {
     html += `
+      <div style="position:relative; border:1px solid #000; background:#E8E8E8; padding:6px 12px; margin-bottom:8px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">
+        <div style="font-size:14px; font-weight:bold; text-align:center; text-transform:uppercase; letter-spacing:0.08em; color:#000;">ARABIAN SHIELD MANPOWER</div>
+        <div style="background:${HEADER_BG}; color:${HEADER_TEXT}; text-align:center; padding:4px; font-size:10px; font-weight:bold; letter-spacing:0.15em; text-transform:uppercase; margin-top:4px; -webkit-print-color-adjust:exact; print-color-adjust:exact;">DAILY ATTENDANCE</div>
+      </div>
       <div style="display:flex; justify-content:space-between; font-size:10px; margin-bottom:8px; text-transform:uppercase; color:#374151;">
         <span><strong>CLIENT:</strong> ${upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> ${upper(projectName)}</span>
         <span><strong>DATE:</strong> ${upper(dateInput)}</span>
@@ -154,24 +175,16 @@ function buildPageHtml(params: {
     `;
   }
 
-  // Table - Clean format matching the image
+  // Main Employee Table
   html += `
     <table>
       <thead>
-        <tr>
-          <th style="width:40px;">SL. NO</th>
-          <th style="text-align:left;">NAME</th>
-          <th style="width:70px;">CODE</th>
-          <th style="width:140px; text-align:left;">TRADE</th>
-          <th style="width:100px;">SIGNATURE</th>
-        </tr>
+        ${tableHeaderHtml()}
       </thead>
       <tbody>
   `;
 
-  const firstExtraIdx = pageRows.findIndex(r => r.type === 'extra');
-
-  pageRows.forEach((row, idx) => {
+  employeeRows.forEach((row, idx) => {
     const serialNo = serialOffset + idx + 1;
     const isEven = idx % 2 === 1;
 
@@ -192,15 +205,6 @@ function buildPageHtml(params: {
           <td style="text-align:center;"></td>
         </tr>
       `;
-    } else {
-      const isSeparator = idx === firstExtraIdx && pageRows.some(r => r.type === 'employee');
-      const sepClass = isSeparator ? 'extra-separator' : (isEven ? 'even-row' : '');
-      html += `
-        <tr class="${sepClass}">
-          <td style="text-align:center; color:#9ca3af;">${serialNo}</td>
-          <td></td><td></td><td></td><td></td>
-        </tr>
-      `;
     }
   });
 
@@ -218,7 +222,36 @@ function buildPageHtml(params: {
   }
 
   html += `</table>`;
-  html += `<div class="page-info">PAGE ${pageIdx + 1} OF ${pages.length}</div>`;
+
+  // Extra Employees Table (only on last page)
+  if (isLastPage && extraRows.length > 0) {
+    const extraStartNo = sortedEmployees.length + 1;
+    html += `
+      <div style="margin-top:12px; margin-bottom:4px; font-size:11px; font-weight:bold; text-transform:uppercase; letter-spacing:0.05em; color:#000;">EXTRA EMPLOYEES(IF ANY)</div>
+      <table>
+        <thead>
+          ${tableHeaderHtml()}
+        </thead>
+        <tbody>
+    `;
+
+    extraRows.forEach((_, idx) => {
+      const serialNo = extraStartNo + idx;
+      html += `
+        <tr>
+          <td style="text-align:center; color:#9ca3af;">${serialNo}</td>
+          <td></td>
+          <td style="text-align:center;"></td>
+          <td></td>
+          <td style="text-align:center;"></td>
+        </tr>
+      `;
+    });
+
+    html += `</tbody></table>`;
+  }
+
+  html += `<div class="page-info">PAGE ${pageIdx + 1} OF ${totalPages}</div>`;
   html += `</div>`;
 
   return html;
@@ -249,8 +282,8 @@ function getPrintCSS(): string {
       text-transform: uppercase;
     }
     thead tr {
-      background: #6B7280 !important;
-      color: white !important;
+      background: ${HEADER_BG} !important;
+      color: ${HEADER_TEXT} !important;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
@@ -263,18 +296,12 @@ function getPrintCSS(): string {
       text-align: center;
       font-size: 11px;
     }
-    .extra-separator td {
-      border-top: 2px solid #6B7280 !important;
-      background: #f9fafb;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
     .even-row { background: #f3f4f6; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .team-leader { background: #fffbeb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .supervisor { background: #eff6ff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .total-row {
-      background: #6B7280 !important;
-      color: white !important;
+      background: ${HEADER_BG} !important;
+      color: ${HEADER_TEXT} !important;
       font-weight: bold;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
@@ -348,33 +375,56 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     return pos;
   }, []);
 
-  // Build rows: employees + 5 extra
-  const allRows = useMemo(() => {
-    const rows: Array<{
-      type: 'employee' | 'extra';
-      id?: string;
-      fullName?: string;
-      code?: string;
-      position?: string;
-      isTeamLeader?: boolean;
-      isSupervisor?: boolean;
-    }> = sortedEmployees.map((emp) => ({
+  // Build rows: only employees (extras are separate table now)
+  const employeeRows = useMemo(() => {
+    return sortedEmployees.map((emp) => ({
       type: 'employee' as const,
       ...emp,
     }));
-    for (let i = 0; i < EXTRA_ROWS; i++) rows.push({ type: 'extra' });
-    return rows;
   }, [sortedEmployees]);
 
-  // Chunk into pages
+  const extraRowItems = useMemo(() => {
+    return Array.from({ length: EXTRA_ROWS }, () => ({ type: 'extra' as const }));
+  }, []);
+
+  // Chunk employee rows into pages
   const FIRST_PAGE_ROWS = ROWS_PER_PAGE - 6;
   const pages = useMemo(() => {
-    if (allRows.length <= FIRST_PAGE_ROWS) return [allRows];
-    const result: typeof allRows[] = [allRows.slice(0, FIRST_PAGE_ROWS)];
-    const remaining = allRows.slice(FIRST_PAGE_ROWS);
+    if (employeeRows.length <= FIRST_PAGE_ROWS) return [employeeRows];
+    const result: typeof employeeRows[] = [employeeRows.slice(0, FIRST_PAGE_ROWS)];
+    const remaining = employeeRows.slice(FIRST_PAGE_ROWS);
     result.push(...chunkRows(remaining, ROWS_PER_PAGE));
     return result;
-  }, [allRows]);
+  }, [employeeRows]);
+
+  // Generate HTML for all pages (shared by PDF and Print)
+  const generateAllPagesHtml = useCallback(() => {
+    let allHtml = '';
+    pages.forEach((pageEmployeeRows, pageIdx) => {
+      const isFirstPage = pageIdx === 0;
+      const isLastPage = pageIdx === pages.length - 1;
+      const serialOffset = pageIdx === 0 ? 0 : pages.slice(0, pageIdx).flat().length;
+
+      allHtml += buildPageHtml({
+        employeeRows: pageEmployeeRows,
+        extraRows: isLastPage ? extraRowItems : [],
+        pageIdx,
+        totalPages: pages.length,
+        clientName,
+        projectName,
+        dateInput,
+        strengthInput,
+        sortedEmployees,
+        getDisplayTrade,
+        contentWidth: '730px',
+        contentPadding: '20px',
+        isFirstPage,
+        isLastPage,
+        serialOffset,
+      });
+    });
+    return allHtml;
+  }, [pages, extraRowItems, clientName, projectName, dateInput, strengthInput, sortedEmployees, getDisplayTrade]);
 
   /* ── Download PDF directly (jsPDF + html2canvas) ── */
   const handleDownloadPDF = useCallback(async () => {
@@ -397,27 +447,9 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
         return;
       }
 
-      const contentWidthPx = '770px';
-      const contentPadding = '12px';
-
       iframeDoc.open();
       iframeDoc.write(`<!DOCTYPE html><html><head><style>${getPrintCSS()}</style></head><body>`);
-
-      pages.forEach((_, pageIdx) => {
-        iframeDoc.write(buildPageHtml({
-          pages,
-          pageIdx,
-          clientName,
-          projectName,
-          dateInput,
-          strengthInput,
-          sortedEmployees,
-          getDisplayTrade,
-          contentWidth: contentWidthPx,
-          contentPadding,
-        }));
-      });
-
+      iframeDoc.write(generateAllPagesHtml());
       iframeDoc.write(`</body></html>`);
       iframeDoc.close();
 
@@ -453,7 +485,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     } finally {
       setIsGenerating(false);
     }
-  }, [isGenerating, site.name, date, clientName, projectName, dateInput, strengthInput, sortedEmployees, pages, getDisplayTrade]);
+  }, [isGenerating, site.name, date, generateAllPagesHtml]);
 
   /* ── Print with @page margin:0 to suppress browser headers/footers ── */
   const handlePrint = useCallback(() => {
@@ -471,27 +503,9 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
       return;
     }
 
-    const contentWidthPx = '770px';
-    const contentPadding = '12px';
-
     iframeDoc.open();
     iframeDoc.write(`<!DOCTYPE html><html><head><style>${getPrintCSS()}</style></head><body>`);
-
-    pages.forEach((_, pageIdx) => {
-      iframeDoc.write(buildPageHtml({
-        pages,
-        pageIdx,
-        clientName,
-        projectName,
-        dateInput,
-        strengthInput,
-        sortedEmployees,
-        getDisplayTrade,
-        contentWidth: contentWidthPx,
-        contentPadding,
-      }));
-    });
-
+    iframeDoc.write(generateAllPagesHtml());
     iframeDoc.write(`</body></html>`);
     iframeDoc.close();
 
@@ -502,7 +516,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
         document.body.removeChild(iframe);
       }, 2000);
     }, 600);
-  }, [clientName, projectName, dateInput, strengthInput, sortedEmployees, pages, getDisplayTrade]);
+  }, [generateAllPagesHtml]);
 
   const displayStrength = upper(strengthInput || String(sortedEmployees.length));
 
@@ -591,8 +605,9 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
 
         {/* Sheet Container - scrollable preview */}
         <div className="flex-1 overflow-auto flex flex-col items-center py-6 px-4 gap-6">
-          {pages.map((pageRows, pageIdx) => {
+          {pages.map((pageEmployeeRows, pageIdx) => {
             const isLastPage = pageIdx === pages.length - 1;
+            const isFirstPage = pageIdx === 0;
             const serialOffset = pageIdx === 0 ? 0 : pages.slice(0, pageIdx).flat().length;
 
             return (
@@ -603,88 +618,76 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                 className="bg-white shadow-xl border border-gray-300 w-full"
                 style={{ maxWidth: `${A4_WIDTH_MM}mm`, minHeight: `${A4_HEIGHT_MM}mm` }}
               >
-                {/* Header Section - Light gray box matching image */}
-                <div className="relative border border-black bg-gray-200 mx-8 mt-6 p-2">
-                  {pageIdx === 0 && (
-                    <div className="absolute top-1 right-2">
-                      <img
-                        src="/logo_asm.png"
-                        alt="ASM Logo"
-                        className="h-10 w-auto object-contain"
-                        crossOrigin="anonymous"
-                      />
+                {/* Header Section */}
+                {isFirstPage ? (
+                  <>
+                    <div className="relative border border-black bg-gray-200 mx-10 mt-6 p-2">
+                      <div className="absolute top-1 right-2">
+                        <img
+                          src="/logo_asm.png"
+                          alt="ASM Logo"
+                          className="h-10 w-auto object-contain"
+                          crossOrigin="anonymous"
+                        />
+                      </div>
+                      <h1 className="text-[18px] font-bold text-center text-black tracking-[0.08em] uppercase">
+                        ARABIAN SHIELD MANPOWER
+                      </h1>
+                      <div className="mt-1.5 text-center py-1.5 text-[11px] font-bold tracking-[0.15em] uppercase" style={{ background: HEADER_BG, color: HEADER_TEXT }}>
+                        DAILY ATTENDANCE
+                      </div>
                     </div>
-                  )}
 
-                  <h1 className="text-[18px] font-bold text-center text-black tracking-[0.08em] uppercase">
-                    ARABIAN SHIELD MANPOWER
-                  </h1>
-
-                  <div className="mt-1.5 bg-gray-500 text-white text-center py-1.5 text-[11px] font-bold tracking-[0.15em] uppercase">
-                    DAILY ATTENDANCE
-                  </div>
-                </div>
-
-                {/* Info Section - Bullet point style matching image */}
-                {pageIdx === 0 ? (
-                  <div className="px-8 mt-4 text-[12px] uppercase">
-                    <div className="flex items-baseline mb-1.5">
-                      <span className="font-bold text-gray-900 w-32 shrink-0">&#8226; CLIENT NAME :</span>
-                      <span className="flex-1 border-b border-gray-500">
-                        <input
-                          type="text"
-                          value={clientName}
-                          onChange={(e) => setClientName(e.target.value.toUpperCase())}
-                          className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
-                        />
-                      </span>
+                    {/* Info Section */}
+                    <div className="mx-10 mt-4 text-[12px] uppercase">
+                      <div className="flex items-baseline mb-1.5">
+                        <span className="font-bold text-gray-900 w-36 shrink-0">&#8226; CLIENT NAME :</span>
+                        <span className="flex-1 border-b border-gray-500">
+                          <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value.toUpperCase())} className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5" />
+                        </span>
+                      </div>
+                      <div className="flex items-baseline mb-1.5">
+                        <span className="font-bold text-gray-900 w-36 shrink-0">&#8226; PROJECT NAME :</span>
+                        <span className="flex-1 border-b border-gray-500">
+                          <input type="text" value={projectName} onChange={(e) => setProjectName(e.target.value.toUpperCase())} className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5" />
+                        </span>
+                      </div>
+                      <div className="flex items-baseline mb-1.5">
+                        <span className="font-bold text-gray-900 w-36 shrink-0">&#8226; DATE :</span>
+                        <span className="flex-1 border-b border-gray-500">
+                          <input type="text" value={dateInput} onChange={(e) => handleDateChange(e.target.value.toUpperCase())} className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] font-mono uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5" />
+                        </span>
+                      </div>
+                      <div className="flex items-baseline mb-1.5">
+                        <span className="font-bold text-gray-900 w-36 shrink-0">&#8226; STRENGTH :</span>
+                        <span className="flex-1 border-b border-gray-500">
+                          <input type="text" value={strengthInput} onChange={(e) => setStrengthInput(e.target.value.toUpperCase())} className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] font-semibold uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5" />
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-baseline mb-1.5">
-                      <span className="font-bold text-gray-900 w-32 shrink-0">&#8226; PROJECT NAME :</span>
-                      <span className="flex-1 border-b border-gray-500">
-                        <input
-                          type="text"
-                          value={projectName}
-                          onChange={(e) => setProjectName(e.target.value.toUpperCase())}
-                          className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
-                        />
-                      </span>
-                    </div>
-                    <div className="flex items-baseline mb-1.5">
-                      <span className="font-bold text-gray-900 w-32 shrink-0">&#8226; DATE :</span>
-                      <span className="flex-1 border-b border-gray-500">
-                        <input
-                          type="text"
-                          value={dateInput}
-                          onChange={(e) => handleDateChange(e.target.value.toUpperCase())}
-                          className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] font-mono uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
-                        />
-                      </span>
-                    </div>
-                    <div className="flex items-baseline mb-1.5">
-                      <span className="font-bold text-gray-900 w-32 shrink-0">&#8226; STRENGTH :</span>
-                      <span className="flex-1 border-b border-gray-500">
-                        <input
-                          type="text"
-                          value={strengthInput}
-                          onChange={(e) => setStrengthInput(e.target.value.toUpperCase())}
-                          className="w-full bg-transparent border-none outline-none text-gray-800 text-[12px] font-semibold uppercase hover:bg-blue-50/60 focus:bg-blue-50/80 focus:outline-1 focus:outline-blue-300 transition-colors rounded px-1 -mx-1 cursor-text py-0.5"
-                        />
-                      </span>
-                    </div>
-                  </div>
+                  </>
                 ) : (
-                  <div className="px-8 mt-3 flex justify-between text-[11px] uppercase text-gray-600">
-                    <span><strong>CLIENT:</strong> {upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> {upper(projectName)}</span>
-                    <span><strong>DATE:</strong> {upper(dateInput)}</span>
-                  </div>
+                  <>
+                    <div className="relative border border-black bg-gray-200 mx-10 mt-6 p-2">
+                      <h1 className="text-[15px] font-bold text-center text-black tracking-[0.08em] uppercase">
+                        ARABIAN SHIELD MANPOWER
+                      </h1>
+                      <div className="mt-1 text-center py-1 text-[10px] font-bold tracking-[0.15em] uppercase" style={{ background: HEADER_BG, color: HEADER_TEXT }}>
+                        DAILY ATTENDANCE
+                      </div>
+                    </div>
+                    <div className="mx-10 mt-3 flex justify-between text-[11px] uppercase text-gray-600">
+                      <span><strong>CLIENT:</strong> {upper(clientName)} &nbsp;&nbsp; <strong>PROJECT:</strong> {upper(projectName)}</span>
+                      <span><strong>DATE:</strong> {upper(dateInput)}</span>
+                    </div>
+                  </>
                 )}
 
-                {/* Attendance Table - Matching image format with black borders */}
-                <div className="px-8 mt-4 pb-4">
+                {/* Main Employee Table */}
+                <div className="mx-10 mt-4 pb-2">
                   <table className="w-full border-collapse text-[11px] uppercase">
                     <thead>
-                      <tr className="bg-gray-500 text-white">
+                      <tr style={{ background: HEADER_BG, color: HEADER_TEXT }}>
                         <th className="border border-black px-2 py-1.5 text-center font-bold w-12 uppercase">SL. NO</th>
                         <th className="border border-black px-2 py-1.5 text-left font-bold uppercase">NAME</th>
                         <th className="border border-black px-2 py-1.5 text-center font-bold w-24 uppercase">CODE</th>
@@ -693,98 +696,84 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
                       </tr>
                     </thead>
                     <tbody>
-                      {pageRows.map((row, idx) => {
+                      {pageEmployeeRows.map((row, idx) => {
                         const serialNo = serialOffset + idx + 1;
                         const isEven = idx % 2 === 1;
-                        const firstExtraIdx = pageRows.findIndex(r => r.type === 'extra');
-                        const isSeparatorRow = row.type === 'extra' && idx === firstExtraIdx && pageRows.some(r => r.type === 'employee');
 
-                        if (row.type === 'employee') {
-                          return (
-                            <tr
-                              key={row.id || `emp-${idx}`}
-                              className={cn(
-                                isEven ? 'bg-gray-50' : 'bg-white',
-                                row.isTeamLeader && 'bg-amber-50',
-                                row.isSupervisor && !row.isTeamLeader && 'bg-blue-50'
-                              )}
-                            >
-                              <td className="border border-black px-2 py-1 text-center text-gray-700">{serialNo}</td>
-                              <td className="border border-black px-1 py-0">
-                                <EditableCell
-                                  value={upper(row.fullName || '')}
-                                  onChange={(val) => updateEmployee(row.id!, 'fullName', val)}
-                                  className="py-0.5 text-gray-900 font-medium text-[11px] uppercase"
-                                  uppercase
-                                />
-                              </td>
-                              <td className="border border-black px-1 py-0 text-center">
-                                <EditableCell
-                                  value={upper(row.code || '')}
-                                  onChange={(val) => updateEmployee(row.id!, 'code', val)}
-                                  className="py-0.5 text-gray-700 text-center font-mono text-[11px] uppercase"
-                                  align="center"
-                                  uppercase
-                                />
-                              </td>
-                              <td className="border border-black px-1 py-0">
-                                <EditableCell
-                                  value={upper(getDisplayTrade(row as typeof sortedEmployees[0] & { type: string }))}
-                                  onChange={(val) => {
-                                    const baseVal = val.replace(/ \/ (TEAM LEADER|SUPERVISOR)$/i, '');
-                                    updateEmployee(row.id!, 'position', baseVal);
-                                  }}
-                                  className="py-0.5 text-gray-700 uppercase text-[11px]"
-                                  uppercase
-                                />
-                              </td>
-                              <td className="border border-black px-2 py-1 text-center">
-                                <EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" />
-                              </td>
-                            </tr>
-                          );
-                        } else {
-                          return (
-                            <tr
-                              key={`extra-${pageIdx}-${idx}`}
-                              className={cn(isSeparatorRow ? 'bg-gray-50' : (isEven ? 'bg-gray-50' : 'bg-white'))}
-                            >
-                              {isSeparatorRow ? (
-                                <>
-                                  <td className="border-t-2 border-b border-black px-2 py-1 text-center text-gray-400 text-[11px]">{serialNo}</td>
-                                  <td className="border-t-2 border-b border-black px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
-                                  <td className="border-t-2 border-b border-black px-1 py-0 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" /></td>
-                                  <td className="border-t-2 border-b border-black px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
-                                  <td className="border-t-2 border-b border-black px-2 py-1 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" /></td>
-                                </>
-                              ) : (
-                                <>
-                                  <td className="border border-black px-2 py-1 text-center text-gray-400 text-[11px]">{serialNo}</td>
-                                  <td className="border border-black px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
-                                  <td className="border border-black px-1 py-0 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" /></td>
-                                  <td className="border border-black px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
-                                  <td className="border border-black px-2 py-1 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" /></td>
-                                </>
-                              )}
-                            </tr>
-                          );
-                        }
+                        return (
+                          <tr
+                            key={row.id || `emp-${idx}`}
+                            className={cn(
+                              isEven ? 'bg-gray-50' : 'bg-white',
+                              row.isTeamLeader && 'bg-amber-50',
+                              row.isSupervisor && !row.isTeamLeader && 'bg-blue-50'
+                            )}
+                          >
+                            <td className="border border-black px-2 py-1 text-center text-gray-700">{serialNo}</td>
+                            <td className="border border-black px-1 py-0">
+                              <EditableCell value={upper(row.fullName || '')} onChange={(val) => updateEmployee(row.id!, 'fullName', val)} className="py-0.5 text-gray-900 font-medium text-[11px] uppercase" uppercase />
+                            </td>
+                            <td className="border border-black px-1 py-0 text-center">
+                              <EditableCell value={upper(row.code || '')} onChange={(val) => updateEmployee(row.id!, 'code', val)} className="py-0.5 text-gray-700 text-center font-mono text-[11px] uppercase" align="center" uppercase />
+                            </td>
+                            <td className="border border-black px-1 py-0">
+                              <EditableCell value={upper(getDisplayTrade(row as typeof sortedEmployees[0] & { type: string }))} onChange={(val) => { const baseVal = val.replace(/ \/ (TEAM LEADER|SUPERVISOR)$/i, ''); updateEmployee(row.id!, 'position', baseVal); }} className="py-0.5 text-gray-700 uppercase text-[11px]" uppercase />
+                            </td>
+                            <td className="border border-black px-2 py-1 text-center">
+                              <EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" />
+                            </td>
+                          </tr>
+                        );
                       })}
                     </tbody>
 
                     {isLastPage && (
                       <tfoot>
-                        <tr className="bg-gray-500 text-white font-bold uppercase">
+                        <tr style={{ background: HEADER_BG, color: HEADER_TEXT }} className="font-bold uppercase">
                           <td className="border border-black px-2 py-2 text-center" colSpan={4}>TOTAL</td>
                           <td className="border border-black px-2 py-2 text-center uppercase">{displayStrength}</td>
                         </tr>
                       </tfoot>
                     )}
                   </table>
+                </div>
 
-                  <div className="text-right text-[10px] text-gray-400 mt-2 uppercase">
-                    PAGE {pageIdx + 1} OF {pages.length}
+                {/* Extra Employees Table (only on last page) */}
+                {isLastPage && (
+                  <div className="mx-10 mt-3 pb-4">
+                    <div className="text-[11px] font-bold uppercase tracking-[0.05em] text-black mb-1">
+                      EXTRA EMPLOYEES(IF ANY)
+                    </div>
+                    <table className="w-full border-collapse text-[11px] uppercase">
+                      <thead>
+                        <tr style={{ background: HEADER_BG, color: HEADER_TEXT }}>
+                          <th className="border border-black px-2 py-1.5 text-center font-bold w-12 uppercase">SL. NO</th>
+                          <th className="border border-black px-2 py-1.5 text-left font-bold uppercase">NAME</th>
+                          <th className="border border-black px-2 py-1.5 text-center font-bold w-24 uppercase">CODE</th>
+                          <th className="border border-black px-2 py-1.5 text-left font-bold w-44 uppercase">TRADE</th>
+                          <th className="border border-black px-2 py-1.5 text-center font-bold w-36 uppercase">SIGNATURE</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {extraRowItems.map((_, idx) => {
+                          const serialNo = sortedEmployees.length + idx + 1;
+                          return (
+                            <tr key={`extra-${idx}`} className="bg-white">
+                              <td className="border border-black px-2 py-1 text-center text-gray-400 text-[11px]">{serialNo}</td>
+                              <td className="border border-black px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
+                              <td className="border border-black px-1 py-0 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" /></td>
+                              <td className="border border-black px-1 py-0"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" /></td>
+                              <td className="border border-black px-2 py-1 text-center"><EditableCell value="" onChange={() => {}} className="py-0.5 text-[11px]" align="center" /></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
+                )}
+
+                <div className="mx-10 text-right text-[10px] text-gray-400 mt-2 pb-4 uppercase">
+                  PAGE {pageIdx + 1} OF {pages.length}
                 </div>
               </div>
             );

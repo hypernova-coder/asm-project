@@ -976,6 +976,23 @@ function CancellationRequestsTab({ userId, isSuperAdmin }: { userId: string; isS
 function WarningsTab({ userId }: { userId: string }) {
   const [warnings, setWarnings] = useState<Warning[]>([]);
   const [loading, setLoading] = useState(true);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<EmployeeOption | null>(null);
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
+
+  const fetchEmployees = useCallback(async () => {
+    setEmployeesLoading(true);
+    try {
+      const res = await fetch('/api/employees?status=active&limit=1000');
+      const data = await res.json();
+      if (data.success && data.data?.employees) {
+        setEmployees(data.data.employees.map((e: any) => ({ id: e.id, fullName: e.fullName, employeeId: e.employeeId, phone: e.phone, position: e.position, companyName: e.companyName, nationality: e.nationality, currentSite: e.currentSite })));
+      }
+    } catch { } finally { setEmployeesLoading(false); }
+  }, []);
 
   const fetchWarnings = useCallback(async () => {
     setLoading(true);
@@ -994,8 +1011,47 @@ function WarningsTab({ userId }: { userId: string }) {
 
   useEffect(() => { fetchWarnings(); }, [fetchWarnings]);
 
+  const openCreateDialog = useCallback(() => {
+    setSelectedEmployee(null);
+    setReason('');
+    if (employees.length === 0) fetchEmployees();
+    setCreateDialogOpen(true);
+  }, [employees.length, fetchEmployees]);
+
+  const handleCreate = async () => {
+    if (!selectedEmployee || !reason.trim()) {
+      toast({ title: 'Validation Error', description: 'Please select an employee and provide a reason.', variant: 'destructive' });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch('/api/warnings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId: selectedEmployee.id, reason, createdById: userId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast({ title: 'Warning Issued', description: `Warning has been issued for ${selectedEmployee.fullName}.` });
+        setCreateDialogOpen(false);
+        fetchWarnings();
+      } else {
+        toast({ title: 'Error', description: data.error || 'Failed to issue warning', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to issue warning', variant: 'destructive' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        <Button size="sm" onClick={openCreateDialog} className="h-8 bg-orange-600 hover:bg-orange-700 text-white text-xs gap-1.5">
+          <Plus className="h-3.5 w-3.5" /> Add New Warning
+        </Button>
+      </div>
       {loading ? <SkeletonCards /> : warnings.length === 0 ? <EmptyState icon={AlertTriangle} message="No warnings found" /> : (
         warnings.map(w => (
           <div key={w.id} className="bg-slate-800 rounded-xl border border-slate-700 p-4 hover:bg-slate-700/50 transition-colors">
@@ -1021,6 +1077,34 @@ function WarningsTab({ userId }: { userId: string }) {
           </div>
         ))
       )}
+
+      {/* Create Warning Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Issue New Warning</DialogTitle>
+            <DialogDescription>Issue a warning to an employee. This will deduct 0.5 stars from their rating.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div>
+              <Label>Employee</Label>
+              {employeesLoading ? <div className="text-slate-400 text-sm">Loading...</div> : (
+                <EmployeeSearchCombobox employees={employees} onSelect={setSelectedEmployee} selectedId={selectedEmployee?.id || null} />
+              )}
+            </div>
+            <div>
+              <Label>Reason</Label>
+              <Textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Detailed reason for the warning" className="bg-slate-900 border-slate-700 text-white resize-none" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateDialogOpen(false)} className="border-slate-600">Cancel</Button>
+            <Button onClick={handleCreate} disabled={submitting || !selectedEmployee || !reason.trim()} className="bg-orange-600 hover:bg-orange-700">
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Issue Warning'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1029,6 +1113,24 @@ function WarningsTab({ userId }: { userId: string }) {
 function FinesTab({ userId }: { userId: string }) {
   const [fines, setFines] = useState<Fine[]>([]);
   const [loading, setLoading] = useState(true);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<EmployeeOption | null>(null);
+  const [reason, setReason] = useState('');
+  const [amount, setAmount] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+  const [employeesLoading, setEmployeesLoading] = useState(false);
+
+  const fetchEmployees = useCallback(async () => {
+    setEmployeesLoading(true);
+    try {
+      const res = await fetch('/api/employees?status=active&limit=1000');
+      const data = await res.json();
+      if (data.success && data.data?.employees) {
+        setEmployees(data.data.employees.map((e: any) => ({ id: e.id, fullName: e.fullName, employeeId: e.employeeId, phone: e.phone, position: e.position, companyName: e.companyName, nationality: e.nationality, currentSite: e.currentSite })));
+      }
+    } catch { } finally { setEmployeesLoading(false); }
+  }, []);
 
   const fetchFines = useCallback(async () => {
     setLoading(true);
@@ -1047,8 +1149,53 @@ function FinesTab({ userId }: { userId: string }) {
 
   useEffect(() => { fetchFines(); }, [fetchFines]);
 
+  const openCreateDialog = useCallback(() => {
+    setSelectedEmployee(null);
+    setReason('');
+    setAmount('');
+    if (employees.length === 0) fetchEmployees();
+    setCreateDialogOpen(true);
+  }, [employees.length, fetchEmployees]);
+
+  const handleCreate = async () => {
+    if (!selectedEmployee || !reason.trim() || !amount) {
+      toast({ title: 'Validation Error', description: 'Please fill in all required fields.', variant: 'destructive' });
+      return;
+    }
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount < 0) {
+      toast({ title: 'Invalid Amount', description: 'Amount must be a positive number.', variant: 'destructive' });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await fetch('/api/fines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId: selectedEmployee.id, reason, amount: numAmount, createdById: userId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast({ title: 'Fine Issued', description: `Fine of ${formatCurrency(numAmount)} has been issued for ${selectedEmployee.fullName}.` });
+        setCreateDialogOpen(false);
+        fetchFines();
+      } else {
+        toast({ title: 'Error', description: data.error || 'Failed to issue fine', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to issue fine', variant: 'destructive' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        <Button size="sm" onClick={openCreateDialog} className="h-8 bg-red-600 hover:bg-red-700 text-white text-xs gap-1.5">
+          <Plus className="h-3.5 w-3.5" /> Add New Fine
+        </Button>
+      </div>
       {loading ? <SkeletonCards /> : fines.length === 0 ? <EmptyState icon={DollarSign} message="No fines found" /> : (
         fines.map(f => (
           <div key={f.id} className="bg-slate-800 rounded-xl border border-slate-700 p-4 hover:bg-slate-700/50 transition-colors">
@@ -1072,6 +1219,38 @@ function FinesTab({ userId }: { userId: string }) {
           </div>
         ))
       )}
+
+      {/* Create Fine Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Issue New Fine</DialogTitle>
+            <DialogDescription>Issue a fine to an employee. This will deduct 1 star from their rating.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div>
+              <Label>Employee</Label>
+              {employeesLoading ? <div className="text-slate-400 text-sm">Loading...</div> : (
+                <EmployeeSearchCombobox employees={employees} onSelect={setSelectedEmployee} selectedId={selectedEmployee?.id || null} />
+              )}
+            </div>
+            <div>
+              <Label>Amount (SAR)</Label>
+              <Input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" className="bg-slate-900 border-slate-700 text-white" />
+            </div>
+            <div>
+              <Label>Reason</Label>
+              <Textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Detailed reason for the fine" className="bg-slate-900 border-slate-700 text-white resize-none" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateDialogOpen(false)} className="border-slate-600">Cancel</Button>
+            <Button onClick={handleCreate} disabled={submitting || !selectedEmployee || !reason.trim() || !amount} className="bg-red-600 hover:bg-red-700">
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Issue Fine'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
