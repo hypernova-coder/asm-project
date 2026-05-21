@@ -22,6 +22,12 @@ import {
   Shirt,
   ToggleLeft,
   ToggleRight,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -30,6 +36,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { Separator } from '@/components/ui/separator';
 import {
   Dialog,
   DialogContent,
@@ -64,8 +71,65 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { useAuthStore } from '@/store/auth-store';
-import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import Swal from 'sweetalert2';
+
+// SweetAlert2 dark theme config
+const swalDarkConfig = {
+  background: '#1e293b',
+  color: '#e2e8f0',
+  confirmButtonColor: '#3b82f6',
+  cancelButtonColor: '#64748b',
+  customClass: {
+    popup: 'border border-slate-700',
+    title: 'text-white',
+    htmlContainer: 'text-slate-300',
+  },
+};
+
+// Helper for SweetAlert2 success toast
+function swalSuccess(title: string, text?: string) {
+  return Swal.fire({
+    ...swalDarkConfig,
+    icon: 'success',
+    title,
+    text: text || '',
+    timer: 2500,
+    timerProgressBar: true,
+    showConfirmButton: false,
+    toast: true,
+    position: 'top-end',
+  });
+}
+
+// Helper for SweetAlert2 error toast
+function swalError(title: string, text?: string) {
+  return Swal.fire({
+    ...swalDarkConfig,
+    icon: 'error',
+    title,
+    text: text || '',
+    timer: 3500,
+    timerProgressBar: true,
+    showConfirmButton: false,
+    toast: true,
+    position: 'top-end',
+  });
+}
+
+// Helper for SweetAlert2 confirmation
+function swalConfirm(title: string, text: string, confirmText = 'Yes', cancelText = 'Cancel') {
+  return Swal.fire({
+    ...swalDarkConfig,
+    icon: 'warning',
+    title,
+    text,
+    showCancelButton: true,
+    confirmButtonText: confirmText,
+    cancelButtonText: cancelText,
+    reverseButtons: true,
+  });
+}
 
 interface Admin {
   id: string;
@@ -112,9 +176,15 @@ interface PermissionItem {
   isAlwaysVisible?: boolean;
 }
 
+// Permission group config for styling
+const GROUP_CONFIG: Record<string, { label: string; color: string; borderColor: string; bgClass: string }> = {
+  general: { label: 'General', color: 'text-slate-400', borderColor: 'border-slate-600/50', bgClass: 'bg-slate-500/10' },
+  workforce: { label: 'Workforce', color: 'text-emerald-400', borderColor: 'border-emerald-600/50', bgClass: 'bg-emerald-500/10' },
+  admin: { label: 'Administration', color: 'text-amber-400', borderColor: 'border-amber-600/50', bgClass: 'bg-amber-500/10' },
+};
+
 export function AdminPage() {
   const { user } = useAuthStore();
-  const { toast } = useToast();
 
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,12 +202,11 @@ export function AdminPage() {
   const [deletingAdmin, setDeletingAdmin] = useState<Admin | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Permissions dialog state
-  const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
-  const [permissionsAdmin, setPermissionsAdmin] = useState<Admin | null>(null);
-  const [permissionsLoading, setPermissionsLoading] = useState(false);
-  const [adminPermissions, setAdminPermissions] = useState<Record<string, boolean>>({});
-  const [allPermissions, setAllPermissions] = useState<PermissionItem[]>([]);
+  // Inline permissions state: per admin, track expanded + permissions data
+  const [expandedAdminId, setExpandedAdminId] = useState<string | null>(null);
+  const [adminPermissionsMap, setAdminPermissionsMap] = useState<Record<string, Record<string, boolean>>>({});
+  const [adminAllPermsMap, setAdminAllPermsMap] = useState<Record<string, PermissionItem[]>>({});
+  const [permissionsLoading, setPermissionsLoading] = useState<string | null>(null);
 
   // Admin access map for display in table
   const [adminAccessMap, setAdminAccessMap] = useState<Record<string, string[]>>({});
@@ -154,6 +223,8 @@ export function AdminPage() {
         // Fetch permissions for each regular admin
         const regularAdmins = adminsList.filter((a: Admin) => a.role === 'admin');
         const accessMap: Record<string, string[]> = {};
+        const permsMap: Record<string, Record<string, boolean>> = {};
+        const allPermsMap: Record<string, PermissionItem[]> = {};
         await Promise.all(
           regularAdmins.map(async (admin: Admin) => {
             try {
@@ -165,6 +236,10 @@ export function AdminPage() {
                   .filter((p: PermissionItem) => p.granted || p.isAlwaysVisible)
                   .map((p: PermissionItem) => p.name);
                 accessMap[admin.id] = allowedLabels;
+                allPermsMap[admin.id] = perms;
+                const permRecord: Record<string, boolean> = {};
+                perms.forEach((p: PermissionItem) => { permRecord[p.slug] = p.granted ?? false; });
+                permsMap[admin.id] = permRecord;
               } else {
                 accessMap[admin.id] = ['Dashboard', 'Uniform Registry'];
               }
@@ -174,6 +249,8 @@ export function AdminPage() {
           })
         );
         setAdminAccessMap(accessMap);
+        setAdminPermissionsMap(permsMap);
+        setAdminAllPermsMap(allPermsMap);
       } else {
         setAdmins([]);
       }
@@ -266,29 +343,37 @@ export function AdminPage() {
 
     // Warn about creating super admin
     if (!isEdit && formData.role === 'super_admin') {
-      const confirmed = window.confirm('Are you sure you want to create a Super Admin account? This user will have full system access including the ability to manage other admins.');
-      if (!confirmed) return;
+      const result = await swalConfirm(
+        'Create Super Admin?',
+        'This user will have full system access including the ability to manage other admins.',
+        'Yes, Create',
+      );
+      if (!result.isConfirmed) return;
     }
 
     // Warn about changing role to super_admin
     if (isEdit && editingAdmin!.role !== 'super_admin' && formData.role === 'super_admin') {
-      const confirmed = window.confirm('Are you sure you want to promote this user to Super Admin? They will gain full system access.');
-      if (!confirmed) return;
+      const result = await swalConfirm(
+        'Promote to Super Admin?',
+        'They will gain full system access.',
+        'Yes, Promote',
+      );
+      if (!result.isConfirmed) return;
     }
 
     // Warn about demoting super_admin
     if (isEdit && editingAdmin!.role === 'super_admin' && formData.role !== 'super_admin') {
       const otherSuperAdmins = admins.filter(a => a.role === 'super_admin' && a.id !== editingAdmin!.id);
       if (otherSuperAdmins.length === 0) {
-        toast({
-          title: 'Cannot Demote',
-          description: 'There must be at least one Super Admin in the system.',
-          variant: 'destructive',
-        });
+        swalError('Cannot Demote', 'There must be at least one Super Admin in the system.');
         return;
       }
-      const confirmed = window.confirm('Are you sure you want to demote this Super Admin to a regular Admin? They will lose their elevated privileges.');
-      if (!confirmed) return;
+      const result = await swalConfirm(
+        'Demote Super Admin?',
+        'They will lose their elevated privileges.',
+        'Yes, Demote',
+      );
+      if (!result.isConfirmed) return;
     }
 
     setSubmitting(true);
@@ -312,25 +397,17 @@ export function AdminPage() {
       const json = await res.json();
 
       if (json.success) {
-        toast({
-          title: isEdit ? 'Account Updated' : 'Account Created',
-          description: `${formData.name} has been ${isEdit ? 'updated' : 'created'} as ${formData.role === 'super_admin' ? 'Super Admin' : 'Admin'} successfully.`,
-        });
+        swalSuccess(
+          isEdit ? 'Account Updated' : 'Account Created',
+          `${formData.name} has been ${isEdit ? 'updated' : 'created'} as ${formData.role === 'super_admin' ? 'Super Admin' : 'Admin'} successfully.`,
+        );
         setDialogOpen(false);
         fetchAdmins();
       } else {
-        toast({
-          title: 'Error',
-          description: json.error || 'Something went wrong',
-          variant: 'destructive',
-        });
+        swalError('Error', json.error || 'Something went wrong');
       }
     } catch {
-      toast({
-        title: 'Error',
-        description: 'Failed to connect to the server',
-        variant: 'destructive',
-      });
+      swalError('Error', 'Failed to connect to the server');
     } finally {
       setSubmitting(false);
     }
@@ -341,11 +418,7 @@ export function AdminPage() {
     if (admin.role === 'super_admin') {
       const otherSuperAdmins = admins.filter(a => a.role === 'super_admin' && a.id !== admin.id);
       if (otherSuperAdmins.length === 0) {
-        toast({
-          title: 'Cannot Delete',
-          description: 'There must be at least one Super Admin in the system. Promote another user first.',
-          variant: 'destructive',
-        });
+        swalError('Cannot Delete', 'There must be at least one Super Admin in the system. Promote another user first.');
         return;
       }
     }
@@ -361,127 +434,193 @@ export function AdminPage() {
       const res = await fetch(`/api/admins/${deletingAdmin.id}`, { method: 'DELETE' });
       const json = await res.json();
       if (json.success) {
-        toast({
-          title: 'Account Deleted',
-          description: `${deletingAdmin.name} has been removed successfully.`,
-        });
+        swalSuccess('Account Deleted', `${deletingAdmin.name} has been removed successfully.`);
         setDeleteDialogOpen(false);
         setDeletingAdmin(null);
         fetchAdmins();
       } else {
-        toast({
-          title: 'Error',
-          description: json.error || 'Failed to delete account',
-          variant: 'destructive',
-        });
+        swalError('Error', json.error || 'Failed to delete account');
       }
     } catch {
-      toast({
-        title: 'Error',
-        description: 'Failed to connect to the server',
-        variant: 'destructive',
-      });
+      swalError('Error', 'Failed to connect to the server');
     } finally {
       setDeleting(false);
     }
   }
 
-  // Open permissions dialog and fetch current permissions
-  async function handleManageAccess(admin: Admin) {
-    setPermissionsAdmin(admin);
-    setPermissionsLoading(true);
-    setPermissionsDialogOpen(true);
-    try {
-      const res = await fetch(`/api/permissions?adminId=${admin.id}`);
-      const json = await res.json();
-      if (json.success) {
-        const perms: PermissionItem[] = json.data.permissions || [];
-        setAllPermissions(perms);
-        const permMap: Record<string, boolean> = {};
-        perms.forEach((p: PermissionItem) => { permMap[p.slug] = p.granted ?? false; });
-        setAdminPermissions(permMap);
+  // Toggle expand for inline permissions
+  async function toggleExpand(adminId: string) {
+    if (expandedAdminId === adminId) {
+      setExpandedAdminId(null);
+      return;
+    }
+    setExpandedAdminId(adminId);
+    // If we don't have permissions for this admin yet, fetch them
+    if (!adminPermissionsMap[adminId] || !adminAllPermsMap[adminId]) {
+      setPermissionsLoading(adminId);
+      try {
+        const res = await fetch(`/api/permissions?adminId=${adminId}`);
+        const json = await res.json();
+        if (json.success) {
+          const perms: PermissionItem[] = json.data.permissions || [];
+          const permRecord: Record<string, boolean> = {};
+          perms.forEach((p: PermissionItem) => { permRecord[p.slug] = p.granted ?? false; });
+          setAdminPermissionsMap(prev => ({ ...prev, [adminId]: permRecord }));
+          setAdminAllPermsMap(prev => ({ ...prev, [adminId]: perms }));
+        }
+      } catch {
+        // silent
+      } finally {
+        setPermissionsLoading(null);
       }
-    } catch {
-      setAllPermissions([]);
-      setAdminPermissions({});
-    } finally {
-      setPermissionsLoading(false);
     }
   }
 
-  // Toggle a permission
-  async function togglePermission(permissionSlug: string, granted: boolean) {
-    if (!permissionsAdmin) return;
-    setAdminPermissions(prev => ({ ...prev, [permissionSlug]: granted }));
+  // Toggle a single permission for an admin (inline)
+  async function togglePermission(adminId: string, permissionSlug: string, granted: boolean) {
+    // Optimistic update
+    setAdminPermissionsMap(prev => ({
+      ...prev,
+      [adminId]: { ...prev[adminId], [permissionSlug]: granted },
+    }));
     try {
       const res = await fetch('/api/permissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminId: permissionsAdmin.id, permissionSlug, granted }),
+        body: JSON.stringify({ adminId, permissionSlug, granted }),
       });
       const json = await res.json();
       if (!json.success) {
-        setAdminPermissions(prev => ({ ...prev, [permissionSlug]: !granted }));
-        toast({ title: 'Error', description: json.error || 'Failed to update permission', variant: 'destructive' });
+        // Revert
+        setAdminPermissionsMap(prev => ({
+          ...prev,
+          [adminId]: { ...prev[adminId], [permissionSlug]: !granted },
+        }));
+        swalError('Error', json.error || 'Failed to update permission');
         return;
       }
+      // Update the access map display
       fetchAdmins();
+      // SweetAlert2 toast for permission change
+      const menuLabel = SIDEBAR_MENUS.find(m => m.slug === permissionSlug)?.label || permissionSlug;
+      if (granted) {
+        swalSuccess('Access Granted', `"${menuLabel}" menu is now visible to this admin.`);
+      } else {
+        Swal.fire({
+          ...swalDarkConfig,
+          icon: 'info',
+          title: 'Access Revoked',
+          text: `"${menuLabel}" menu is now hidden from this admin.`,
+          timer: 2500,
+          timerProgressBar: true,
+          showConfirmButton: false,
+          toast: true,
+          position: 'top-end',
+        });
+      }
     } catch {
-      setAdminPermissions(prev => ({ ...prev, [permissionSlug]: !granted }));
-      toast({ title: 'Error', description: 'Failed to update permission', variant: 'destructive' });
+      setAdminPermissionsMap(prev => ({
+        ...prev,
+        [adminId]: { ...prev[adminId], [permissionSlug]: !granted },
+      }));
+      swalError('Error', 'Failed to update permission');
     }
   }
 
-  // Grant all / Revoke all
-  async function toggleAllPermissions(grant: boolean) {
-    if (!permissionsAdmin) return;
-    const prev = { ...adminPermissions };
+  // Grant all / Revoke all for a specific admin
+  async function toggleAllPermissions(adminId: string, grant: boolean) {
+    const perms = adminAllPermsMap[adminId] || [];
+    const prev = { ...adminPermissionsMap[adminId] };
     const updates: Record<string, boolean> = {};
-    allPermissions.forEach(p => {
+    perms.forEach(p => {
       if (!p.isAlwaysVisible) {
         updates[p.slug] = grant;
       }
     });
-    setAdminPermissions(prevState => ({ ...prevState, ...updates }));
+    setAdminPermissionsMap(prevState => ({
+      ...prevState,
+      [adminId]: { ...prevState[adminId], ...updates },
+    }));
     try {
       const slugs = grant
-        ? allPermissions.filter(p => !p.isAlwaysVisible).map(p => p.slug)
+        ? perms.filter(p => !p.isAlwaysVisible).map(p => p.slug)
         : [];
       await fetch('/api/permissions', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminId: permissionsAdmin.id, permissionSlugs: slugs }),
+        body: JSON.stringify({ adminId, permissionSlugs: slugs }),
       });
       fetchAdmins();
+      if (grant) {
+        swalSuccess('All Access Granted', 'All sidebar menus are now visible to this admin.');
+      } else {
+        Swal.fire({
+          ...swalDarkConfig,
+          icon: 'info',
+          title: 'All Access Revoked',
+          text: 'Only default menus are now visible to this admin.',
+          timer: 2500,
+          timerProgressBar: true,
+          showConfirmButton: false,
+          toast: true,
+          position: 'top-end',
+        });
+      }
     } catch {
-      setAdminPermissions(prev);
-      toast({ title: 'Error', description: 'Failed to update permissions', variant: 'destructive' });
+      setAdminPermissionsMap(prevState => ({
+        ...prevState,
+        [adminId]: prev,
+      }));
+      swalError('Error', 'Failed to update permissions');
     }
   }
 
-  // Toggle all in a group
-  async function toggleGroupPermissions(group: string, grant: boolean) {
-    if (!permissionsAdmin) return;
-    const groupPerms = allPermissions.filter(p => p.group === group && !p.isAlwaysVisible);
+  // Toggle all in a group for a specific admin
+  async function toggleGroupPermissions(adminId: string, group: string, grant: boolean) {
+    const perms = adminAllPermsMap[adminId] || [];
+    const groupPerms = perms.filter(p => p.group === group && !p.isAlwaysVisible);
+    const prev = { ...adminPermissionsMap[adminId] };
     const updates: Record<string, boolean> = {};
     groupPerms.forEach(p => { updates[p.slug] = grant; });
-    setAdminPermissions(prev => ({ ...prev, ...updates }));
+    setAdminPermissionsMap(prevState => ({
+      ...prevState,
+      [adminId]: { ...prevState[adminId], ...updates },
+    }));
     try {
       await Promise.all(
         groupPerms.map(p =>
           fetch('/api/permissions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ adminId: permissionsAdmin!.id, permissionSlug: p.slug, granted: grant }),
+            body: JSON.stringify({ adminId, permissionSlug: p.slug, granted: grant }),
           })
         )
       );
       fetchAdmins();
+      const gc = GROUP_CONFIG[group] || GROUP_CONFIG.general;
+      if (grant) {
+        swalSuccess(`${gc.label} Access Granted`, `All ${gc.label.toLowerCase()} menus are now visible.`);
+      } else {
+        Swal.fire({
+          ...swalDarkConfig,
+          icon: 'info',
+          title: `${gc.label} Access Revoked`,
+          text: `All ${gc.label.toLowerCase()} menus are now hidden.`,
+          timer: 2500,
+          timerProgressBar: true,
+          showConfirmButton: false,
+          toast: true,
+          position: 'top-end',
+        });
+      }
     } catch {
       const reverts: Record<string, boolean> = {};
       groupPerms.forEach(p => { reverts[p.slug] = !grant; });
-      setAdminPermissions(prev => ({ ...prev, ...reverts }));
-      toast({ title: 'Error', description: 'Failed to update permissions', variant: 'destructive' });
+      setAdminPermissionsMap(prevState => ({
+        ...prevState,
+        [adminId]: { ...prevState[adminId], ...reverts },
+      }));
+      swalError('Error', 'Failed to update permissions');
     }
   }
 
@@ -665,100 +804,315 @@ export function AdminPage() {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-slate-700 hover:bg-transparent">
-                    <TableHead className="text-slate-400 font-semibold">Name</TableHead>
-                    <TableHead className="text-slate-400 font-semibold">Email</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-center">Role</TableHead>
-                    <TableHead className="text-slate-400 font-semibold">Menu Access</TableHead>
-                    <TableHead className="text-slate-400 font-semibold">Created</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {regularAdmins.map((admin) => (
-                    <TableRow key={admin.id} className="border-slate-700/50 hover:bg-slate-700/30">
-                      <TableCell className="text-slate-200 font-medium">
+            <div className="space-y-3">
+              {regularAdmins.map((admin) => {
+                const isExpanded = expandedAdminId === admin.id;
+                const perms = adminAllPermsMap[admin.id] || [];
+                const permState = adminPermissionsMap[admin.id] || {};
+                const isLoading = permissionsLoading === admin.id;
+                const grantedCount = Object.values(permState).filter(Boolean).length;
+                const totalConfigurable = perms.filter(p => !p.isAlwaysVisible).length;
+                const grantedConfigurable = perms.filter(p => !p.isAlwaysVisible && permState[p.slug]).length;
+
+                return (
+                  <div
+                    key={admin.id}
+                    className={cn(
+                      'rounded-xl border transition-all duration-200',
+                      isExpanded
+                        ? 'border-blue-500/30 bg-slate-800/80 shadow-lg shadow-blue-500/5'
+                        : 'border-slate-700/50 bg-slate-800/30 hover:border-slate-600/50'
+                    )}
+                  >
+                    {/* Admin Row Header */}
+                    <div
+                      className="flex items-center gap-3 px-4 py-3 cursor-pointer"
+                      onClick={() => toggleExpand(admin.id)}
+                    >
+                      {/* Avatar */}
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500/10 shrink-0">
+                        <span className="text-sm font-semibold text-blue-400">
+                          {admin.name.charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/10">
-                            <span className="text-sm font-semibold text-blue-400">
-                              {admin.name.charAt(0).toUpperCase()}
+                          <span className="text-sm font-medium text-white truncate">{admin.name}</span>
+                          <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20 text-[10px] px-1.5 py-0 h-4">
+                            Admin
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <Mail className="h-3 w-3 text-slate-500" />
+                          <span className="text-xs text-slate-400 truncate">{admin.email}</span>
+                          <span className="text-slate-600 mx-1">|</span>
+                          <span className="text-xs text-slate-500">{formatDate(admin.createdAt)}</span>
+                        </div>
+                      </div>
+
+                      {/* Menu access badges */}
+                      <div className="hidden md:flex items-center gap-1 flex-wrap max-w-[300px] justify-end">
+                        {(adminAccessMap[admin.id] || ['Dashboard', 'Uniform Registry']).slice(0, 4).map((label) => (
+                          <Badge
+                            key={label}
+                            variant="secondary"
+                            className={cn(
+                              "text-[10px] px-1.5 py-0 h-4",
+                              label === 'Dashboard' || label === 'Uniform Registry'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                            )}
+                          >
+                            {label}
+                          </Badge>
+                        ))}
+                        {(adminAccessMap[admin.id] || []).length > 4 && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 bg-slate-700 text-slate-300">
+                            +{(adminAccessMap[admin.id] || []).length - 4}
+                          </Badge>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => { e.stopPropagation(); handleEdit(admin); }}
+                          className="h-8 w-8 p-0 text-slate-400 hover:text-blue-400 hover:bg-blue-500/10"
+                        >
+                          <Pencil className="h-4 w-4" />
+                          <span className="sr-only">Edit</span>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => { e.stopPropagation(); handleDelete(admin); }}
+                          className="h-8 w-8 p-0 text-slate-400 hover:text-red-400 hover:bg-red-500/10"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          <span className="sr-only">Delete</span>
+                        </Button>
+                        <div
+                          className={cn(
+                            'flex h-8 w-8 items-center justify-center rounded-md transition-all duration-200',
+                            isExpanded
+                              ? 'bg-blue-500/15 text-blue-400 rotate-0'
+                              : 'text-slate-400 hover:bg-slate-700/50'
+                          )}
+                        >
+                          <ChevronDown className={cn('h-4 w-4 transition-transform duration-200', isExpanded && 'rotate-180')} />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expanded: Manage Menu Access Section */}
+                    {isExpanded && (
+                      <div className="border-t border-slate-700/50">
+                        <div className="px-4 py-4">
+                          {/* Section Header */}
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <KeyRound className="h-4 w-4 text-emerald-400" />
+                              <h3 className="text-sm font-semibold text-white">Manage Menu Access</h3>
+                              <Badge variant="secondary" className="bg-slate-700/50 text-slate-300 text-[10px] px-1.5 py-0 h-4">
+                                {grantedConfigurable}/{totalConfigurable} granted
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => toggleAllPermissions(admin.id, true)}
+                                className="h-7 text-xs border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300"
+                              >
+                                <ToggleRight className="h-3.5 w-3.5 mr-1" />
+                                Grant All
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => toggleAllPermissions(admin.id, false)}
+                                className="h-7 text-xs border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                              >
+                                <ToggleLeft className="h-3.5 w-3.5 mr-1" />
+                                Revoke All
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* Progress bar */}
+                          <div className="flex items-center gap-3 mb-4">
+                            <div className="flex-1 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                                style={{ width: `${totalConfigurable > 0 ? (grantedConfigurable / totalConfigurable) * 100 : 0}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] text-slate-500 whitespace-nowrap">
+                              {grantedCount}/{perms.length} total
                             </span>
                           </div>
-                          {admin.name}
+
+                          {isLoading ? (
+                            <div className="space-y-3">
+                              {[1, 2, 3].map((i) => (
+                                <Skeleton key={i} className="h-14 w-full bg-slate-700 rounded-lg" />
+                              ))}
+                            </div>
+                          ) : perms.length === 0 ? (
+                            <div className="text-center py-8 text-slate-500 text-sm">No permissions found. Please refresh the page.</div>
+                          ) : (
+                            // Group permissions
+                            <div className="space-y-3">
+                              {['general', 'workforce', 'admin'].map((group) => {
+                                const groupPerms = perms.filter(p => p.group === group);
+                                if (groupPerms.length === 0) return null;
+                                const configurablePerms = groupPerms.filter(p => !p.isAlwaysVisible);
+                                const alwaysVisiblePerms = groupPerms.filter(p => p.isAlwaysVisible);
+                                const groupGrantedCount = groupPerms.filter(p => permState[p.slug]).length;
+                                const allGroupGranted = groupGrantedCount === groupPerms.length;
+                                const gc = GROUP_CONFIG[group] || GROUP_CONFIG.general;
+
+                                return (
+                                  <div
+                                    key={group}
+                                    className={cn('rounded-lg bg-slate-900/50 border px-4 py-3', gc.borderColor)}
+                                  >
+                                    {/* Group Header */}
+                                    <div className="flex items-center justify-between mb-3">
+                                      <div className="flex items-center gap-2">
+                                        <p className={cn('text-xs font-semibold uppercase tracking-wider', gc.color)}>
+                                          {gc.label}
+                                        </p>
+                                        <Badge variant="secondary" className="bg-slate-700/50 text-slate-300 text-[10px] px-1.5 py-0 h-4">
+                                          {groupGrantedCount}/{groupPerms.length}
+                                        </Badge>
+                                      </div>
+                                      {configurablePerms.length > 0 && (
+                                        <button
+                                          onClick={() => toggleGroupPermissions(admin.id, group, !allGroupGranted)}
+                                          className={cn(
+                                            'text-[10px] font-medium px-2.5 py-1 rounded-md transition-colors',
+                                            allGroupGranted
+                                              ? 'text-red-400 hover:bg-red-500/10 border border-red-500/20'
+                                              : 'text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20'
+                                          )}
+                                        >
+                                          {allGroupGranted ? 'Clear All' : 'Select All'}
+                                        </button>
+                                      )}
+                                    </div>
+
+                                    {/* Always Visible Menus */}
+                                    {alwaysVisiblePerms.length > 0 && (
+                                      <div className="space-y-1.5 mb-2">
+                                        {alwaysVisiblePerms.map((perm) => {
+                                          const Icon = getMenuIcon(perm.slug);
+                                          return (
+                                            <div
+                                              key={perm.id}
+                                              className="flex items-center justify-between rounded-lg px-3 py-2 bg-emerald-500/5"
+                                            >
+                                              <div className="flex items-center gap-3">
+                                                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400 shrink-0">
+                                                  <Icon className="h-4 w-4" />
+                                                </div>
+                                                <div className="flex flex-col">
+                                                  <span className="text-sm font-medium text-white">{perm.name}</span>
+                                                  <span className="text-[10px] text-emerald-400/80">Always visible to all users</span>
+                                                </div>
+                                              </div>
+                                              <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] px-2 py-0.5 h-5">
+                                                <CheckCircle2 className="h-3 w-3 mr-1" />
+                                                Always On
+                                              </Badge>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    {/* Configurable (Hidden by default) Menus */}
+                                    {configurablePerms.length > 0 && (
+                                      <div className="space-y-1">
+                                        {configurablePerms.map((perm) => {
+                                          const isEnabled = permState[perm.slug] ?? false;
+                                          const Icon = getMenuIcon(perm.slug);
+
+                                          return (
+                                            <div
+                                              key={perm.id}
+                                              className={cn(
+                                                'flex items-center justify-between rounded-lg px-3 py-2.5 transition-all duration-200',
+                                                isEnabled
+                                                  ? 'bg-blue-500/5 border border-blue-500/10'
+                                                  : 'bg-slate-800/30 border border-transparent hover:bg-slate-700/20'
+                                              )}
+                                            >
+                                              <div className="flex items-center gap-3">
+                                                <div className={cn(
+                                                  'flex h-8 w-8 items-center justify-center rounded-lg shrink-0 transition-colors',
+                                                  isEnabled
+                                                    ? 'bg-blue-500/15 text-blue-400'
+                                                    : 'bg-slate-700/50 text-slate-500'
+                                                )}>
+                                                  <Icon className="h-4 w-4" />
+                                                </div>
+                                                <div className="flex flex-col">
+                                                  <span className={cn(
+                                                    'text-sm font-medium transition-colors',
+                                                    isEnabled ? 'text-white' : 'text-slate-400'
+                                                  )}>
+                                                    {perm.name}
+                                                  </span>
+                                                  <span className={cn(
+                                                    'text-[10px] transition-colors',
+                                                    isEnabled ? 'text-blue-400/70' : 'text-slate-500'
+                                                  )}>
+                                                    {isEnabled ? (
+                                                      <span className="flex items-center gap-1">
+                                                        <Eye className="h-3 w-3" /> Visible in sidebar
+                                                      </span>
+                                                    ) : (
+                                                      <span className="flex items-center gap-1">
+                                                        <EyeOff className="h-3 w-3" /> Hidden from sidebar
+                                                      </span>
+                                                    )}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                              <Switch
+                                                checked={isEnabled}
+                                                onCheckedChange={(checked) => togglePermission(admin.id, perm.slug, checked)}
+                                              />
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* Info note */}
+                          <div className="mt-4 rounded-lg bg-slate-900/30 border border-slate-700/30 px-3 py-2">
+                            <p className="text-[11px] text-slate-500">
+                              <KeyRound className="h-3 w-3 inline mr-1 -mt-0.5" />
+                              Toggle switches to control which sidebar menus this admin can see. Changes take effect within 15 seconds.
+                              Menus marked &quot;Always On&quot; are visible to all users by default.
+                            </p>
+                          </div>
                         </div>
-                      </TableCell>
-                      <TableCell className="text-slate-400">
-                        <div className="flex items-center gap-1.5">
-                          <Mail className="h-3.5 w-3.5 text-slate-500" />
-                          {admin.email}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20">
-                          Admin
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-slate-400 text-xs">
-                        <div className="flex flex-wrap gap-1 max-w-[280px]">
-                          {(adminAccessMap[admin.id] || ['Dashboard', 'Uniform Registry']).map((label) => (
-                            <Badge
-                              key={label}
-                              variant="secondary"
-                              className={cn(
-                                "text-[10px] px-1.5 py-0 h-4",
-                                label === 'Dashboard' || label === 'Uniform Registry'
-                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                  : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
-                              )}
-                            >
-                              {label}
-                            </Badge>
-                          ))}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-slate-400 text-sm">
-                        {formatDate(admin.createdAt)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleManageAccess(admin)}
-                            className="h-8 px-2 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10"
-                            title="Manage Menu Access"
-                          >
-                            <KeyRound className="h-4 w-4 mr-1" />
-                            <span className="text-xs">Access</span>
-                            <span className="sr-only">Manage Access</span>
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEdit(admin)}
-                            className="h-8 w-8 p-0 text-slate-400 hover:text-blue-400 hover:bg-blue-500/10"
-                          >
-                            <Pencil className="h-4 w-4" />
-                            <span className="sr-only">Edit</span>
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(admin)}
-                            className="h-8 w-8 p-0 text-slate-400 hover:text-red-400 hover:bg-red-500/10"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                            <span className="sr-only">Delete</span>
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>
@@ -923,7 +1277,7 @@ export function AdminPage() {
                   <div>
                     <p className="font-medium">Menu Access Control</p>
                     <p className="text-blue-400/80 text-xs mt-1">
-                      This admin will see only Dashboard and Uniform Registry by default. After creation, click the &quot;Access&quot; button to grant additional sidebar menus.
+                      This admin will see only Dashboard and Uniform Registry by default. After creation, expand the admin card to grant additional sidebar menus.
                     </p>
                   </div>
                 </div>
@@ -1021,178 +1375,6 @@ export function AdminPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Manage Menu Access Dialog */}
-      <Dialog open={permissionsDialogOpen} onOpenChange={setPermissionsDialogOpen}>
-        <DialogContent className="bg-slate-800 border-slate-700 text-slate-200 sm:max-w-lg max-h-[85vh]">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <KeyRound className="h-4 w-4 text-emerald-400" />
-              Manage Menu Access — {permissionsAdmin?.name}
-            </DialogTitle>
-            <DialogDescription className="text-slate-400">
-              Toggle sidebar menu visibility for this admin. They will only see menus you enable here.
-            </DialogDescription>
-          </DialogHeader>
-
-          {/* Permission summary bar */}
-          {!permissionsLoading && allPermissions.length > 0 && (
-            <div className="flex items-center gap-3 px-1">
-              <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-                  style={{ width: `${(Object.values(adminPermissions).filter(Boolean).length / allPermissions.length) * 100}%` }}
-                />
-              </div>
-              <span className="text-xs text-slate-400 whitespace-nowrap">
-                {Object.values(adminPermissions).filter(Boolean).length}/{allPermissions.length} menus
-              </span>
-            </div>
-          )}
-
-          {/* Quick actions */}
-          {!permissionsLoading && allPermissions.length > 0 && (
-            <div className="flex items-center gap-2 px-1">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => toggleAllPermissions(true)}
-                className="h-7 text-xs border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300"
-              >
-                <ToggleRight className="h-3.5 w-3.5 mr-1" />
-                Grant All
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => toggleAllPermissions(false)}
-                className="h-7 text-xs border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-              >
-                <ToggleLeft className="h-3.5 w-3.5 mr-1" />
-                Revoke All
-              </Button>
-            </div>
-          )}
-
-          <div className="space-y-2 py-1 overflow-y-auto max-h-[50vh]">
-            {permissionsLoading ? (
-              <div className="space-y-3">
-                {[1, 2, 3, 4].map((i) => (
-                  <Skeleton key={i} className="h-14 w-full bg-slate-700 rounded-lg" />
-                ))}
-              </div>
-            ) : allPermissions.length === 0 ? (
-              <div className="text-center py-8 text-slate-500 text-sm">No permissions found. Please refresh the page.</div>
-            ) : (
-              // Group permissions by group
-              ['general', 'workforce', 'admin'].map((group) => {
-                const groupPerms = allPermissions.filter(p => p.group === group);
-                if (groupPerms.length === 0) return null;
-                const grantedCount = groupPerms.filter(p => adminPermissions[p.slug]).length;
-                const allGranted = grantedCount === groupPerms.length;
-                const configurablePerms = groupPerms.filter(p => !p.isAlwaysVisible);
-                const alwaysVisiblePerms = groupPerms.filter(p => p.isAlwaysVisible);
-
-                const groupConfig: Record<string, { label: string; color: string; borderColor: string }> = {
-                  general: { label: 'General', color: 'text-slate-400', borderColor: 'border-slate-600/50' },
-                  workforce: { label: 'Workforce', color: 'text-emerald-400', borderColor: 'border-emerald-600/50' },
-                  admin: { label: 'Administration', color: 'text-amber-400', borderColor: 'border-amber-600/50' },
-                };
-                const gc = groupConfig[group] || groupConfig.general;
-
-                return (
-                  <div
-                    key={group}
-                    className={cn('rounded-lg bg-slate-900/50 border px-4 py-3', gc.borderColor)}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <p className={cn('text-xs font-semibold uppercase tracking-wider', gc.color)}>
-                          {gc.label}
-                        </p>
-                        <Badge variant="secondary" className="bg-slate-700/50 text-slate-300 text-[10px] px-1.5 py-0 h-4">
-                          {grantedCount}/{groupPerms.length}
-                        </Badge>
-                      </div>
-                      {configurablePerms.length > 0 && (
-                        <button
-                          onClick={() => toggleGroupPermissions(group, !allGranted)}
-                          className={cn(
-                            'text-[10px] font-medium px-2 py-0.5 rounded transition-colors',
-                            allGranted
-                              ? 'text-red-400 hover:bg-red-500/10'
-                              : 'text-emerald-400 hover:bg-emerald-500/10'
-                          )}
-                        >
-                          {allGranted ? 'Clear All' : 'Select All'}
-                        </button>
-                      )}
-                    </div>
-                    <div className="space-y-0.5">
-                      {groupPerms.map((perm) => {
-                        const isEnabled = adminPermissions[perm.slug] ?? false;
-                        const Icon = getMenuIcon(perm.slug);
-                        const isAlwaysOn = perm.isAlwaysVisible;
-
-                        return (
-                          <div
-                            key={perm.id}
-                            className={cn(
-                              'flex items-center justify-between rounded-lg px-3 py-2.5 transition-colors',
-                              isAlwaysOn ? 'bg-emerald-500/5' : 'hover:bg-slate-700/30'
-                            )}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={cn(
-                                'flex h-8 w-8 items-center justify-center rounded-lg shrink-0',
-                                isEnabled
-                                  ? 'bg-blue-500/10 text-blue-400'
-                                  : 'bg-slate-700/50 text-slate-500'
-                              )}>
-                                <Icon className="h-4 w-4" />
-                              </div>
-                              <div className="flex flex-col">
-                                <span className={cn(
-                                  'text-sm font-medium',
-                                  isEnabled ? 'text-white' : 'text-slate-400'
-                                )}>
-                                  {perm.name}
-                                </span>
-                                {isAlwaysOn && (
-                                  <span className="text-[10px] text-emerald-400">Always visible</span>
-                                )}
-                              </div>
-                            </div>
-                            {isAlwaysOn ? (
-                              <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] px-2 py-0 h-5">
-                                Always On
-                              </Badge>
-                            ) : (
-                              <Switch
-                                checked={isEnabled}
-                                onCheckedChange={(checked) => togglePermission(perm.slug, checked)}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setPermissionsDialogOpen(false)}
-              className="text-slate-400 hover:text-white hover:bg-slate-700"
-            >
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

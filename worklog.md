@@ -167,3 +167,36 @@ Stage Summary:
 - Configurable menus: Employees, Sites, Attendance, Leave Requests, Cancellations, Notifications, Admin Management
 - Legacy AdminMenuPermission kept in sync for backward compatibility
 - All lint checks pass
+
+---
+Task ID: 10
+Agent: Main Agent
+Task: Inline menu toggles per admin + SweetAlert2 replacement
+
+Work Log:
+- Installed sweetalert2@11.26.24 package
+- Completely rewrote admin-page.tsx with major UX changes:
+  - Replaced table-based admin list with expandable card layout
+  - Each admin card has a "Manage Menu Access" section that expands inline when clicked
+  - All hidden menus listed with toggle switches to grant/revoke permission
+  - Always-visible menus (Dashboard, Uniform Registry) shown with "Always On" badge
+  - Configurable menus show Eye/EyeOff icons indicating visibility state
+  - Progress bar showing granted/total permissions per admin
+  - Grant All / Revoke All quick actions per admin
+  - Group-level Select All / Clear All (General, Workforce, Administration)
+  - Removed separate permissions dialog - now inline expandable
+- Replaced all useToast() with SweetAlert2:
+  - swalSuccess(): top-end toast with success icon, auto-dismiss
+  - swalError(): top-end toast with error icon
+  - swalConfirm(): centered confirmation dialog with warning icon
+  - Dark theme config matching app's slate color scheme
+  - Permission grant shows success toast, revoke shows info toast
+- Permissions pre-fetched for all admins on page load for instant expand
+- Lint passes cleanly
+
+Stage Summary:
+- Admin cards now expand inline to show menu access toggles
+- SweetAlert2 replaces all toast/confirm dialogs with beautiful dark-themed alerts
+- All 7 configurable menus have toggle switches per admin
+- Always-on menus shown with green "Always On" badge (non-toggleable)
+- Visual feedback: Eye/EyeOff icons, blue highlight when granted, dimmed when revoked
