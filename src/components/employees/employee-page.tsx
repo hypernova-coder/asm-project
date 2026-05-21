@@ -30,11 +30,14 @@ import {
   Calendar,
   FileText,
   Shield,
+  ShieldCheck,
   Clock,
   Camera,
   Upload,
   ImagePlus,
   Crown,
+  Filter,
+  UserX,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -86,6 +89,7 @@ interface Employee {
   address: string | null;
   emergencyContact: string | null;
   position: string | null;
+  trade: string | null;
   joinDate: string | null;
   companyName: string | null;
   passportNumber: string | null;
@@ -95,6 +99,8 @@ interface Employee {
   currentSite: string | null;
   isTeamLeader: boolean;
   teamLeaderSiteId: string | null;
+  isSupervisor: boolean;
+  supervisorSiteId: string | null;
   rating: number;
   status: string;
   photo: string | null;
@@ -123,6 +129,16 @@ const NATIONALITIES = [
   'Rwanda', 'São Tomé and Príncipe', 'Senegal', 'Seychelles', 'Sierra Leone',
   'Somalia', 'South Africa', 'South Sudan', 'Sudan', 'Tanzania', 'Togo',
   'Tunisia', 'Uganda', 'Zambia', 'Zimbabwe', 'India', 'Pakistan', 'Bangladesh',
+];
+
+// ─── Common Trades (for dropdown) ────────────────────────────────────────
+
+const COMMON_TRADES = [
+  'Mason', 'Electrician', 'Welder', 'Carpenter', 'Helper',
+  'Plumber', 'HVAC Technician', 'Steel Fixer', 'Painter',
+  'Crane Operator', 'Rigger', 'Scaffolder', 'Foreman',
+  'Driver', 'Mechanic', 'Laborer', 'Cleaner', 'Security Guard',
+  'Surveyor', 'Heavy Equipment Operator',
 ];
 
 // ─── Searchable Nationality Dropdown ─────────────────────────────────────
@@ -240,7 +256,7 @@ function SearchableNationalitySelect({
           <div className="max-h-56 overflow-y-auto">
             {filtered.length === 0 ? (
               <div className="px-3 py-4 text-center text-sm text-slate-500">
-                No matching nationalities. Press Enter to add "{search}".
+                No matching nationalities. Press Enter to add &quot;{search}&quot;.
               </div>
             ) : (
               filtered.map((nat) => (
@@ -265,7 +281,157 @@ function SearchableNationalitySelect({
                 className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left border-t border-slate-700 text-emerald-400 hover:bg-slate-700/50"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>Add "{search}" as custom nationality</span>
+                <span>Add &quot;{search}&quot; as custom nationality</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Searchable Trade Dropdown ───────────────────────────────────────────
+
+interface SearchableTradeSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function SearchableTradeSelect({
+  value,
+  onChange,
+}: SearchableTradeSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = search
+    ? COMMON_TRADES.filter((t) =>
+        t.toLowerCase().includes(search.toLowerCase())
+      )
+    : COMMON_TRADES;
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch('');
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (open && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+
+  const handleSelect = (trade: string) => {
+    onChange(trade);
+    setOpen(false);
+    setSearch('');
+  };
+
+  const handleCustomInput = () => {
+    if (search.trim()) {
+      onChange(search.trim());
+      setOpen(false);
+      setSearch('');
+    }
+  };
+
+  function cn(arg0: string, arg1: string): string {
+    return `${arg0} ${arg1}`;
+  }
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <div className="relative">
+        <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-2 w-full h-10 rounded-lg border border-slate-600 bg-slate-900 px-3 pl-10 text-sm text-white hover:bg-slate-800 transition-colors text-left"
+        >
+          <span className="truncate flex-1">{value || 'Select or type trade'}</span>
+          {value && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange('');
+              }}
+              className="text-slate-400 hover:text-white shrink-0"
+            >
+              <X className="h-3.5 w-3.5" />
+            </span>
+          )}
+        </button>
+      </div>
+
+      {open && (
+        <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 overflow-hidden">
+          <div className="p-2 border-b border-slate-700">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search trade or type custom..."
+                className="w-full h-8 pl-8 pr-3 bg-slate-900 border border-slate-600 rounded-md text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleCustomInput();
+                  }
+                }}
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-4 text-center text-sm text-slate-500">
+                No matching trades. Press Enter to add &quot;{search}&quot;.
+              </div>
+            ) : (
+              filtered.map((trade) => (
+                <button
+                  key={trade}
+                  type="button"
+                  onClick={() => handleSelect(trade)}
+                  className={cn(
+                    'flex items-center gap-2 w-full px-3 py-2 text-sm text-left transition-colors hover:bg-slate-700/50',
+                    value === trade ? 'bg-slate-700/70 text-white' : 'text-slate-300'
+                  )}
+                >
+                  <Briefcase className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  <span className="truncate">{trade}</span>
+                </button>
+              ))
+            )}
+            {search.trim() && !filtered.some(t => t.toLowerCase() === search.toLowerCase()) && (
+              <button
+                type="button"
+                onClick={handleCustomInput}
+                className="flex items-center gap-2 w-full px-3 py-2 text-sm text-left border-t border-slate-700 text-emerald-400 hover:bg-slate-700/50"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Add &quot;{search}&quot; as custom trade</span>
               </button>
             )}
           </div>
@@ -451,6 +617,14 @@ export function EmployeePage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [sites, setSites] = useState<Site[]>([]);
 
+  // Advanced filter state
+  const [tradeFilter, setTradeFilter] = useState<string>('all');
+  const [idleFilter, setIdleFilter] = useState(false);
+  const [teamLeaderFilter, setTeamLeaderFilter] = useState(false);
+  const [supervisorFilter, setSupervisorFilter] = useState(false);
+  const [siteFilter, setSiteFilter] = useState<string>('all');
+  const [trades, setTrades] = useState<string[]>([]);
+
   // Dialog states
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [formMode, setFormMode] = useState<'add' | 'edit'>('add');
@@ -475,6 +649,7 @@ export function EmployeePage() {
     address: '',
     emergencyContact: '',
     position: '',
+    trade: '',
     joinDate: '',
     companyName: '',
     passportNumber: '',
@@ -484,6 +659,8 @@ export function EmployeePage() {
     currentSite: '',
     isTeamLeader: false,
     teamLeaderSiteId: '',
+    isSupervisor: false,
+    supervisorSiteId: '',
   });
   const [formPhoto, setFormPhoto] = useState<string | null>(null);
   const [showNewSiteInput, setShowNewSiteInput] = useState(false);
@@ -492,6 +669,15 @@ export function EmployeePage() {
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Auto-activate idle filter from dashboard ──
+  useEffect(() => {
+    const idleFlag = localStorage.getItem('asm_idle_filter');
+    if (idleFlag === '1') {
+      setIdleFilter(true);
+      localStorage.removeItem('asm_idle_filter');
+    }
+  }, []);
 
   // ── Auto-generate employee ID ──
   const generateAutoId = useCallback(() => {
@@ -509,6 +695,11 @@ export function EmployeePage() {
       });
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (statusFilter && statusFilter !== 'all') params.set('status', statusFilter);
+      if (tradeFilter && tradeFilter !== 'all') params.set('trade', tradeFilter);
+      if (idleFilter) params.set('idle', '1');
+      if (teamLeaderFilter) params.set('teamLeaders', '1');
+      if (supervisorFilter) params.set('supervisors', '1');
+      if (siteFilter && siteFilter !== 'all') params.set('site', siteFilter);
 
       const res = await fetch(`/api/employees?${params}`);
       const json = await res.json();
@@ -516,13 +707,17 @@ export function EmployeePage() {
         setEmployees(json.data.employees);
         setTotal(json.data.total);
         setTotalPages(json.data.totalPages);
+        // Update trades list from API response
+        if (json.data.trades) {
+          setTrades(json.data.trades);
+        }
       }
     } catch {
       toast({ title: 'Error', description: 'Failed to fetch employees', variant: 'destructive' });
     } finally {
       setIsLoading(false);
     }
-  }, [page, debouncedSearch, statusFilter, toast]);
+  }, [page, debouncedSearch, statusFilter, tradeFilter, idleFilter, teamLeaderFilter, supervisorFilter, siteFilter, toast]);
 
   // ── Fetch Sites ──
   const fetchSites = useCallback(async () => {
@@ -563,13 +758,30 @@ export function EmployeePage() {
   // Reset page on filter change
   useEffect(() => {
     setPage(1);
-  }, [statusFilter]);
+  }, [statusFilter, tradeFilter, idleFilter, teamLeaderFilter, supervisorFilter, siteFilter]);
 
   // ── Handlers ──
+
+  const hasFilters = debouncedSearch || statusFilter !== 'all' || tradeFilter !== 'all' || idleFilter || teamLeaderFilter || supervisorFilter || siteFilter !== 'all';
+
+  const activeFilterCount = [
+    statusFilter !== 'all',
+    tradeFilter !== 'all',
+    idleFilter,
+    teamLeaderFilter,
+    supervisorFilter,
+    siteFilter !== 'all',
+    !!debouncedSearch,
+  ].filter(Boolean).length;
 
   const resetFilters = () => {
     setSearchQuery('');
     setStatusFilter('all');
+    setTradeFilter('all');
+    setIdleFilter(false);
+    setTeamLeaderFilter(false);
+    setSupervisorFilter(false);
+    setSiteFilter('all');
     setPage(1);
   };
 
@@ -587,6 +799,7 @@ export function EmployeePage() {
       address: '',
       emergencyContact: '',
       position: '',
+      trade: '',
       joinDate: '',
       companyName: '',
       passportNumber: '',
@@ -596,6 +809,8 @@ export function EmployeePage() {
       currentSite: '',
       isTeamLeader: false,
       teamLeaderSiteId: '',
+      isSupervisor: false,
+      supervisorSiteId: '',
     });
     setFormTab('personal');
     setShowNewSiteInput(false);
@@ -617,6 +832,7 @@ export function EmployeePage() {
       address: employee.address || '',
       emergencyContact: employee.emergencyContact || '',
       position: employee.position || '',
+      trade: employee.trade || employee.position || '',
       joinDate: employee.joinDate ? employee.joinDate.split('T')[0] : '',
       companyName: employee.companyName || '',
       passportNumber: employee.passportNumber || '',
@@ -626,6 +842,8 @@ export function EmployeePage() {
       currentSite: employee.currentSite || '',
       isTeamLeader: employee.isTeamLeader || false,
       teamLeaderSiteId: employee.teamLeaderSiteId || '',
+      isSupervisor: employee.isSupervisor || false,
+      supervisorSiteId: employee.supervisorSiteId || '',
     });
     setFormTab('personal');
     setShowNewSiteInput(false);
@@ -720,12 +938,17 @@ export function EmployeePage() {
       const payload: Record<string, unknown> = {
         ...formData,
         photo: formPhoto,
+        // Send trade as both trade and position for backward compat
+        trade: formData.trade || null,
+        position: formData.trade || null,
         isTeamLeader: formData.isTeamLeader,
         teamLeaderSiteId: formData.isTeamLeader ? (formData.teamLeaderSiteId || null) : null,
+        isSupervisor: formData.isSupervisor,
+        supervisorSiteId: formData.isSupervisor ? (formData.supervisorSiteId || null) : null,
       };
       // Clear empty strings (but keep booleans)
       Object.keys(payload).forEach((key) => {
-        if (payload[key] === '' && key !== 'isTeamLeader') payload[key] = null;
+        if (payload[key] === '' && key !== 'isTeamLeader' && key !== 'isSupervisor') payload[key] = null;
       });
 
       let res: Response;
@@ -817,8 +1040,6 @@ export function EmployeePage() {
       toast({ title: 'No Phone Number', description: 'This employee has no phone number on file.', variant: 'destructive' });
     }
   };
-
-  const hasFilters = debouncedSearch || statusFilter !== 'all';
 
   // ── Pagination ──
   const renderPagination = () => {
@@ -930,12 +1151,13 @@ export function EmployeePage() {
 
       {/* Search & Filters */}
       <Card className="bg-slate-800 border-slate-700 rounded-xl">
-        <CardContent className="p-4">
+        <CardContent className="p-4 space-y-3">
+          {/* Search row */}
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
               <Input
-                placeholder="Search by name, ID, nationality, phone, position..."
+                placeholder="Search by name, ID, nationality, phone, trade..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10 bg-slate-900 border-slate-600 text-white placeholder:text-slate-500 h-9"
@@ -949,9 +1171,9 @@ export function EmployeePage() {
                 </button>
               )}
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[160px] bg-slate-900 border-slate-600 text-white h-9">
+                <SelectTrigger className="w-[150px] bg-slate-900 border-slate-600 text-white h-9">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-800 border-slate-700">
@@ -960,18 +1182,161 @@ export function EmployeePage() {
                   <SelectItem value="pending_deletion">Pending Deletion</SelectItem>
                 </SelectContent>
               </Select>
-              {hasFilters && (
-                <Button
-                  variant="ghost"
-                  onClick={resetFilters}
-                  className="h-9 text-slate-400 hover:text-white hover:bg-slate-700 gap-1.5"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  Reset
-                </Button>
-              )}
+              <Select value={tradeFilter} onValueChange={setTradeFilter}>
+                <SelectTrigger className="w-[150px] bg-slate-900 border-slate-600 text-white h-9">
+                  <SelectValue placeholder="Trade" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  <SelectItem value="all">All Trades</SelectItem>
+                  {trades.map((t) => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={siteFilter} onValueChange={setSiteFilter}>
+                <SelectTrigger className="w-[150px] bg-slate-900 border-slate-600 text-white h-9">
+                  <SelectValue placeholder="Site" />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  <SelectItem value="all">All Sites</SelectItem>
+                  {sites.map((s) => (
+                    <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
+
+          {/* Toggle filters row */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant={idleFilter ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setIdleFilter(!idleFilter)}
+              className={
+                idleFilter
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/40 hover:bg-amber-500/30 h-8 gap-1.5'
+                  : 'border-slate-600 text-slate-400 hover:text-white hover:bg-slate-700 h-8 gap-1.5'
+              }
+            >
+              <UserX className="h-3.5 w-3.5" />
+              Idle Workers
+            </Button>
+            <Button
+              variant={teamLeaderFilter ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setTeamLeaderFilter(!teamLeaderFilter)}
+              className={
+                teamLeaderFilter
+                  ? 'bg-amber-500/20 text-amber-400 border-amber-500/40 hover:bg-amber-500/30 h-8 gap-1.5'
+                  : 'border-slate-600 text-slate-400 hover:text-white hover:bg-slate-700 h-8 gap-1.5'
+              }
+            >
+              <Crown className="h-3.5 w-3.5" />
+              Team Leaders
+            </Button>
+            <Button
+              variant={supervisorFilter ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSupervisorFilter(!supervisorFilter)}
+              className={
+                supervisorFilter
+                  ? 'bg-violet-500/20 text-violet-400 border-violet-500/40 hover:bg-violet-500/30 h-8 gap-1.5'
+                  : 'border-slate-600 text-slate-400 hover:text-white hover:bg-slate-700 h-8 gap-1.5'
+              }
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Supervisors
+            </Button>
+
+            {hasFilters && (
+              <Button
+                variant="ghost"
+                onClick={resetFilters}
+                className="h-8 text-slate-400 hover:text-white hover:bg-slate-700 gap-1.5 ml-auto"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Clear All Filters
+              </Button>
+            )}
+          </div>
+
+          {/* Active filter chips */}
+          {activeFilterCount > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <Filter className="h-3.5 w-3.5 text-slate-500 mr-1" />
+              {statusFilter !== 'all' && (
+                <Badge
+                  variant="outline"
+                  className="bg-slate-900/50 border-slate-600 text-slate-300 gap-1 cursor-pointer hover:bg-slate-700/50"
+                  onClick={() => setStatusFilter('all')}
+                >
+                  Status: {statusFilter === 'active' ? 'Active' : 'Pending Deletion'}
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+              {tradeFilter !== 'all' && (
+                <Badge
+                  variant="outline"
+                  className="bg-slate-900/50 border-slate-600 text-slate-300 gap-1 cursor-pointer hover:bg-slate-700/50"
+                  onClick={() => setTradeFilter('all')}
+                >
+                  Trade: {tradeFilter}
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+              {idleFilter && (
+                <Badge
+                  variant="outline"
+                  className="bg-amber-500/10 border-amber-500/30 text-amber-400 gap-1 cursor-pointer hover:bg-amber-500/20"
+                  onClick={() => setIdleFilter(false)}
+                >
+                  Idle Workers
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+              {teamLeaderFilter && (
+                <Badge
+                  variant="outline"
+                  className="bg-amber-500/10 border-amber-500/30 text-amber-400 gap-1 cursor-pointer hover:bg-amber-500/20"
+                  onClick={() => setTeamLeaderFilter(false)}
+                >
+                  Team Leaders
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+              {supervisorFilter && (
+                <Badge
+                  variant="outline"
+                  className="bg-violet-500/10 border-violet-500/30 text-violet-400 gap-1 cursor-pointer hover:bg-violet-500/20"
+                  onClick={() => setSupervisorFilter(false)}
+                >
+                  Supervisors
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+              {siteFilter !== 'all' && (
+                <Badge
+                  variant="outline"
+                  className="bg-slate-900/50 border-slate-600 text-slate-300 gap-1 cursor-pointer hover:bg-slate-700/50"
+                  onClick={() => setSiteFilter('all')}
+                >
+                  Site: {siteFilter}
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+              {debouncedSearch && (
+                <Badge
+                  variant="outline"
+                  className="bg-slate-900/50 border-slate-600 text-slate-300 gap-1 cursor-pointer hover:bg-slate-700/50"
+                  onClick={() => { setSearchQuery(''); setDebouncedSearch(''); }}
+                >
+                  Search: {debouncedSearch}
+                  <X className="h-3 w-3" />
+                </Badge>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -990,7 +1355,7 @@ export function EmployeePage() {
                   <TableRow className="border-slate-700/50 hover:bg-transparent">
                     <TableHead className="text-slate-400 font-medium">Employee</TableHead>
                     <TableHead className="text-slate-400 font-medium">Employee ID</TableHead>
-                    <TableHead className="text-slate-400 font-medium">Position</TableHead>
+                    <TableHead className="text-slate-400 font-medium">Trade</TableHead>
                     <TableHead className="text-slate-400 font-medium">Site</TableHead>
                     <TableHead className="text-slate-400 font-medium">Rating</TableHead>
                     <TableHead className="text-slate-400 font-medium">Status</TableHead>
@@ -1016,6 +1381,12 @@ export function EmployeePage() {
                                   Team Leader
                                 </Badge>
                               )}
+                              {emp.isSupervisor && (
+                                <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 text-[10px] px-1.5 py-0 shrink-0">
+                                  <ShieldCheck className="h-2.5 w-2.5 mr-0.5" />
+                                  Supervisor
+                                </Badge>
+                              )}
                             </div>
                             {emp.nationality && (
                               <p className="text-xs text-slate-500">{emp.nationality}</p>
@@ -1026,6 +1397,12 @@ export function EmployeePage() {
                                 <p className="text-[10px] text-amber-400/70">Leads: {leadSite.name}</p>
                               ) : null;
                             })()}
+                            {emp.isSupervisor && emp.supervisorSiteId && (() => {
+                              const supSite = sites.find(s => s.id === emp.supervisorSiteId);
+                              return supSite ? (
+                                <p className="text-[10px] text-violet-400/70">Supervises: {supSite.name}</p>
+                              ) : null;
+                            })()}
                           </div>
                         </div>
                       </TableCell>
@@ -1033,7 +1410,7 @@ export function EmployeePage() {
                         <span className="text-sm text-slate-300 font-mono">{emp.employeeId}</span>
                       </TableCell>
                       <TableCell>
-                        <span className="text-sm text-slate-300">{emp.position || '—'}</span>
+                        <span className="text-sm text-slate-300">{emp.trade || emp.position || '—'}</span>
                       </TableCell>
                       <TableCell>
                         {emp.currentSite === 'Idle' ? (
@@ -1112,6 +1489,12 @@ export function EmployeePage() {
                               Team Leader
                             </Badge>
                           )}
+                          {emp.isSupervisor && (
+                            <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 text-[10px] px-1.5 py-0 shrink-0">
+                              <ShieldCheck className="h-2.5 w-2.5 mr-0.5" />
+                              Supervisor
+                            </Badge>
+                          )}
                         </div>
                         <p className="text-xs text-slate-500 font-mono">{emp.employeeId}</p>
                         {emp.isTeamLeader && emp.teamLeaderSiteId && (() => {
@@ -1120,14 +1503,20 @@ export function EmployeePage() {
                             <p className="text-[10px] text-amber-400/70">Leads: {leadSite.name}</p>
                           ) : null;
                         })()}
+                        {emp.isSupervisor && emp.supervisorSiteId && (() => {
+                          const supSite = sites.find(s => s.id === emp.supervisorSiteId);
+                          return supSite ? (
+                            <p className="text-[10px] text-violet-400/70">Supervises: {supSite.name}</p>
+                          ) : null;
+                        })()}
                       </div>
                     </div>
                     <StatusBadge status={emp.status} />
                   </div>
                   <div className="grid grid-cols-2 gap-2 mb-3">
                     <div>
-                      <p className="text-xs text-slate-500">Position</p>
-                      <p className="text-sm text-slate-300">{emp.position || '—'}</p>
+                      <p className="text-xs text-slate-500">Trade</p>
+                      <p className="text-sm text-slate-300">{emp.trade || emp.position || '—'}</p>
                     </div>
                     <div>
                       <p className="text-xs text-slate-500">Site</p>
@@ -1207,7 +1596,7 @@ export function EmployeePage() {
               </TabsTrigger>
               <TabsTrigger value="professional" className="flex-1 data-[state=active]:bg-slate-700 data-[state=active]:text-white text-slate-400">
                 <Briefcase className="h-3.5 w-3.5 mr-1.5" />
-                Professional
+                Work
               </TabsTrigger>
             </TabsList>
 
@@ -1389,16 +1778,14 @@ export function EmployeePage() {
                 </div>
               </TabsContent>
 
-              {/* Professional Details Tab */}
+              {/* Professional / Work Details Tab */}
               <TabsContent value="professional" className="space-y-4 pb-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label className="text-slate-300 text-sm">Position</Label>
-                    <Input
-                      placeholder="e.g. Electrician, Plumber"
-                      value={formData.position}
-                      onChange={(e) => handleFormChange('position', e.target.value)}
-                      className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500"
+                    <Label className="text-slate-300 text-sm">Trade</Label>
+                    <SearchableTradeSelect
+                      value={formData.trade}
+                      onChange={(val) => handleFormChange('trade', val)}
                     />
                   </div>
 
@@ -1541,6 +1928,56 @@ export function EmployeePage() {
 
                 <Separator className="bg-slate-700/50" />
 
+                {/* Supervisor Section */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-slate-300 flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-violet-400" />
+                    Supervisor
+                  </h4>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-slate-900/50 border border-slate-700/50">
+                    <div>
+                      <Label className="text-slate-300 text-sm">Supervisor</Label>
+                      <p className="text-xs text-slate-500">Designate this employee as a supervisor</p>
+                    </div>
+                    <Switch
+                      checked={formData.isSupervisor}
+                      onCheckedChange={(checked) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          isSupervisor: checked,
+                          supervisorSiteId: checked ? prev.supervisorSiteId : '',
+                        }));
+                      }}
+                    />
+                  </div>
+                  {formData.isSupervisor && (
+                    <div className="space-y-2">
+                      <Label className="text-slate-300 text-sm">Supervise Site</Label>
+                      <Select
+                        value={formData.supervisorSiteId || '__none__'}
+                        onValueChange={(v) => {
+                          handleFormChange('supervisorSiteId', v === '__none__' ? '' : v);
+                        }}
+                      >
+                        <SelectTrigger className="bg-slate-900 border-slate-600 text-white w-full">
+                          <SelectValue placeholder="Select which site they supervise" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-800 border-slate-700">
+                          <SelectItem value="__none__">
+                            <span className="text-slate-500">No specific site</span>
+                          </SelectItem>
+                          {sites.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-slate-500">Select the site this employee supervises.</p>
+                    </div>
+                  )}
+                </div>
+
+                <Separator className="bg-slate-700/50" />
+
                 <div className="space-y-3">
                   <h4 className="text-sm font-medium text-slate-300 flex items-center gap-2">
                     <FileText className="h-4 w-4" />
@@ -1601,7 +2038,7 @@ export function EmployeePage() {
                           <SelectItem value="N/A">
                             <span className="text-slate-400">N/A</span>
                           </SelectItem>
-                        </SelectContent>
+                          </SelectContent>
                       </Select>
                     </div>
                   </div>
@@ -1704,6 +2141,12 @@ export function EmployeePage() {
                             Team Leader
                           </Badge>
                         )}
+                        {viewingEmployee.isSupervisor && (
+                          <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 text-[10px] px-1.5 py-0 shrink-0">
+                            <ShieldCheck className="h-2.5 w-2.5 mr-0.5" />
+                            Supervisor
+                          </Badge>
+                        )}
                       </div>
                       <p className="text-sm text-slate-400 font-mono">{viewingEmployee.employeeId}</p>
                       <div className="mt-1">
@@ -1781,7 +2224,7 @@ export function EmployeePage() {
                     </h4>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {[
-                        { icon: Briefcase, label: 'Position', value: viewingEmployee.position },
+                        { icon: Briefcase, label: 'Trade', value: viewingEmployee.trade || viewingEmployee.position },
                         { icon: Calendar, label: 'Join Date', value: viewingEmployee.joinDate ? new Date(viewingEmployee.joinDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : null },
                         { icon: Building2, label: 'Company', value: viewingEmployee.companyName },
                         { icon: Building2, label: 'Current Site', value: viewingEmployee.currentSite, special: viewingEmployee.currentSite === 'Idle' ? 'amber' : undefined },
@@ -1822,6 +2265,33 @@ export function EmployeePage() {
                               })()}
                             </p>
                             <p className="text-xs text-amber-400/60">This employee is designated as a team leader</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Supervisor Status */}
+                  {viewingEmployee.isSupervisor && (
+                    <div>
+                      <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                        <ShieldCheck className="h-4 w-4 text-violet-400" />
+                        Supervisor
+                      </h4>
+                      <div className="p-4 rounded-lg bg-violet-500/5 border border-violet-500/20">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-500/15">
+                            <ShieldCheck className="h-5 w-5 text-violet-400" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-violet-300">
+                              Supervisor
+                              {viewingEmployee.supervisorSiteId && (() => {
+                                const supSite = sites.find(s => s.id === viewingEmployee.supervisorSiteId);
+                                return supSite ? ` of ${supSite.name}` : '';
+                              })()}
+                            </p>
+                            <p className="text-xs text-violet-400/60">This employee is designated as a supervisor</p>
                           </div>
                         </div>
                       </div>

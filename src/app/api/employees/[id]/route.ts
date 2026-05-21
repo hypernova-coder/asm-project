@@ -97,7 +97,7 @@ export async function PUT(
 
     const updatableFields = [
       'fullName', 'nationality', 'phone', 'email', 'address',
-      'emergencyContact', 'position', 'companyName', 'passportStatus',
+      'emergencyContact', 'position', 'trade', 'companyName', 'passportStatus',
       'idStatus', 'currentSite', 'photo', 'status',
     ];
 
@@ -105,6 +105,12 @@ export async function PUT(
       if (body[field] !== undefined) {
         data[field] = body[field];
       }
+    }
+
+    // Sync trade to position for backward compat
+    if (body.trade !== undefined) {
+      data.trade = body.trade;
+      data.position = body.trade; // Keep position in sync
     }
 
     if (body.dateOfBirth) {
@@ -133,7 +139,7 @@ export async function PUT(
           });
           if (existingLeader) {
             return NextResponse.json(
-              { success: false, error: `Another employee (${existingLeader.fullName}) is already team leader of this site. Remove them first.` },
+              { success: false, error: `Another employee (${existingLeader.fullName}) is already team leader of this site.`, existingLeader: { id: existingLeader.id, fullName: existingLeader.fullName } },
               { status: 409 }
             );
           }
@@ -141,13 +147,78 @@ export async function PUT(
         data.isTeamLeader = true;
         data.teamLeaderSiteId = teamLeaderSiteId;
       } else {
-        // Setting isTeamLeader to false — clear teamLeaderSiteId as well
         data.isTeamLeader = false;
         data.teamLeaderSiteId = null;
       }
     } else if (body.teamLeaderSiteId !== undefined) {
-      // Only updating the site assignment without changing isTeamLeader flag
       data.teamLeaderSiteId = body.teamLeaderSiteId || null;
+    }
+
+    // Handle supervisor fields
+    if (body.isSupervisor !== undefined) {
+      if (body.isSupervisor === true) {
+        const supervisorSiteId = body.supervisorSiteId || null;
+        if (supervisorSiteId) {
+          // Check if another employee is already supervisor of this site
+          const existingSupervisor = await db.employee.findFirst({
+            where: {
+              isSupervisor: true,
+              supervisorSiteId,
+              id: { not: id },
+              status: { not: 'deleted' },
+            },
+          });
+          if (existingSupervisor) {
+            return NextResponse.json(
+              { success: false, error: `Another employee (${existingSupervisor.fullName}) is already supervisor of this site.`, existingSupervisor: { id: existingSupervisor.id, fullName: existingSupervisor.fullName } },
+              { status: 409 }
+            );
+          }
+        }
+        data.isSupervisor = true;
+        data.supervisorSiteId = supervisorSiteId;
+      } else {
+        data.isSupervisor = false;
+        data.supervisorSiteId = null;
+      }
+    } else if (body.supervisorSiteId !== undefined) {
+      data.supervisorSiteId = body.supervisorSiteId || null;
+    }
+
+    // Handle force replace for team leader
+    if (body.forceReplaceTeamLeader && body.teamLeaderSiteId) {
+      // Remove existing team leader of this site
+      await db.employee.updateMany({
+        where: {
+          isTeamLeader: true,
+          teamLeaderSiteId: body.teamLeaderSiteId,
+          id: { not: id },
+        },
+        data: {
+          isTeamLeader: false,
+          teamLeaderSiteId: null,
+        },
+      });
+      data.isTeamLeader = true;
+      data.teamLeaderSiteId = body.teamLeaderSiteId;
+    }
+
+    // Handle force replace for supervisor
+    if (body.forceReplaceSupervisor && body.supervisorSiteId) {
+      // Remove existing supervisor of this site
+      await db.employee.updateMany({
+        where: {
+          isSupervisor: true,
+          supervisorSiteId: body.supervisorSiteId,
+          id: { not: id },
+        },
+        data: {
+          isSupervisor: false,
+          supervisorSiteId: null,
+        },
+      });
+      data.isSupervisor = true;
+      data.supervisorSiteId = body.supervisorSiteId;
     }
 
     // Encrypt sensitive fields

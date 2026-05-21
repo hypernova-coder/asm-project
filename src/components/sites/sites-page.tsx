@@ -18,9 +18,11 @@ import {
   X,
   Loader2,
   Crown,
+  ShieldCheck,
   FileSpreadsheet,
   Power,
   PowerOff,
+  MoreHorizontal,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -62,6 +64,24 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { AttendanceSheet } from '@/components/attendance/attendance-sheet';
@@ -89,6 +109,9 @@ interface SiteEmployee {
   photo: string | null;
   isTeamLeader: boolean;
   teamLeaderSiteId: string | null;
+  isSupervisor: boolean;
+  supervisorSiteId: string | null;
+  trade: string | null;
 }
 
 interface AllEmployee {
@@ -99,6 +122,7 @@ interface AllEmployee {
   nationality: string | null;
   currentSite: string | null;
   status: string;
+  trade: string | null;
 }
 
 type SubView = 'list' | 'employees';
@@ -346,7 +370,8 @@ function AddEmployeeCombobox({
       (e) =>
         e.fullName.toLowerCase().includes(q) ||
         e.employeeId.toLowerCase().includes(q) ||
-        (e.position && e.position.toLowerCase().includes(q))
+        (e.position && e.position.toLowerCase().includes(q)) ||
+        (e.trade && e.trade.toLowerCase().includes(q))
     );
   }, [allEmployees, filter]);
 
@@ -420,7 +445,7 @@ function AddEmployeeCombobox({
                       </div>
                       <span className="text-[11px] text-slate-500">
                         {emp.employeeId}
-                        {emp.position ? ` · ${emp.position}` : ''}
+                        {emp.trade ? ` · ${emp.trade}` : emp.position ? ` · ${emp.position}` : ''}
                       </span>
                     </div>
                   </CommandItem>
@@ -479,6 +504,19 @@ export function SitesPage() {
 
   // Attendance sheet state
   const [attendanceSite, setAttendanceSite] = useState<Site | null>(null);
+
+  // Team Leader / Supervisor assignment confirmation
+  const [replaceTLDialog, setReplaceTLDialog] = useState<{
+    open: boolean;
+    emp: SiteEmployee | null;
+    existingTL: { id: string; fullName: string } | null;
+  }>({ open: false, emp: null, existingTL: null });
+  const [replaceSupervisorDialog, setReplaceSupervisorDialog] = useState<{
+    open: boolean;
+    emp: SiteEmployee | null;
+    existingSupervisor: { id: string; fullName: string } | null;
+  }>({ open: false, emp: null, existingSupervisor: null });
+  const [assignLoading, setAssignLoading] = useState(false);
 
   /* ── Fetch sites ── */
   const fetchSites = useCallback(async () => {
@@ -539,6 +577,7 @@ export function SitesPage() {
             nationality: e.nationality,
             currentSite: e.currentSite,
             status: e.status,
+            trade: e.trade,
           }))
         );
       }
@@ -702,12 +741,14 @@ export function SitesPage() {
         Array.from(selectedEmps).map(async (id) => {
           const emp = siteEmployees.find(e => e.id === id);
           const isTeamLeaderOfSite = emp?.isTeamLeader && emp?.currentSite === viewSite?.name;
+          const isSupervisorOfSite = emp?.isSupervisor && emp?.currentSite === viewSite?.name;
           await fetch(`/api/employees/${id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               currentSite: null,
               ...(isTeamLeaderOfSite ? { isTeamLeader: false, teamLeaderSiteId: null } : {}),
+              ...(isSupervisorOfSite ? { isSupervisor: false, supervisorSiteId: null } : {}),
             }),
           });
         })
@@ -759,6 +800,162 @@ export function SitesPage() {
     }
   }, [viewSite, fetchSiteEmployees, fetchAllEmployees, fetchSites]);
 
+  /* ── Assign Team Leader ── */
+  const handleAssignTeamLeader = useCallback(async (emp: SiteEmployee, forceReplace = false) => {
+    if (!viewSite) return;
+    try {
+      setAssignLoading(true);
+      const body: Record<string, unknown> = {
+        isTeamLeader: true,
+        teamLeaderSiteId: viewSite.id,
+      };
+      if (forceReplace) {
+        body.forceReplaceTeamLeader = true;
+      }
+      const res = await fetch(`/api/employees/${emp.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (res.status === 409 && json.existingLeader) {
+        // Conflict: another team leader exists, show confirmation dialog
+        setReplaceTLDialog({
+          open: true,
+          emp,
+          existingTL: json.existingLeader,
+        });
+        return;
+      }
+      if (json.success) {
+        toast({
+          title: 'Team Leader Assigned',
+          description: `${emp.fullName} has been assigned as Team Leader for ${viewSite.name}.`,
+        });
+        fetchSiteEmployees(viewSite.name);
+        fetchAllEmployees();
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to assign Team Leader', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to assign Team Leader', variant: 'destructive' });
+    } finally {
+      setAssignLoading(false);
+    }
+  }, [viewSite, fetchSiteEmployees, fetchAllEmployees]);
+
+  /* ── Confirm Replace Team Leader ── */
+  const handleConfirmReplaceTL = useCallback(async () => {
+    const { emp } = replaceTLDialog;
+    if (!emp || !viewSite) return;
+    try {
+      setAssignLoading(true);
+      const res = await fetch(`/api/employees/${emp.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          isTeamLeader: true,
+          teamLeaderSiteId: viewSite.id,
+          forceReplaceTeamLeader: true,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        toast({
+          title: 'Team Leader Replaced',
+          description: `${emp.fullName} has been assigned as the new Team Leader for ${viewSite.name}.`,
+        });
+        fetchSiteEmployees(viewSite.name);
+        fetchAllEmployees();
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to replace Team Leader', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to replace Team Leader', variant: 'destructive' });
+    } finally {
+      setAssignLoading(false);
+      setReplaceTLDialog({ open: false, emp: null, existingTL: null });
+    }
+  }, [replaceTLDialog, viewSite, fetchSiteEmployees, fetchAllEmployees]);
+
+  /* ── Assign Supervisor ── */
+  const handleAssignSupervisor = useCallback(async (emp: SiteEmployee, forceReplace = false) => {
+    if (!viewSite) return;
+    try {
+      setAssignLoading(true);
+      const body: Record<string, unknown> = {
+        isSupervisor: true,
+        supervisorSiteId: viewSite.id,
+      };
+      if (forceReplace) {
+        body.forceReplaceSupervisor = true;
+      }
+      const res = await fetch(`/api/employees/${emp.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (res.status === 409 && json.existingSupervisor) {
+        // Conflict: another supervisor exists, show confirmation dialog
+        setReplaceSupervisorDialog({
+          open: true,
+          emp,
+          existingSupervisor: json.existingSupervisor,
+        });
+        return;
+      }
+      if (json.success) {
+        toast({
+          title: 'Supervisor Assigned',
+          description: `${emp.fullName} has been assigned as Supervisor for ${viewSite.name}.`,
+        });
+        fetchSiteEmployees(viewSite.name);
+        fetchAllEmployees();
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to assign Supervisor', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to assign Supervisor', variant: 'destructive' });
+    } finally {
+      setAssignLoading(false);
+    }
+  }, [viewSite, fetchSiteEmployees, fetchAllEmployees]);
+
+  /* ── Confirm Replace Supervisor ── */
+  const handleConfirmReplaceSupervisor = useCallback(async () => {
+    const { emp } = replaceSupervisorDialog;
+    if (!emp || !viewSite) return;
+    try {
+      setAssignLoading(true);
+      const res = await fetch(`/api/employees/${emp.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          isSupervisor: true,
+          supervisorSiteId: viewSite.id,
+          forceReplaceSupervisor: true,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        toast({
+          title: 'Supervisor Replaced',
+          description: `${emp.fullName} has been assigned as the new Supervisor for ${viewSite.name}.`,
+        });
+        fetchSiteEmployees(viewSite.name);
+        fetchAllEmployees();
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to replace Supervisor', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to replace Supervisor', variant: 'destructive' });
+    } finally {
+      setAssignLoading(false);
+      setReplaceSupervisorDialog({ open: false, emp: null, existingSupervisor: null });
+    }
+  }, [replaceSupervisorDialog, viewSite, fetchSiteEmployees, fetchAllEmployees]);
+
   /* ── Toggle select ── */
   const toggleSelectEmp = useCallback((id: string) => {
     setSelectedEmps((prev) => {
@@ -778,16 +975,22 @@ export function SitesPage() {
         e.fullName.toLowerCase().includes(q) ||
         e.employeeId.toLowerCase().includes(q) ||
         (e.position && e.position.toLowerCase().includes(q)) ||
+        (e.trade && e.trade.toLowerCase().includes(q)) ||
         (e.nationality && e.nationality.toLowerCase().includes(q))
       );
     });
-    // Sort: team leaders of the current site first
+    // Sort: team leaders of the current site first, then supervisors, then rest
     const siteName = viewSite?.name;
     return filtered.sort((a, b) => {
       const aIsLeader = a.isTeamLeader && a.currentSite === siteName;
       const bIsLeader = b.isTeamLeader && b.currentSite === siteName;
+      const aIsSupervisor = a.isSupervisor && a.currentSite === siteName;
+      const bIsSupervisor = b.isSupervisor && b.currentSite === siteName;
+
       if (aIsLeader && !bIsLeader) return -1;
       if (!aIsLeader && bIsLeader) return 1;
+      if (aIsSupervisor && !bIsSupervisor) return -1;
+      if (!aIsSupervisor && bIsSupervisor) return 1;
       return 0;
     });
   }, [siteEmployees, empSearch, viewSite]);
@@ -828,6 +1031,17 @@ export function SitesPage() {
       setLoadingAttendanceEmps(false);
     }
   }, []);
+
+  // Current site's team leader and supervisor
+  const currentTeamLeader = useMemo(() => {
+    if (!viewSite) return null;
+    return siteEmployees.find((e) => e.isTeamLeader && e.currentSite === viewSite.name) || null;
+  }, [siteEmployees, viewSite]);
+
+  const currentSupervisor = useMemo(() => {
+    if (!viewSite) return null;
+    return siteEmployees.find((e) => e.isSupervisor && e.currentSite === viewSite.name) || null;
+  }, [siteEmployees, viewSite]);
 
   // If attendance sheet is open, render it
   if (attendanceSite) {
@@ -964,21 +1178,25 @@ export function SitesPage() {
                     {siteEmployees.length} {siteEmployees.length === 1 ? 'employee' : 'employees'}
                   </Badge>
                 </div>
-                {(() => {
-                  const leader = siteEmployees.find(
-                    (e) => e.isTeamLeader && e.currentSite === viewSite.name
-                  );
-                  return leader ? (
-                    <div className="flex items-center gap-1.5 mt-1">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 mt-1">
+                  {currentTeamLeader ? (
+                    <div className="flex items-center gap-1.5">
                       <Crown className="h-3.5 w-3.5 text-amber-400" />
-                      <span className="text-sm text-amber-400 font-medium">Team Leader: {leader.fullName}</span>
+                      <span className="text-sm text-amber-400 font-medium">Team Leader: {currentTeamLeader.fullName}</span>
                     </div>
-                  ) : (
-                    <p className="text-sm text-slate-500 mt-0.5">
+                  ) : null}
+                  {currentSupervisor ? (
+                    <div className="flex items-center gap-1.5">
+                      <ShieldCheck className="h-3.5 w-3.5 text-violet-400" />
+                      <span className="text-sm text-violet-400 font-medium">Supervisor: {currentSupervisor.fullName}</span>
+                    </div>
+                  ) : null}
+                  {!currentTeamLeader && !currentSupervisor && (
+                    <p className="text-sm text-slate-500">
                       Created {new Date(viewSite.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
                     </p>
-                  );
-                })()}
+                  )}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1050,72 +1268,133 @@ export function SitesPage() {
                         </TableHead>
                         <TableHead className="text-slate-400 font-semibold">Employee</TableHead>
                         <TableHead className="text-slate-400 font-semibold">ID</TableHead>
-                        <TableHead className="text-slate-400 font-semibold">Position</TableHead>
+                        <TableHead className="text-slate-400 font-semibold">Trade</TableHead>
                         <TableHead className="text-slate-400 font-semibold">Rating</TableHead>
                         <TableHead className="text-slate-400 font-semibold text-center">Status</TableHead>
+                        <TableHead className="text-slate-400 font-semibold w-10" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredEmployees.map((emp) => (
-                        <TableRow
-                          key={emp.id}
-                          className="border-slate-700/50 hover:bg-slate-700/30"
-                        >
-                          <TableCell>
-                            <Checkbox
-                              checked={selectedEmps.has(emp.id)}
-                              onCheckedChange={() => toggleSelectEmp(emp.id)}
-                              className="border-slate-600 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-3">
-                              {emp.photo ? (
-                                <img
-                                  src={emp.photo}
-                                  alt={emp.fullName}
-                                  className="h-8 w-8 rounded-full object-cover border border-slate-600"
-                                />
-                              ) : (
-                                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-xs font-medium text-slate-300 border border-slate-600">
-                                  {emp.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)}
-                                </div>
-                              )}
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <p className="text-sm font-medium text-white truncate">{emp.fullName}</p>
-                                  {emp.isTeamLeader && emp.currentSite === viewSite.name && (
-                                    <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/25 text-[10px] px-1.5 py-0 shrink-0 gap-0.5"><Crown className="h-2.5 w-2.5" /> Team Leader</Badge>
+                      {filteredEmployees.map((emp) => {
+                        const isTL = emp.isTeamLeader && emp.currentSite === viewSite.name;
+                        const isSupervisor = emp.isSupervisor && emp.currentSite === viewSite.name;
+
+                        return (
+                          <TableRow
+                            key={emp.id}
+                            className={cn(
+                              "border-slate-700/50 hover:bg-slate-700/30",
+                              isTL && "bg-amber-500/[0.03]",
+                              !isTL && isSupervisor && "bg-violet-500/[0.03]"
+                            )}
+                          >
+                            <TableCell>
+                              <Checkbox
+                                checked={selectedEmps.has(emp.id)}
+                                onCheckedChange={() => toggleSelectEmp(emp.id)}
+                                className="border-slate-600 data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-3">
+                                {emp.photo ? (
+                                  <img
+                                    src={emp.photo}
+                                    alt={emp.fullName}
+                                    className="h-8 w-8 rounded-full object-cover border border-slate-600"
+                                  />
+                                ) : (
+                                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-xs font-medium text-slate-300 border border-slate-600">
+                                    {emp.fullName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2)}
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <p className="text-sm font-medium text-white truncate">{emp.fullName}</p>
+                                    {isTL && (
+                                      <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/25 text-[10px] px-1.5 py-0 shrink-0 gap-0.5">
+                                        <Crown className="h-2.5 w-2.5" /> Team Leader
+                                      </Badge>
+                                    )}
+                                    {isSupervisor && (
+                                      <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 text-[10px] px-1.5 py-0 shrink-0 gap-0.5">
+                                        <ShieldCheck className="h-2.5 w-2.5" /> Supervisor
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  {emp.nationality && (
+                                    <p className="text-xs text-slate-500">{emp.nationality}</p>
                                   )}
                                 </div>
-                                {emp.nationality && (
-                                  <p className="text-xs text-slate-500">{emp.nationality}</p>
-                                )}
                               </div>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-slate-300 text-sm font-mono">{emp.employeeId}</TableCell>
-                          <TableCell className="text-slate-300 text-sm">
-                            {emp.position || <span className="text-slate-600">—</span>}
-                          </TableCell>
-                          <TableCell>
-                            <StarRating rating={emp.rating} />
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <Badge
-                              className={`text-xs ${
-                                emp.status === 'active'
-                                  ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                                  : emp.status === 'pending_deletion'
-                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                  : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
-                              }`}
-                            >
-                              {emp.status === 'pending_deletion' ? 'Pending' : emp.status}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                            </TableCell>
+                            <TableCell className="text-slate-300 text-sm font-mono">{emp.employeeId}</TableCell>
+                            <TableCell className="text-slate-300 text-sm">
+                              {emp.trade || emp.position || <span className="text-slate-600">&mdash;</span>}
+                            </TableCell>
+                            <TableCell>
+                              <StarRating rating={emp.rating} />
+                            </TableCell>
+                            <TableCell className="text-center">
+                              <Badge
+                                className={`text-xs ${
+                                  emp.status === 'active'
+                                    ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                                    : emp.status === 'pending_deletion'
+                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                    : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                                }`}
+                              >
+                                {emp.status === 'pending_deletion' ? 'Pending' : emp.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-slate-500 hover:text-white hover:bg-slate-700"
+                                    disabled={assignLoading}
+                                  >
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent className="bg-slate-800 border-slate-700" align="end">
+                                  <DropdownMenuLabel className="text-slate-400 text-xs">
+                                    Assign Role
+                                  </DropdownMenuLabel>
+                                  {!isTL && (
+                                    <DropdownMenuItem
+                                      className="text-amber-400 focus:text-amber-300 focus:bg-amber-500/10 cursor-pointer"
+                                      onClick={() => handleAssignTeamLeader(emp)}
+                                      disabled={assignLoading}
+                                    >
+                                      <Crown className="h-4 w-4" />
+                                      Assign as Team Leader
+                                    </DropdownMenuItem>
+                                  )}
+                                  {!isSupervisor && (
+                                    <DropdownMenuItem
+                                      className="text-violet-400 focus:text-violet-300 focus:bg-violet-500/10 cursor-pointer"
+                                      onClick={() => handleAssignSupervisor(emp)}
+                                      disabled={assignLoading}
+                                    >
+                                      <ShieldCheck className="h-4 w-4" />
+                                      Assign as Supervisor
+                                    </DropdownMenuItem>
+                                  )}
+                                  {isTL && isSupervisor && (
+                                    <DropdownMenuItem disabled className="text-slate-500">
+                                      Already assigned both roles
+                                    </DropdownMenuItem>
+                                  )}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -1307,6 +1586,66 @@ export function SitesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Replace Team Leader Confirmation */}
+      <AlertDialog
+        open={replaceTLDialog.open}
+        onOpenChange={(open) => {
+          if (!open) setReplaceTLDialog({ open: false, emp: null, existingTL: null });
+        }}
+      >
+        <AlertDialogContent className="bg-slate-800 border-slate-700">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-white">Replace Team Leader?</AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400">
+              A Team Leader already exists for this site: <span className="text-amber-400 font-semibold">{replaceTLDialog.existingTL?.fullName}</span>.
+              Do you want to replace the current Team Leader with <span className="text-white font-semibold">{replaceTLDialog.emp?.fullName}</span>?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmReplaceTL}
+              disabled={assignLoading}
+              className="bg-amber-600 hover:bg-amber-700 text-white border-amber-600"
+            >
+              {assignLoading ? 'Replacing...' : 'Replace'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Replace Supervisor Confirmation */}
+      <AlertDialog
+        open={replaceSupervisorDialog.open}
+        onOpenChange={(open) => {
+          if (!open) setReplaceSupervisorDialog({ open: false, emp: null, existingSupervisor: null });
+        }}
+      >
+        <AlertDialogContent className="bg-slate-800 border-slate-700">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-white">Replace Supervisor?</AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400">
+              A Supervisor already exists for this site: <span className="text-violet-400 font-semibold">{replaceSupervisorDialog.existingSupervisor?.fullName}</span>.
+              Do you want to replace the current Supervisor with <span className="text-white font-semibold">{replaceSupervisorDialog.emp?.fullName}</span>?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmReplaceSupervisor}
+              disabled={assignLoading}
+              className="bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
+            >
+              {assignLoading ? 'Replacing...' : 'Replace'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

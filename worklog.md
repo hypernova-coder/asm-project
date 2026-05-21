@@ -111,3 +111,190 @@ Stage Summary:
 - Sidebar and main layout respect dynamic permissions fetched from API
 - Profile page with password change functionality added
 - Logout now requires confirmation via AlertDialog on both header and sidebar
+
+---
+Task ID: 4
+Agent: Main
+Task: Update Dashboard Page - Add Idle Workers Card, Team Leaders/Supervisors Pills, and API Enhancements
+
+Work Log:
+
+### Dashboard Page Updates (`src/components/dashboard/dashboard-page.tsx`)
+- Added `UserX`, `ArrowRight`, `Crown`, `ShieldCheck` icon imports from lucide-react
+- Added `useAppStore` import from `@/store/app-store` for navigation
+- Added new state variables: `idleCount`, `teamLeaderCount`, `supervisorCount`
+- Added `setCurrentView` from `useAppStore` for programmatic navigation
+- Updated `fetchEmployees` to extract `idleCount`, `teamLeaderCount`, `supervisorCount` from API response
+- Added "Idle Workers" as 5th metric card:
+  - Amber/yellow theme (text-amber-400, bg-amber-500/10) matching absent card style
+  - UserX icon
+  - Subtitle shows percentage of total workforce that's idle (e.g., "12.5% of workforce")
+  - Clickable card with cursor-pointer and hover:border-amber-500/40 effect
+  - "View All →" indicator with ArrowRight icon in the value area
+  - On click: sets `localStorage.setItem('asm_idle_filter', '1')` and navigates to employees view
+- Changed metrics grid from `lg:grid-cols-4` to `lg:grid-cols-5` (keeps `sm:grid-cols-2`)
+- Added Team Leaders & Supervisors stat pills between header and metrics cards:
+  - Team Leaders pill: amber theme with Crown icon, count badge
+  - Supervisors pill: emerald theme with ShieldCheck icon, count badge
+  - Both show "..." while loading
+
+### API Enhancements (`src/app/api/employees/route.ts`)
+- Added `teamLeaderCount` and `supervisorCount` to the GET response data
+- Uses `Promise.all` for parallel counting of team leaders and supervisors
+- Both counts filter out deleted employees
+
+### Verification
+- Ran `bun run lint` — no errors
+
+Stage Summary:
+- Dashboard now shows 5 metric cards including clickable "Idle Workers" card
+- Idle Workers card navigates to employees page with idle filter via localStorage
+- Team Leaders and Supervisors count pills displayed on dashboard
+- Employees API returns teamLeaderCount and supervisorCount alongside idleCount
+
+---
+Task ID: 5
+Agent: Main
+Task: Update Employee Page - Trade System & Advanced Filters
+
+Work Log:
+
+### 1. Renamed Position → Trade Throughout UI
+- Changed all UI labels from "Position" to "Trade" across the employee page:
+  - Desktop table column header: "Position" → "Trade"
+  - Mobile card label: "Position" → "Trade"
+  - Search placeholder: "position" → "trade"
+  - Form tab label: "Professional" → "Work"
+  - Form field label: "Position" → "Trade"
+  - Details dialog: "Position" → "Trade"
+- Kept the `position` field in the Employee interface and formData for backward compatibility
+- When submitting forms, both `trade` and `position` are sent with the same value for backward compat
+- Display logic uses `emp.trade || emp.position` to show trade, falling back to position for legacy data
+
+### 2. Added SearchableTradeSelect Component
+- Created `SearchableTradeSelect` component (modeled after existing `SearchableNationalitySelect`)
+- Includes 20 common trades: Mason, Electrician, Welder, Carpenter, Helper, Plumber, HVAC Technician, Steel Fixer, Painter, Crane Operator, Rigger, Scaffolder, Foreman, Driver, Mechanic, Laborer, Cleaner, Security Guard, Surveyor, Heavy Equipment Operator
+- Searchable dropdown with text input
+- Allows custom trade entry (like nationality custom entry)
+- Shows Briefcase icon for each option
+- Placed in the "Work" tab of the employee form (replaced the plain text input)
+
+### 3. Added Advanced Filter System
+- Added filter state variables: `tradeFilter`, `idleFilter`, `teamLeaderFilter`, `supervisorFilter`, `siteFilter`
+- Added `trades` state populated from API response `trades` array
+- Added `activeFilterCount` computed value for tracking active filters
+- Pass filter params to API as query params: `trade`, `idle`, `teamLeaders`, `supervisors`, `site`
+- Added filter UI components:
+  - Trade dropdown (populated from distinct trades in DB)
+  - Site dropdown (populated from sites list)
+  - Idle Workers toggle button (amber theme)
+  - Team Leaders toggle button (amber theme)
+  - Supervisors toggle button (violet theme)
+  - Active filter chips below the search bar (removable by clicking)
+  - "Clear All Filters" button when any filters are active
+- Updated `resetFilters` to clear all new filter states
+- Updated `hasFilters` to include all new filter states
+- Updated `fetchEmployees` useCallback dependencies to include new filter states
+- Added page reset effect for all new filter states
+
+### 4. Added Supervisor Badges
+- Desktop table: Added Supervisor badge next to Team Leader badge using ShieldCheck icon with violet/purple color scheme
+- Mobile cards: Same Supervisor badge
+- Details dialog header: Added Supervisor badge next to Team Leader badge
+- Added "Supervises: {site name}" sub-text under employee name in table (similar to "Leads: {site name}" for team leaders)
+- Added Supervisor section in details dialog with violet-themed card
+
+### 5. Auto-activate Idle Filter from Dashboard
+- Added useEffect on component mount that checks `localStorage.getItem('asm_idle_filter')`
+- If '1', sets `idleFilter` to true and clears the localStorage item
+- This enables navigation from the dashboard idle workers card
+
+### 6. Updated Employee Interface & formData
+- Added to Employee interface: `trade: string | null`, `isSupervisor: boolean`, `supervisorSiteId: string | null`
+- Added to formData state: `trade: ''`, `isSupervisor: false`, `supervisorSiteId: ''`
+- Updated `openEditDialog` to populate `trade` from `employee.trade || employee.position`
+- Updated `openEditDialog` to populate `isSupervisor` and `supervisorSiteId`
+- Added Supervisor section in the Work tab of the form with Switch toggle and site selector
+- Updated `handleSubmit` to send `trade`, `position` (both with same value), `isSupervisor`, `supervisorSiteId`
+- Updated empty-string cleanup to preserve `isSupervisor` boolean
+
+### New Imports
+- Added `ShieldCheck` from lucide-react (for Supervisor badge)
+- Added `Filter` from lucide-react (for filter chips section)
+- Added `UserX` from lucide-react (for Idle Workers button)
+
+### Verification
+- Ran `bun run lint` — no errors
+
+Stage Summary:
+- All "Position" UI labels changed to "Trade" throughout the employee page
+- SearchableTradeSelect dropdown with 20 common trades + custom entry
+- Advanced filter system with Trade, Site, Idle Workers, Team Leaders, and Supervisors filters
+- Removable filter chips and "Clear All Filters" button
+- Supervisor badge with ShieldCheck icon and violet/purple color scheme in table, cards, and details
+- Auto-activation of idle filter from dashboard via localStorage
+- Employee interface and formData updated with trade, isSupervisor, supervisorSiteId fields
+- Backward compatibility maintained (position field still sent alongside trade)
+
+---
+Task ID: 6
+Agent: Main
+Task: Update Sites Page - Team Leader & Supervisor Assignment
+
+Work Log:
+
+### 1. Updated Interfaces
+- Added `isSupervisor: boolean`, `supervisorSiteId: string | null`, `trade: string | null` to `SiteEmployee` interface
+- Added `trade: string | null` to `AllEmployee` interface
+
+### 2. Updated Imports
+- Added `ShieldCheck`, `MoreHorizontal` from lucide-react
+- Added `AlertDialog`, `AlertDialogAction`, `AlertDialogCancel`, `AlertDialogContent`, `AlertDialogDescription`, `AlertDialogFooter`, `AlertDialogHeader`, `AlertDialogTitle` from `@/components/ui/alert-dialog`
+- Added `DropdownMenu`, `DropdownMenuContent`, `DropdownMenuItem`, `DropdownMenuLabel`, `DropdownMenuSeparator`, `DropdownMenuTrigger` from `@/components/ui/dropdown-menu`
+
+### 3. Supervisor Display in Header
+- Refactored the header area to show both Team Leader and Supervisor info using `currentTeamLeader` and `currentSupervisor` useMemo values
+- Team Leader shown with Crown icon (amber), Supervisor shown with ShieldCheck icon (violet)
+- Falls back to created date only when neither is assigned
+
+### 4. Employee Table Badges
+- Added Supervisor badge (violet/purple ShieldCheck icon) next to existing Team Leader badge (amber Crown icon)
+- Added subtle row background tinting: amber for TL rows, violet for Supervisor rows
+- Both badges show inline next to employee name
+
+### 5. Actions Dropdown per Row
+- Added a "MoreHorizontal" (⋮) dropdown button to each employee row
+- Dropdown contains "Assign Role" section with:
+  - "Assign as Team Leader" option (amber, Crown icon) - hidden if already TL
+  - "Assign as Supervisor" option (violet, ShieldCheck icon) - hidden if already Supervisor
+- Added "Actions" column header to table
+
+### 6. Confirmation AlertDialogs for Replacement
+- Added `replaceTLDialog` state and `replaceSupervisorDialog` state with `open`, `emp`, and `existingTL`/`existingSupervisor` fields
+- When assigning TL/Supervisor, if API returns 409 (conflict), opens AlertDialog:
+  - "Replace Team Leader?" / "Replace Supervisor?" title
+  - Shows existing person name and new person name
+  - Cancel and Replace buttons
+- If confirmed, calls API with `forceReplaceTeamLeader: true` or `forceReplaceSupervisor: true`
+
+### 7. API Integration
+- `handleAssignTeamLeader`: calls PUT `/api/employees/[id]` with `isTeamLeader: true, teamLeaderSiteId: viewSite.id`
+- `handleAssignSupervisor`: calls PUT `/api/employees/[id]` with `isSupervisor: true, supervisorSiteId: viewSite.id`
+- Both handle 409 conflict by opening confirmation dialog
+- `handleConfirmReplaceTL`: calls with `forceReplaceTeamLeader: true`
+- `handleConfirmReplaceSupervisor`: calls with `forceReplaceSupervisor: true`
+
+### 8. Remove Employee - Clear Supervisor Flags
+- Updated `handleRemoveEmployees` to also clear `isSupervisor: false, supervisorSiteId: null` when removing a Supervisor from site (in addition to existing TL flag clearing)
+
+### 9. Position → Trade Rename
+- Changed table column header from "Position" to "Trade"
+- Changed cell display from `emp.position || '—'` to `emp.trade || emp.position || '—'`
+- Updated AddEmployeeCombobox search to also search by `trade`
+- Updated combobox subtitle to show `emp.trade ? · trade : emp.position ? · position : ''`
+
+### 10. Sort Order Update
+- Updated `filteredEmployees` sort: Team Leaders first, then Supervisors, then rest
+
+### Verification
+- Ran `bun run lint` — no errors

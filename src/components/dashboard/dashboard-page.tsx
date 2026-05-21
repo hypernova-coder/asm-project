@@ -9,6 +9,10 @@ import {
   Building2,
   CalendarDays,
   ChevronDown,
+  UserX,
+  ArrowRight,
+  Crown,
+  ShieldCheck,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -29,6 +33,7 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { format } from 'date-fns';
+import { useAppStore } from '@/store/app-store';
 import {
   BarChart,
   Bar,
@@ -118,9 +123,14 @@ export function DashboardPage() {
   const [totalEmployees, setTotalEmployees] = useState<number | null>(null);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
+  const [idleCount, setIdleCount] = useState<number | null>(null);
+  const [teamLeaderCount, setTeamLeaderCount] = useState<number>(0);
+  const [supervisorCount, setSupervisorCount] = useState<number>(0);
 
   const [loadingEmployees, setLoadingEmployees] = useState(true);
   const [loadingAttendance, setLoadingAttendance] = useState(true);
+
+  const setCurrentView = useAppStore((s) => s.setCurrentView);
 
   const monthNum = parseInt(month, 10);
   const yearNum = parseInt(year, 10);
@@ -160,6 +170,9 @@ export function DashboardPage() {
       if (json.success) {
         setTotalEmployees(json.data.total);
         setEmployees(json.data.employees || []);
+        setIdleCount(json.data.idleCount ?? null);
+        setTeamLeaderCount(json.data.teamLeaderCount ?? 0);
+        setSupervisorCount(json.data.supervisorCount ?? 0);
       }
     } catch {
       setTotalEmployees(null);
@@ -291,6 +304,15 @@ export function DashboardPage() {
       .sort((a, b) => b.count - a.count);
   }, [employees]);
 
+  const idlePercent = totalEmployees && idleCount !== null && totalEmployees > 0
+    ? ((idleCount / totalEmployees) * 100).toFixed(1)
+    : null;
+
+  const handleIdleClick = () => {
+    localStorage.setItem('asm_idle_filter', '1');
+    setCurrentView('employees');
+  };
+
   const metrics = [
     {
       title: 'Total Employees',
@@ -299,6 +321,7 @@ export function DashboardPage() {
       color: 'text-blue-400',
       bgColor: 'bg-blue-500/10',
       subtitle: null,
+      clickable: false,
     },
     {
       title: 'Present',
@@ -307,6 +330,7 @@ export function DashboardPage() {
       color: 'text-green-400',
       bgColor: 'bg-green-500/10',
       subtitle: `${selectedDayName}, ${selectedDateDisplay}`,
+      clickable: false,
     },
     {
       title: 'Absent',
@@ -315,6 +339,7 @@ export function DashboardPage() {
       color: 'text-red-400',
       bgColor: 'bg-red-500/10',
       subtitle: `${selectedDayName}, ${selectedDateDisplay}`,
+      clickable: false,
     },
     {
       title: 'Overtime',
@@ -323,6 +348,17 @@ export function DashboardPage() {
       color: 'text-cyan-400',
       bgColor: 'bg-cyan-500/10',
       subtitle: `${selectedDayName}, ${selectedDateDisplay}`,
+      clickable: false,
+    },
+    {
+      title: 'Idle Workers',
+      value: loadingEmployees ? null : (idleCount ?? 0),
+      icon: UserX,
+      color: 'text-amber-400',
+      bgColor: 'bg-amber-500/10',
+      subtitle: idlePercent !== null ? `${idlePercent}% of workforce` : 'No site assigned',
+      clickable: true,
+      onClick: handleIdleClick,
     },
   ];
 
@@ -389,14 +425,33 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {/* Team Leaders & Supervisors Pills */}
+      <div className="flex flex-wrap gap-3">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <Crown className="h-3.5 w-3.5 text-amber-400" />
+          <span className="text-xs font-medium text-amber-400">Team Leaders</span>
+          <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30 text-[10px] px-1.5 py-0 h-4 min-w-[20px] justify-center">
+            {loadingEmployees ? '...' : teamLeaderCount}
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+          <span className="text-xs font-medium text-emerald-400">Supervisors</span>
+          <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30 text-[10px] px-1.5 py-0 h-4 min-w-[20px] justify-center">
+            {loadingEmployees ? '...' : supervisorCount}
+          </Badge>
+        </div>
+      </div>
+
       {/* Metrics Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {metrics.map((metric) => {
           const Icon = metric.icon;
           return (
             <Card
               key={metric.title}
-              className="bg-slate-800/50 border-slate-700/50 hover:border-slate-600/50 transition-colors py-4"
+              className={`bg-slate-800/50 border-slate-700/50 transition-colors py-4 ${metric.clickable ? 'cursor-pointer hover:border-amber-500/40 hover:bg-slate-800/70' : 'hover:border-slate-600/50'}`}
+              onClick={metric.clickable && metric.onClick ? metric.onClick : undefined}
             >
               <CardHeader className="flex flex-row items-center justify-between pb-2 px-4">
                 <CardTitle className="text-sm font-medium text-slate-400">
@@ -412,8 +467,15 @@ export function DashboardPage() {
                 {metric.value === null ? (
                   <Skeleton className="h-8 w-16 bg-slate-700" />
                 ) : (
-                  <div className="text-2xl font-bold text-white">
-                    {metric.value.toLocaleString()}
+                  <div className="flex items-center justify-between">
+                    <div className="text-2xl font-bold text-white">
+                      {metric.value.toLocaleString()}
+                    </div>
+                    {metric.clickable && (
+                      <span className="text-[10px] text-amber-400/70 font-medium flex items-center gap-0.5 hover:text-amber-400 transition-colors">
+                        View All <ArrowRight className="h-3 w-3" />
+                      </span>
+                    )}
                   </div>
                 )}
                 <p className="text-xs text-slate-500 mt-1">

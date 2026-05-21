@@ -18,7 +18,6 @@ async function generateEmployeeId(): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `ASM-${year}-`;
 
-  // Find existing employees with this year prefix
   const employees = await db.employee.findMany({
     where: {
       employeeId: {
@@ -48,6 +47,13 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const skip = (page - 1) * limit;
 
+    // Advanced filters
+    const siteFilter = searchParams.get('site') || '';
+    const tradeFilter = searchParams.get('trade') || '';
+    const idleFilter = searchParams.get('idle') || '';
+    const teamLeaderFilter = searchParams.get('teamLeaders') || '';
+    const supervisorFilter = searchParams.get('supervisors') || '';
+
     const where: Record<string, unknown> = {
       status: { not: 'deleted' },
     };
@@ -56,20 +62,60 @@ export async function GET(request: NextRequest) {
       where.status = status;
     }
 
-    const siteFilter = searchParams.get('site') || '';
     if (siteFilter) {
       where.currentSite = siteFilter;
     }
 
-    if (search) {
+    if (tradeFilter) {
+      where.trade = tradeFilter;
+    }
+
+    // Idle workers: no site assigned
+    if (idleFilter === '1' || idleFilter === 'true') {
+      where.OR = [
+        { currentSite: null },
+        { currentSite: '' },
+        { currentSite: 'Idle' },
+      ];
+    }
+
+    // Team Leaders filter
+    if (teamLeaderFilter === '1' || teamLeaderFilter === 'true') {
+      where.isTeamLeader = true;
+    }
+
+    // Supervisors filter
+    if (supervisorFilter === '1' || supervisorFilter === 'true') {
+      where.isSupervisor = true;
+    }
+
+    if (search && !idleFilter) {
       where.OR = [
         { fullName: { contains: search } },
         { employeeId: { contains: search } },
         { nationality: { contains: search } },
         { phone: { contains: search } },
         { position: { contains: search } },
+        { trade: { contains: search } },
         { companyName: { contains: search } },
       ];
+    } else if (search && idleFilter) {
+      // For idle filter + search, combine with AND
+      const idleConditions = [
+        { currentSite: null },
+        { currentSite: '' },
+        { currentSite: 'Idle' },
+      ];
+      where.OR = idleConditions.map(cond => ({
+        ...cond,
+        OR: [
+          { fullName: { contains: search } },
+          { employeeId: { contains: search } },
+          { nationality: { contains: search } },
+          { phone: { contains: search } },
+          { trade: { contains: search } },
+        ],
+      }));
     }
 
     const [employees, total] = await Promise.all([
@@ -86,6 +132,35 @@ export async function GET(request: NextRequest) {
       decryptEmployee({ ...emp, dateOfBirth: emp.dateOfBirth?.toISOString() || null, joinDate: emp.joinDate?.toISOString() || null, createdAt: emp.createdAt.toISOString(), updatedAt: emp.updatedAt.toISOString() })
     );
 
+    // Get distinct trades for filter dropdowns
+    const trades = await db.employee.findMany({
+      where: { trade: { not: null }, status: { not: 'deleted' } },
+      select: { trade: true },
+      distinct: ['trade'],
+    });
+
+    // Count idle employees
+    const idleCount = await db.employee.count({
+      where: {
+        OR: [
+          { currentSite: null },
+          { currentSite: '' },
+          { currentSite: 'Idle' },
+        ],
+        status: { not: 'deleted' },
+      },
+    });
+
+    // Count team leaders and supervisors
+    const [teamLeaderCount, supervisorCount] = await Promise.all([
+      db.employee.count({
+        where: { isTeamLeader: true, status: { not: 'deleted' } },
+      }),
+      db.employee.count({
+        where: { isSupervisor: true, status: { not: 'deleted' } },
+      }),
+    ]);
+
     return NextResponse.json({
       success: true,
       data: {
@@ -94,6 +169,10 @@ export async function GET(request: NextRequest) {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+        trades: trades.map(t => t.trade).filter(Boolean).sort(),
+        idleCount,
+        teamLeaderCount,
+        supervisorCount,
       },
     });
   } catch (error: unknown) {
@@ -151,6 +230,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Validate supervisor assignment
+    const isSupervisor = body.isSupervisor === true;
+    const supervisorSiteId = body.supervisorSiteId || null;
+
+    if (isSupervisor && supervisorSiteId) {
+      const existingSupervisor = await db.employee.findFirst({
+        where: {
+          isSupervisor: true,
+          supervisorSiteId,
+          status: { not: 'deleted' },
+        },
+      });
+      if (existingSupervisor) {
+        return NextResponse.json(
+          { success: false, error: `Another employee (${existingSupervisor.fullName}) is already supervisor of this site. Remove them first.` },
+          { status: 409 }
+        );
+      }
+    }
+
     // Encrypt sensitive fields
     const data: Record<string, unknown> = {
       fullName: body.fullName,
@@ -161,7 +260,8 @@ export async function POST(request: NextRequest) {
       email: body.email || null,
       address: body.address || null,
       emergencyContact: body.emergencyContact || null,
-      position: body.position || null,
+      position: body.trade || body.position || null, // Backward compat: trade falls back to position
+      trade: body.trade || null,
       joinDate: body.joinDate ? new Date(body.joinDate) : null,
       companyName: body.companyName || null,
       passportStatus: body.passportStatus || null,
@@ -172,6 +272,8 @@ export async function POST(request: NextRequest) {
       photo: body.photo || null,
       isTeamLeader,
       teamLeaderSiteId: isTeamLeader ? teamLeaderSiteId : null,
+      isSupervisor,
+      supervisorSiteId: isSupervisor ? supervisorSiteId : null,
     };
 
     if (body.passportNumber) {
