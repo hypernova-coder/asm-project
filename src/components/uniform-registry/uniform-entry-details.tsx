@@ -72,6 +72,15 @@ interface Site {
   name: string;
 }
 
+interface EmployeeData {
+  id: string;
+  fullName: string;
+  employeeId: string;
+  passportNumber: string | null;
+  idNumber: string | null;
+  currentSite: string | null;
+}
+
 interface ItemsMap {
   uniform: boolean;
   shoes: boolean;
@@ -263,6 +272,7 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
   const [addCreatedAt, setAddCreatedAt] = useState(toDateString(new Date()));
   const [addRenewalDate, setAddRenewalDate] = useState('');
   const [sites, setSites] = useState<Site[]>([]);
+  const [employeeData, setEmployeeData] = useState<EmployeeData | null>(null);
 
   // Employee info derived from the entry
   const employeeDbId = entry.employeeId; // Database ID (cuid)
@@ -312,10 +322,31 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
     }
   }, []);
 
+  // Fetch employee data (for document number auto-fill)
+  const fetchEmployeeData = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/employees/${employeeDbId}`);
+      const json = await res.json();
+      if (json.success && json.data?.employee) {
+        setEmployeeData({
+          id: json.data.employee.id,
+          fullName: json.data.employee.fullName,
+          employeeId: json.data.employee.employeeId,
+          passportNumber: json.data.employee.passportNumber || null,
+          idNumber: json.data.employee.idNumber || null,
+          currentSite: json.data.employee.currentSite || null,
+        });
+      }
+    } catch {
+      // silent
+    }
+  }, [employeeDbId]);
+
   useEffect(() => {
     fetchEntries();
     fetchSites();
-  }, [fetchEntries, fetchSites]);
+    fetchEmployeeData();
+  }, [fetchEntries, fetchSites, fetchEmployeeData]);
 
   // Group entries by month
   const monthGroups = useMemo((): MonthGroup[] => {
@@ -426,16 +457,27 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
 
   // Open Add New dialog
   const openAddNewDialog = useCallback(() => {
-    // Pre-fill with last record's doc type and number
+    // Pre-fill with last record's doc type and number as defaults
     const lastEntry = allEntries.length > 0 ? allEntries[0] : entry; // allEntries is desc order, so first = latest
     setAddDocType(lastEntry.documentType);
-    setAddDocNumber(lastEntry.documentNumber);
+    // Use employee data for the document number if available and matches the type
+    if (employeeData) {
+      if (lastEntry.documentType === 'id' && employeeData.idNumber) {
+        setAddDocNumber(employeeData.idNumber);
+      } else if (lastEntry.documentType === 'passport' && employeeData.passportNumber) {
+        setAddDocNumber(employeeData.passportNumber);
+      } else {
+        setAddDocNumber(lastEntry.documentNumber);
+      }
+    } else {
+      setAddDocNumber(lastEntry.documentNumber);
+    }
     setAddItems({ ...DEFAULT_ITEMS });
     setAddSite(null);
     setAddTeamLeader('');
     setAddCreatedAt(toDateString(new Date()));
     setAddDialogOpen(true);
-  }, [allEntries, entry]);
+  }, [allEntries, entry, employeeData]);
 
   // Submit new record
   const handleAddNew = useCallback(async () => {
@@ -619,7 +661,20 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
                         {isEditing ? (
                           <Select
                             value={editData.documentType as string}
-                            onValueChange={(val) => setEditData(prev => ({ ...prev, documentType: val }))}
+                            onValueChange={(val) => {
+                              setEditData(prev => {
+                                const updated = { ...prev, documentType: val };
+                                // Auto-fill document number based on the selected type from employee data
+                                if (employeeData) {
+                                  if (val === 'id' && employeeData.idNumber) {
+                                    updated.documentNumber = employeeData.idNumber;
+                                  } else if (val === 'passport' && employeeData.passportNumber) {
+                                    updated.documentNumber = employeeData.passportNumber;
+                                  }
+                                }
+                                return updated;
+                              });
+                            }}
                           >
                             <SelectTrigger className="h-7 text-[11px] bg-slate-900 border-slate-600 text-slate-200">
                               <SelectValue />
@@ -815,7 +870,17 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
                 <Label className="text-slate-300 text-sm">
                   Document Type <span className="text-red-400">*</span>
                 </Label>
-                <Select value={addDocType} onValueChange={setAddDocType}>
+                <Select value={addDocType} onValueChange={(val) => {
+                  setAddDocType(val);
+                  // Auto-fill document number based on the selected type from employee data
+                  if (employeeData) {
+                    if (val === 'id' && employeeData.idNumber) {
+                      setAddDocNumber(employeeData.idNumber);
+                    } else if (val === 'passport' && employeeData.passportNumber) {
+                      setAddDocNumber(employeeData.passportNumber);
+                    }
+                  }
+                }}>
                   <SelectTrigger className="bg-slate-900 border-slate-600 text-white">
                     <SelectValue placeholder="Select type" />
                   </SelectTrigger>
