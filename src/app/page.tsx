@@ -7,6 +7,7 @@ import { AppSidebar } from '@/components/layout/app-sidebar';
 import { AppHeader } from '@/components/layout/app-header';
 import { LoginPage } from '@/components/auth/login-page';
 import { SignupPage } from '@/components/auth/signup-page';
+import { ProfilePage } from '@/components/auth/profile-page';
 import { DashboardPage } from '@/components/dashboard/dashboard-page';
 import { EmployeePage } from '@/components/employees/employee-page';
 import { AttendancePage } from '@/components/attendance/attendance-page';
@@ -48,33 +49,61 @@ function LoadingScreen() {
   );
 }
 
-// Views that admin users can access (dashboard + uniform_registry)
-const ADMIN_ALLOWED_VIEWS: AppView[] = ['dashboard', 'uniform_registry'];
+// Views that are always visible to all authenticated users
+const ALWAYS_VISIBLE_VIEWS: AppView[] = ['dashboard', 'uniform_registry', 'profile'];
 
-// Views that only super_admin can access
-const SUPER_ADMIN_ONLY_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'leave_requests', 'cancellation_requests', 'notifications', 'admins'];
-
-function isViewAllowedForRole(role: string | undefined, view: AppView): boolean {
-  if (role === 'super_admin') return true;
-  if (role === 'admin') return ADMIN_ALLOWED_VIEWS.includes(view);
-  return false;
-}
+// Views that only super_admin can access by default (admin needs explicit permission)
+const RESTRICTED_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'leave_requests', 'cancellation_requests', 'notifications', 'admins'];
 
 function MainLayout() {
   const { currentView, setCurrentView } = useAppStore();
   const { user } = useAuthStore();
   const isMobile = useIsMobile();
+  const [adminPermissions, setAdminPermissions] = useState<string[]>([]);
+
+  // Fetch admin menu permissions dynamically
+  React.useEffect(() => {
+    if (!user || user.role === 'super_admin') {
+      setAdminPermissions([]);
+      return;
+    }
+    const fetchPermissions = async () => {
+      try {
+        const res = await fetch(`/api/menu-permissions?userId=${user.id}`);
+        const data = await res.json();
+        if (data.success) {
+          setAdminPermissions(data.data.allowedMenus || []);
+        }
+      } catch {
+        // silent
+      }
+    };
+    fetchPermissions();
+    const interval = setInterval(fetchPermissions, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  // Dynamic view permission check
+  const isViewAllowed = useCallback((view: AppView): boolean => {
+    if (!user) return false;
+    if (user.role === 'super_admin') return true;
+    // Admin: always visible views are allowed
+    if (ALWAYS_VISIBLE_VIEWS.includes(view)) return true;
+    // Admin: restricted views need explicit permission
+    if (RESTRICTED_VIEWS.includes(view)) return adminPermissions.includes(view);
+    return false;
+  }, [user, adminPermissions]);
 
   // Redirect admin users away from restricted views
   React.useEffect(() => {
-    if (user && !isViewAllowedForRole(user.role, currentView)) {
+    if (user && !isViewAllowed(currentView)) {
       setCurrentView('dashboard');
     }
-  }, [user, currentView, setCurrentView]);
+  }, [user, currentView, setCurrentView, isViewAllowed]);
 
   const renderView = () => {
     // Block admin users from accessing restricted views
-    if (user && !isViewAllowedForRole(user.role, currentView)) {
+    if (user && !isViewAllowed(currentView)) {
       return <DashboardPage />;
     }
 
@@ -97,6 +126,8 @@ function MainLayout() {
         return <NotificationPage />;
       case 'admins':
         return <AdminPage />;
+      case 'profile':
+        return <ProfilePage />;
       default:
         return <DashboardPage />;
     }

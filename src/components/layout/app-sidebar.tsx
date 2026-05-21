@@ -26,6 +26,16 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useAuthStore, type UserRole } from '@/store/auth-store';
 import { useAppStore, type AppView } from '@/store/app-store';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -59,6 +69,8 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
   const { currentView, setCurrentView } = useAppStore();
   const { user, logout } = useAuthStore();
   const [unreadCount, setUnreadCount] = React.useState(0);
+  const [adminPermissions, setAdminPermissions] = React.useState<string[]>([]);
+  const [logoutDialogOpen, setLogoutDialogOpen] = React.useState(false);
 
   React.useEffect(() => {
     const fetchCount = async () => {
@@ -77,20 +89,44 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
     return () => clearInterval(interval);
   }, []);
 
+  // Fetch admin menu permissions
+  React.useEffect(() => {
+    if (!user || user.role === 'super_admin') return;
+    const fetchPermissions = async () => {
+      try {
+        const res = await fetch(`/api/menu-permissions?userId=${user.id}`);
+        const data = await res.json();
+        if (data.success) {
+          setAdminPermissions(data.data.allowedMenus || []);
+        }
+      } catch { /* silent */ }
+    };
+    fetchPermissions();
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchPermissions, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
   const handleNavClick = (view: AppView) => {
     setCurrentView(view);
     onNavigate?.();
   };
 
   const handleLogout = () => {
-    logout();
-    onNavigate?.();
+    setLogoutDialogOpen(true);
   };
 
-  // Simple role-based filtering: admin sees only items without roles restriction
+  const confirmLogout = () => {
+    logout();
+    onNavigate?.();
+    setLogoutDialogOpen(false);
+  };
+
+  // Role-based filtering with dynamic admin permissions
   const filteredNavItems = navItems.filter((item) => {
     if (!item.roles) return true; // Everyone can see
-    return item.roles.includes(user?.role as UserRole); // Only specified roles
+    if (user?.role === 'super_admin') return true;
+    return adminPermissions.includes(item.id);
   });
 
   return (
@@ -208,6 +244,30 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
           </div>
         )}
       </div>
+
+      {/* Logout Confirmation Dialog */}
+      <AlertDialog open={logoutDialogOpen} onOpenChange={setLogoutDialogOpen}>
+        <AlertDialogContent className="bg-slate-800 border-slate-700 text-slate-200">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-white">Log Out</AlertDialogTitle>
+            <AlertDialogDescription className="text-slate-400">
+              Are you sure you want to log out? You will need to sign in again to access the system.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 sm:gap-0">
+            <AlertDialogCancel className="text-slate-400 hover:text-white hover:bg-slate-700 border-slate-700">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmLogout}
+              className="bg-red-500 hover:bg-red-600 text-white focus:ring-red-500/30 focus:ring-offset-slate-800 border-0"
+            >
+              <LogOut className="h-4 w-4 mr-2" />
+              Log out
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

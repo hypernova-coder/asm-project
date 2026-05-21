@@ -11,6 +11,13 @@ import {
   Mail,
   Lock,
   Crown,
+  Users,
+  Building2,
+  Calendar,
+  Bell,
+  FileText,
+  Ban,
+  KeyRound,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -18,6 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import {
   Dialog,
   DialogContent,
@@ -53,6 +61,7 @@ import {
 } from '@/components/ui/table';
 import { useAuthStore } from '@/store/auth-store';
 import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
 
 interface Admin {
   id: string;
@@ -77,6 +86,15 @@ const emptyForm: AdminFormData = {
   role: 'admin',
 };
 
+const CONFIGURABLE_MENUS = [
+  { key: 'employees', label: 'Employees', icon: Users },
+  { key: 'sites', label: 'Sites', icon: Building2 },
+  { key: 'attendance', label: 'Attendance', icon: Calendar },
+  { key: 'leave_requests', label: 'Leave Requests', icon: FileText },
+  { key: 'cancellation_requests', label: 'Cancellations', icon: Ban },
+  { key: 'notifications', label: 'Notifications', icon: Bell },
+];
+
 export function AdminPage() {
   const { user } = useAuthStore();
   const { toast } = useToast();
@@ -97,6 +115,15 @@ export function AdminPage() {
   const [deletingAdmin, setDeletingAdmin] = useState<Admin | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Permissions dialog state
+  const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
+  const [permissionsAdmin, setPermissionsAdmin] = useState<Admin | null>(null);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [adminPermissions, setAdminPermissions] = useState<Record<string, boolean>>({});
+
+  // Admin access map for display in table
+  const [adminAccessMap, setAdminAccessMap] = useState<Record<string, string[]>>({});
+
   // Fetch admins
   const fetchAdmins = useCallback(async () => {
     try {
@@ -104,7 +131,33 @@ export function AdminPage() {
       const res = await fetch('/api/admins');
       const json = await res.json();
       if (json.success) {
-        setAdmins(json.data.admins || []);
+        const adminsList: Admin[] = json.data.admins || [];
+        setAdmins(adminsList);
+        // Fetch permissions for each regular admin
+        const regularAdmins = adminsList.filter((a: Admin) => a.role === 'admin');
+        const accessMap: Record<string, string[]> = {};
+        await Promise.all(
+          regularAdmins.map(async (admin: Admin) => {
+            try {
+              const permRes = await fetch(`/api/menu-permissions?userId=${admin.id}`);
+              const permJson = await permRes.json();
+              if (permJson.success) {
+                const allowedKeys: string[] = permJson.data.allowedMenus || [];
+                const alwaysVisible = ['Dashboard', 'Uniform Registry'];
+                const allowedLabels = allowedKeys.map((key: string) => {
+                  const menu = CONFIGURABLE_MENUS.find(m => m.key === key);
+                  return menu ? menu.label : key;
+                });
+                accessMap[admin.id] = [...alwaysVisible, ...allowedLabels];
+              } else {
+                accessMap[admin.id] = ['Dashboard', 'Uniform Registry'];
+              }
+            } catch {
+              accessMap[admin.id] = ['Dashboard', 'Uniform Registry'];
+            }
+          })
+        );
+        setAdminAccessMap(accessMap);
       } else {
         setAdmins([]);
       }
@@ -317,6 +370,50 @@ export function AdminPage() {
     }
   }
 
+  // Open permissions dialog and fetch current permissions
+  async function handleManageAccess(admin: Admin) {
+    setPermissionsAdmin(admin);
+    setPermissionsLoading(true);
+    setPermissionsDialogOpen(true);
+    try {
+      const res = await fetch(`/api/menu-permissions?userId=${admin.id}`);
+      const json = await res.json();
+      if (json.success) {
+        const perms: Record<string, boolean> = {};
+        CONFIGURABLE_MENUS.forEach(m => { perms[m.key] = false; });
+        (json.data.allowedMenus || []).forEach((key: string) => { perms[key] = true; });
+        setAdminPermissions(perms);
+      }
+    } catch {
+      setAdminPermissions({});
+    } finally {
+      setPermissionsLoading(false);
+    }
+  }
+
+  // Toggle a permission
+  async function togglePermission(menuKey: string, allowed: boolean) {
+    if (!permissionsAdmin) return;
+    setAdminPermissions(prev => ({ ...prev, [menuKey]: allowed }));
+    try {
+      await fetch('/api/menu-permissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: permissionsAdmin.id, menuKey, allowed }),
+      });
+      // Refresh the access map after toggle
+      fetchAdmins();
+    } catch {
+      // revert on failure
+      setAdminPermissions(prev => ({ ...prev, [menuKey]: !allowed }));
+      toast({
+        title: 'Error',
+        description: 'Failed to update permission',
+        variant: 'destructive',
+      });
+    }
+  }
+
   function formatDate(dateStr: string) {
     try {
       return new Date(dateStr).toLocaleDateString('en-US', {
@@ -522,13 +619,33 @@ export function AdminPage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-slate-400 text-xs">
-                        Dashboard, Uniform Registry
+                        <div className="flex flex-wrap gap-1">
+                          {(adminAccessMap[admin.id] || ['Dashboard', 'Uniform Registry']).map((label) => (
+                            <Badge
+                              key={label}
+                              variant="secondary"
+                              className="bg-slate-700/50 text-slate-300 text-[10px] px-1.5 py-0 h-4"
+                            >
+                              {label}
+                            </Badge>
+                          ))}
+                        </div>
                       </TableCell>
                       <TableCell className="text-slate-400 text-sm">
                         {formatDate(admin.createdAt)}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleManageAccess(admin)}
+                            className="h-8 w-8 p-0 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10"
+                            title="Manage Access"
+                          >
+                            <KeyRound className="h-4 w-4" />
+                            <span className="sr-only">Manage Access</span>
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -585,7 +702,7 @@ export function AdminPage() {
                 ? 'Update account details. Leave password blank to keep unchanged.'
                 : formData.role === 'super_admin'
                 ? 'Create a new Super Admin account with full system access.'
-                : 'Create a new admin account with access to Dashboard and Uniform Registry only.'}
+                : 'Create a new admin account. You can configure menu access after creation.'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -606,7 +723,7 @@ export function AdminPage() {
                     <div className="flex items-center gap-2">
                       <UserCog className="h-4 w-4 text-blue-400" />
                       <span>Admin</span>
-                      <span className="text-xs text-slate-400 ml-1">(Dashboard & Uniform Registry)</span>
+                      <span className="text-xs text-slate-400 ml-1">(Configurable access)</span>
                     </div>
                   </SelectItem>
                   <SelectItem value="super_admin" className="text-slate-200 focus:bg-slate-700 focus:text-white">
@@ -717,7 +834,7 @@ export function AdminPage() {
                   <div>
                     <p className="font-medium">Admin Access</p>
                     <p className="text-blue-400/80 text-xs mt-1">
-                      This account will have access to Dashboard and Uniform Registry only.
+                      This account will have access to Dashboard and Uniform Registry by default. You can configure additional menu access after creation.
                     </p>
                   </div>
                 </div>
@@ -815,6 +932,81 @@ export function AdminPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Manage Access Dialog */}
+      <Dialog open={permissionsDialogOpen} onOpenChange={setPermissionsDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-slate-200 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-emerald-400" />
+              Manage Access — {permissionsAdmin?.name}
+            </DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Configure which menu items this admin can access. Dashboard and Uniform Registry are always visible.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {/* Always visible items */}
+            <div className="rounded-lg bg-slate-900/50 border border-slate-700/50 px-4 py-3">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Always Visible</p>
+              <div className="flex flex-wrap gap-1.5">
+                <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs">
+                  Dashboard
+                </Badge>
+                <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs">
+                  Uniform Registry
+                </Badge>
+              </div>
+            </div>
+
+            {/* Configurable items */}
+            <div className="rounded-lg bg-slate-900/50 border border-slate-700/50 px-4 py-3">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Configurable Access</p>
+              {permissionsLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <Skeleton key={i} className="h-10 w-full bg-slate-700 rounded" />
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {CONFIGURABLE_MENUS.map((menu) => {
+                    const Icon = menu.icon;
+                    const isEnabled = adminPermissions[menu.key] ?? false;
+                    return (
+                      <div
+                        key={menu.key}
+                        className="flex items-center justify-between rounded-lg px-3 py-2.5 hover:bg-slate-700/30 transition-colors"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <Icon className={cn('h-4 w-4', isEnabled ? 'text-emerald-400' : 'text-slate-500')} />
+                          <span className={cn('text-sm font-medium', isEnabled ? 'text-white' : 'text-slate-400')}>
+                            {menu.label}
+                          </span>
+                        </div>
+                        <Switch
+                          checked={isEnabled}
+                          onCheckedChange={(checked) => togglePermission(menu.key, checked)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setPermissionsDialogOpen(false)}
+              className="text-slate-400 hover:text-white hover:bg-slate-700"
+            >
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+

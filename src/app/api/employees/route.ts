@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate employee ID if not provided
-    const employeeId = body.employeeId || (await generateEmployeeId());
+    const employeeId = (body.employeeId && body.employeeId.trim()) || (await generateEmployeeId());
 
     // Check uniqueness
     const existing = await db.employee.findUnique({

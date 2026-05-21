@@ -579,7 +579,7 @@ export function EmployeePage() {
     setFormPhoto(null);
     setFormData({
       fullName: '',
-      employeeId: generateAutoId(),
+      employeeId: '',
       nationality: '',
       dateOfBirth: '',
       phone: '',
@@ -1304,9 +1304,11 @@ export function EmployeePage() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label className="text-slate-300 text-sm">Employee ID</Label>
+                    <Label className="text-slate-300 text-sm">
+                      Employee ID <span className="text-slate-500 font-normal text-xs">(Leave empty to auto-generate)</span>
+                    </Label>
                     <Input
-                      placeholder="ASM-2025-001"
+                      placeholder="Leave empty to auto-generate (e.g. ASM-2025-001)"
                       value={formData.employeeId}
                       onChange={(e) => handleFormChange('employeeId', e.target.value)}
                       className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500 font-mono"
