@@ -49,7 +49,7 @@ function LoadingScreen() {
   );
 }
 
-// Views that are always visible to all authenticated users
+// Menus always visible to all authenticated users (including admin)
 const ALWAYS_VISIBLE_VIEWS: AppView[] = ['dashboard', 'uniform_registry', 'profile'];
 
 // Views that only super_admin can access by default (admin needs explicit permission)
@@ -61,7 +61,7 @@ function MainLayout() {
   const isMobile = useIsMobile();
   const [adminPermissions, setAdminPermissions] = useState<string[]>([]);
 
-  // Fetch admin menu permissions dynamically
+  // Fetch admin menu permissions dynamically from the Permission system
   React.useEffect(() => {
     if (!user || user.role === 'super_admin') {
       setAdminPermissions([]);
@@ -69,17 +69,35 @@ function MainLayout() {
     }
     const fetchPermissions = async () => {
       try {
-        const res = await fetch(`/api/menu-permissions?userId=${user.id}`);
+        const res = await fetch(`/api/permissions?adminId=${user.id}`);
         const data = await res.json();
         if (data.success) {
-          setAdminPermissions(data.data.allowedMenus || []);
+          const perms = data.data.permissions || [];
+          // Get all slugs where granted is true, plus always visible ones
+          const grantedSlugs = [
+            ...ALWAYS_VISIBLE_VIEWS,
+            ...perms
+              .filter((p: { slug: string; granted?: boolean }) => p.granted === true)
+              .map((p: { slug: string }) => p.slug),
+          ];
+          setAdminPermissions([...new Set(grantedSlugs)]);
         }
       } catch {
-        // silent
+        // Fallback: try legacy menu-permissions API
+        try {
+          const res = await fetch(`/api/menu-permissions?userId=${user.id}`);
+          const data = await res.json();
+          if (data.success) {
+            setAdminPermissions(data.data.allowedMenus || []);
+          }
+        } catch {
+          // silent
+        }
       }
     };
     fetchPermissions();
-    const interval = setInterval(fetchPermissions, 30000);
+    // Refresh every 15 seconds for snappier permission updates
+    const interval = setInterval(fetchPermissions, 15000);
     return () => clearInterval(interval);
   }, [user]);
 

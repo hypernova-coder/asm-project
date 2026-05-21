@@ -45,20 +45,24 @@ interface NavItem {
   id: AppView;
   label: string;
   icon: React.ElementType;
-  roles?: UserRole[]; // If specified, only these roles can see it. No roles = everyone can see.
+  permissionSlug: string; // Maps to Permission.slug in the database
+  roles?: UserRole[]; // If specified, only these roles can see it by default. Admins need explicit permission.
 }
 
 const navItems: NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'employees', label: 'Employees', icon: Users, roles: ['super_admin'] },
-  { id: 'sites', label: 'Sites', icon: Building2, roles: ['super_admin'] },
-  { id: 'attendance', label: 'Attendance', icon: Calendar, roles: ['super_admin'] },
-  { id: 'uniform_registry', label: 'Uniform Registry', icon: Shirt },
-  { id: 'leave_requests', label: 'Leave Requests', icon: FileText, roles: ['super_admin'] },
-  { id: 'cancellation_requests', label: 'Cancellations', icon: Ban, roles: ['super_admin'] },
-  { id: 'notifications', label: 'Notifications', icon: Bell, roles: ['super_admin'] },
-  { id: 'admins', label: 'Admin Management', icon: Shield, roles: ['super_admin'] },
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, permissionSlug: 'dashboard' },
+  { id: 'employees', label: 'Employees', icon: Users, permissionSlug: 'employees', roles: ['super_admin'] },
+  { id: 'sites', label: 'Sites', icon: Building2, permissionSlug: 'sites', roles: ['super_admin'] },
+  { id: 'attendance', label: 'Attendance', icon: Calendar, permissionSlug: 'attendance', roles: ['super_admin'] },
+  { id: 'uniform_registry', label: 'Uniform Registry', icon: Shirt, permissionSlug: 'uniform_registry' },
+  { id: 'leave_requests', label: 'Leave Requests', icon: FileText, permissionSlug: 'leave_requests', roles: ['super_admin'] },
+  { id: 'cancellation_requests', label: 'Cancellations', icon: Ban, permissionSlug: 'cancellation_requests', roles: ['super_admin'] },
+  { id: 'notifications', label: 'Notifications', icon: Bell, permissionSlug: 'notifications', roles: ['super_admin'] },
+  { id: 'admins', label: 'Admin Management', icon: Shield, permissionSlug: 'admins', roles: ['super_admin'] },
 ];
+
+// Menus always visible to all users (including admin)
+const ALWAYS_VISIBLE_SLUGS = ['dashboard', 'uniform_registry'];
 
 interface SidebarContentProps {
   collapsed?: boolean;
@@ -89,21 +93,41 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch admin menu permissions
+  // Fetch admin permissions from the new Permission system
   React.useEffect(() => {
-    if (!user || user.role === 'super_admin') return;
+    if (!user || user.role === 'super_admin') {
+      setAdminPermissions([]);
+      return;
+    }
     const fetchPermissions = async () => {
       try {
-        const res = await fetch(`/api/menu-permissions?userId=${user.id}`);
+        const res = await fetch(`/api/permissions?adminId=${user.id}`);
         const data = await res.json();
         if (data.success) {
-          setAdminPermissions(data.data.allowedMenus || []);
+          const perms = data.data.permissions || [];
+          // Get all slugs where granted is true OR always visible
+          const grantedSlugs = [
+            ...ALWAYS_VISIBLE_SLUGS,
+            ...perms
+              .filter((p: { slug: string; granted?: boolean }) => p.granted === true)
+              .map((p: { slug: string }) => p.slug),
+          ];
+          setAdminPermissions([...new Set(grantedSlugs)]);
         }
-      } catch { /* silent */ }
+      } catch {
+        // Fallback: try legacy menu-permissions API
+        try {
+          const res = await fetch(`/api/menu-permissions?userId=${user.id}`);
+          const data = await res.json();
+          if (data.success) {
+            setAdminPermissions(data.data.allowedMenus || []);
+          }
+        } catch { /* silent */ }
+      }
     };
     fetchPermissions();
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchPermissions, 30000);
+    // Refresh every 15 seconds for snappier permission updates
+    const interval = setInterval(fetchPermissions, 15000);
     return () => clearInterval(interval);
   }, [user]);
 
@@ -124,9 +148,12 @@ function SidebarContent({ collapsed = false, onNavigate }: SidebarContentProps) 
 
   // Role-based filtering with dynamic admin permissions
   const filteredNavItems = navItems.filter((item) => {
-    if (!item.roles) return true; // Everyone can see
+    // Super admin sees everything
     if (user?.role === 'super_admin') return true;
-    return adminPermissions.includes(item.id);
+    // Always visible items are shown to everyone
+    if (ALWAYS_VISIBLE_SLUGS.includes(item.permissionSlug)) return true;
+    // Admin: check if they have been granted this permission
+    return adminPermissions.includes(item.permissionSlug);
   });
 
   return (

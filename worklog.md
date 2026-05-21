@@ -133,3 +133,37 @@ Work Log:
 Stage Summary:
 - All changes pushed successfully to GitHub
 - Commit: feat: Enterprise RBAC + Workforce Management Enhancements
+
+---
+Task ID: 9
+Agent: Main Agent
+Task: Consolidate RBAC - Sidebar menu permission toggles for admin accounts
+
+Work Log:
+- Updated /api/permissions route.ts with auto-seed (PERMISSION_SEEDS) and stale permission cleanup
+- Added isAlwaysVisible field to Permission API response for Dashboard/Uniform Registry
+- Updated /api/menu-permissions route.ts to read from both AdminPermission and AdminMenuPermission (merge strategy)
+- Updated app-sidebar.tsx to fetch permissions from /api/permissions (new system) with fallback to /api/menu-permissions
+- Sidebar now dynamically shows/hides menus based on granted permissions for admin users
+- Super admins always see all menus; Admins see only granted + always-visible menus
+- Rewrote admin-page.tsx with enhanced permission management:
+  - SIDEBAR_MENUS constant mirrors sidebar items with icons
+  - Permission toggle dialog shows each menu with its icon and "Always On" badge for dashboard/uniform
+  - Quick actions: Grant All / Revoke All buttons
+  - Group-level Select All / Clear All
+  - Grouped by General, Workforce, Administration with color coding
+  - Admin table shows menu access badges (green for always-on, blue for granted)
+- Updated page.tsx (MainLayout) to use /api/permissions for view-level access control
+- Fixed Prisma schema datasource from postgresql to sqlite to match .env
+- Cleaned up stale permissions (Settings, Reports, Payroll) from database
+- Permission refresh interval set to 15 seconds for snappier updates
+
+Stage Summary:
+- Full RBAC system: Permission table (9 items) + AdminPermission pivot table
+- Super Admin grants/revokes sidebar menu access for normal Admins via toggle UI
+- Sidebar dynamically shows/hides based on permissions (refreshes every 15s)
+- View-level guard in page.tsx prevents URL-based access to restricted views
+- Always-visible menus: Dashboard, Uniform Registry
+- Configurable menus: Employees, Sites, Attendance, Leave Requests, Cancellations, Notifications, Admin Management
+- Legacy AdminMenuPermission kept in sync for backward compatibility
+- All lint checks pass

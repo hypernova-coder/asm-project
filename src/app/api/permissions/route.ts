@@ -1,9 +1,55 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
-// GET: List all permissions, optionally filtered by group
+// Define all sidebar menu permissions that should exist in the system
+const PERMISSION_SEEDS = [
+  { name: 'Dashboard', slug: 'dashboard', group: 'general' },
+  { name: 'Employees', slug: 'employees', group: 'workforce' },
+  { name: 'Sites', slug: 'sites', group: 'workforce' },
+  { name: 'Attendance', slug: 'attendance', group: 'workforce' },
+  { name: 'Uniform Registry', slug: 'uniform_registry', group: 'workforce' },
+  { name: 'Leave Requests', slug: 'leave_requests', group: 'workforce' },
+  { name: 'Cancellations', slug: 'cancellation_requests', group: 'workforce' },
+  { name: 'Notifications', slug: 'notifications', group: 'general' },
+  { name: 'Admin Management', slug: 'admins', group: 'admin' },
+];
+
+// Menus always visible to all users (including admin)
+const ALWAYS_VISIBLE_SLUGS = ['dashboard', 'uniform_registry'];
+
+const VALID_SLUGS = PERMISSION_SEEDS.map(s => s.slug);
+
+/**
+ * Ensure all permissions exist in the database (auto-seed)
+ * Also clean up stale permissions that are no longer in the sidebar
+ */
+async function ensurePermissionsSeeded() {
+  for (const seed of PERMISSION_SEEDS) {
+    await db.permission.upsert({
+      where: { slug: seed.slug },
+      update: { name: seed.name, group: seed.group },
+      create: { name: seed.name, slug: seed.slug, group: seed.group },
+    });
+  }
+
+  // Clean up stale permissions that are no longer in the sidebar
+  const allPerms = await db.permission.findMany({ select: { id: true, slug: true } });
+  for (const perm of allPerms) {
+    if (!VALID_SLUGS.includes(perm.slug)) {
+      // Delete associated AdminPermission records first
+      await db.adminPermission.deleteMany({ where: { permissionId: perm.id } });
+      await db.adminMenuPermission.deleteMany({ where: { menuKey: perm.slug } });
+      await db.permission.delete({ where: { id: perm.id } });
+    }
+  }
+}
+
+// GET: List all permissions, optionally with granted status for a specific admin
 export async function GET(request: NextRequest) {
   try {
+    // Auto-seed permissions to ensure they exist
+    await ensurePermissionsSeeded();
+
     const group = request.nextUrl.searchParams.get('group') || '';
     const adminId = request.nextUrl.searchParams.get('adminId') || '';
 
@@ -21,7 +67,7 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // If adminId is provided, also get the AdminMenuPermission data for backward compat
+    // Also get legacy AdminMenuPermission for backward compat
     let legacyPermissions: string[] = [];
     if (adminId) {
       const menuPerms = await db.adminMenuPermission.findMany({
@@ -31,19 +77,28 @@ export async function GET(request: NextRequest) {
       legacyPermissions = menuPerms.map(p => p.menuKey);
     }
 
+    // Merge: a permission is granted if it exists in AdminPermission OR in legacy AdminMenuPermission
+    const result = permissions.map(p => {
+      const newGranted = adminId ? p.adminPermissions.length > 0 : undefined;
+      const legacyGranted = legacyPermissions.includes(p.slug);
+      const granted = newGranted || legacyGranted;
+      return {
+        id: p.id,
+        name: p.name,
+        slug: p.slug,
+        group: p.group,
+        isAlwaysVisible: ALWAYS_VISIBLE_SLUGS.includes(p.slug),
+        granted: adminId ? granted : undefined,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
+      };
+    });
+
     return NextResponse.json({
       success: true,
       data: {
-        permissions: permissions.map(p => ({
-          id: p.id,
-          name: p.name,
-          slug: p.slug,
-          group: p.group,
-          granted: adminId ? p.adminPermissions.length > 0 : undefined,
-          createdAt: p.createdAt.toISOString(),
-          updatedAt: p.updatedAt.toISOString(),
-        })),
-        legacyAllowedMenus: legacyPermissions,
+        permissions: result,
+        alwaysVisibleSlugs: ALWAYS_VISIBLE_SLUGS,
       },
     });
   } catch (error: unknown) {
@@ -73,27 +128,27 @@ export async function POST(request: NextRequest) {
     }
 
     if (granted) {
-      // Grant permission
+      // Grant permission via AdminPermission
       await db.adminPermission.upsert({
         where: { adminId_permissionId: { adminId, permissionId: permission.id } },
         update: {},
         create: { adminId, permissionId: permission.id },
       });
     } else {
-      // Revoke permission
+      // Revoke permission via AdminPermission
       await db.adminPermission.deleteMany({
         where: { adminId, permissionId: permission.id },
       });
     }
 
-    // Also update the legacy AdminMenuPermission for backward compat with sidebar
+    // Also sync to legacy AdminMenuPermission for backward compat with sidebar
     await db.adminMenuPermission.upsert({
       where: { userId_menuKey: { userId: adminId, menuKey: permissionSlug } },
       update: { allowed: granted },
       create: { userId: adminId, menuKey: permissionSlug, allowed: granted },
     });
 
-    return NextResponse.json({ success: true, data: { granted } });
+    return NextResponse.json({ success: true, data: { granted, permissionSlug } });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';
     return NextResponse.json({ success: false, error: message }, { status: 500 });
@@ -128,7 +183,6 @@ export async function PUT(request: NextRequest) {
     }
 
     // Sync legacy AdminMenuPermission
-    // First, set all to false
     const allPermissions = await db.permission.findMany({ select: { slug: true } });
     for (const perm of allPermissions) {
       await db.adminMenuPermission.upsert({
