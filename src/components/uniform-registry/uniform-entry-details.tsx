@@ -1,12 +1,42 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { ArrowLeft, Edit2, Save, X, Loader2, Check, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Edit2, Save, X, Loader2, Check, RefreshCw, Plus, Calendar, Building2, Shield, FileText, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 import { toast } from '@/hooks/use-toast';
 
@@ -30,10 +60,16 @@ interface UniformEntry {
   employee?: {
     id: string;
     fullName: string;
+    employeeId: string;
     isTeamLeader: boolean;
     currentSite: string | null;
     photo: string | null;
   };
+}
+
+interface Site {
+  id: string;
+  name: string;
 }
 
 interface ItemsMap {
@@ -66,6 +102,16 @@ const ITEM_LABELS: Record<keyof ItemsMap, string> = {
   pillow: 'PILLOW',
 };
 
+const ITEM_ICONS: Record<keyof ItemsMap, string> = {
+  uniform: '👕',
+  shoes: '👟',
+  helmet: '🪖',
+  bottle: '🧴',
+  safetyJacket: '🦺',
+  mattress: '🛏️',
+  pillow: '🛋️',
+};
+
 function parseItems(itemsStr: string): ItemsMap {
   try {
     const parsed = JSON.parse(itemsStr);
@@ -84,10 +130,10 @@ function parseItems(itemsStr: string): ItemsMap {
 }
 
 interface MonthGroup {
-  key: string;       // "2026-01"
-  label: string;     // "JAN 2026"
+  key: string;
+  label: string;
   entries: UniformEntry[];
-  status: 'expired' | 'expiring' | 'active'; // for coloring
+  status: 'expired' | 'expiring' | 'active';
 }
 
 interface Props {
@@ -121,6 +167,81 @@ function formatDateShort(dateStr: string): string {
   }
 }
 
+function toDateString(date: Date): string {
+  return date.toISOString().split('T')[0]; // YYYY-MM-DD
+}
+
+/* ───────── Site Combobox ───────── */
+
+function SiteCombobox({
+  sites,
+  selectedSite,
+  onSelect,
+}: {
+  sites: Site[];
+  selectedSite: Site | null;
+  onSelect: (site: Site) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+
+  const filtered = useMemo(() => {
+    if (!filter) return sites;
+    const q = filter.toLowerCase();
+    return sites.filter((s) => s.name.toLowerCase().includes(q));
+  }, [sites, filter]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          className="w-full justify-start bg-slate-900 border-slate-600 text-white hover:bg-slate-800 hover:text-white font-normal"
+        >
+          <Building2 className="h-4 w-4 mr-2 text-slate-400" />
+          {selectedSite ? (
+            <span className="truncate">{selectedSite.name}</span>
+          ) : (
+            <span className="text-slate-500">Select site...</span>
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0 bg-slate-800 border-slate-600" align="start">
+        <Command className="bg-slate-800">
+          <CommandInput
+            placeholder="Search sites..."
+            value={filter}
+            onValueChange={setFilter}
+            className="text-white"
+          />
+          <CommandList className="max-h-64">
+            <CommandEmpty className="text-slate-400 py-4 text-center text-sm">
+              No sites found.
+            </CommandEmpty>
+            <CommandGroup>
+              {filtered.map((site) => (
+                <CommandItem
+                  key={site.id}
+                  value={site.name}
+                  onSelect={() => {
+                    onSelect(site);
+                    setOpen(false);
+                    setFilter('');
+                  }}
+                  className="text-slate-200 data-[selected=true]:bg-slate-700 data-[selected=true]:text-white py-2.5"
+                >
+                  <Building2 className="h-4 w-4 mr-2 text-slate-400 shrink-0" />
+                  <span className="text-sm truncate">{site.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /* ───────── Main Component ───────── */
 
 export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
@@ -131,30 +252,70 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
   const [editData, setEditData] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
 
-  // Fetch all entries for this employee
+  // Add New Record dialog state
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [addSubmitting, setAddSubmitting] = useState(false);
+  const [addDocType, setAddDocType] = useState<string>('id');
+  const [addDocNumber, setAddDocNumber] = useState('');
+  const [addItems, setAddItems] = useState<ItemsMap>({ ...DEFAULT_ITEMS });
+  const [addSite, setAddSite] = useState<Site | null>(null);
+  const [addTeamLeader, setAddTeamLeader] = useState('');
+  const [addCreatedAt, setAddCreatedAt] = useState(toDateString(new Date()));
+  const [addRenewalDate, setAddRenewalDate] = useState('');
+  const [sites, setSites] = useState<Site[]>([]);
+
+  // Employee info derived from the entry
+  const employeeDbId = entry.employeeId; // Database ID (cuid)
+  const employeeDisplayId = entry.employee?.employeeId || entry.employeeId; // Human-readable ID
+
+  // Calculate renewal date from creation date
   useEffect(() => {
-    const fetchEntries = async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(`/api/uniform-registry/employee/${entry.employeeId}`);
-        const json = await res.json();
-        if (json.success) {
-          const entries: UniformEntry[] = json.data.entries || [];
-          setAllEntries(entries);
-          // Auto-select the month of the clicked entry
-          const entryMonth = getMonthKey(entry.createdAt);
-          if (entries.length > 0) {
-            setSelectedMonth(entryMonth);
-          }
+    if (addCreatedAt) {
+      const d = new Date(addCreatedAt);
+      d.setMonth(d.getMonth() + 6);
+      setAddRenewalDate(toDateString(d));
+    }
+  }, [addCreatedAt]);
+
+  // Fetch all entries for this employee
+  const fetchEntries = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/uniform-registry/employee/${employeeDbId}`);
+      const json = await res.json();
+      if (json.success) {
+        const entries: UniformEntry[] = json.data.entries || [];
+        setAllEntries(entries);
+        // Auto-select the month of the clicked entry
+        const entryMonth = getMonthKey(entry.createdAt);
+        if (entries.length > 0) {
+          setSelectedMonth(entryMonth);
         }
-      } catch {
-        // error
-      } finally {
-        setLoading(false);
       }
-    };
+    } catch {
+      // error
+    } finally {
+      setLoading(false);
+    }
+  }, [employeeDbId, entry.createdAt]);
+
+  // Fetch sites for the add new form
+  const fetchSites = useCallback(async () => {
+    try {
+      const res = await fetch('/api/sites');
+      const json = await res.json();
+      if (json.success) {
+        setSites(json.data.sites || []);
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  useEffect(() => {
     fetchEntries();
-  }, [entry]);
+    fetchSites();
+  }, [fetchEntries, fetchSites]);
 
   // Group entries by month
   const monthGroups = useMemo((): MonthGroup[] => {
@@ -165,7 +326,6 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
       groups.get(key)!.push(e);
     });
 
-    // Sort by month descending
     const sorted = Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a[0]));
 
     return sorted.map(([key, entries]) => {
@@ -182,7 +342,6 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
         else hasActive = true;
       });
 
-      // Priority: if any entry is expired, show green; if expiring, show red; else default/slate
       let status: 'expired' | 'expiring' | 'active' = 'active';
       if (hasExpired) status = 'expired';
       else if (hasExpiring) status = 'expiring';
@@ -208,7 +367,10 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
     setEditData({
       siteName: entryItem.siteName || '',
       teamLeaderName: entryItem.teamLeaderName || '',
+      documentType: entryItem.documentType,
+      documentNumber: entryItem.documentNumber,
       items: parseItems(entryItem.items),
+      createdAt: toDateString(new Date(entryItem.createdAt)),
     });
   }, []);
 
@@ -223,20 +385,29 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
     setSaving(true);
     try {
       const items = editData.items as ItemsMap;
+      const updatePayload: Record<string, unknown> = {
+        items: JSON.stringify(items),
+        siteName: editData.siteName,
+        teamLeaderName: editData.teamLeaderName,
+        documentType: editData.documentType,
+        documentNumber: editData.documentNumber,
+      };
+
+      // If createdAt is changed, send it too (renewalDate will be auto-calculated)
+      if (editData.createdAt) {
+        updatePayload.createdAt = editData.createdAt;
+      }
+
       const res = await fetch(`/api/uniform-registry/${entryId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: JSON.stringify(items),
-          siteName: editData.siteName,
-          teamLeaderName: editData.teamLeaderName,
-        }),
+        body: JSON.stringify(updatePayload),
       });
       const json = await res.json();
       if (json.success) {
         toast({ title: 'Updated', description: 'Entry updated successfully.' });
         // Refresh entries
-        const refreshRes = await fetch(`/api/uniform-registry/employee/${entry.employeeId}`);
+        const refreshRes = await fetch(`/api/uniform-registry/employee/${employeeDbId}`);
         const refreshJson = await refreshRes.json();
         if (refreshJson.success) {
           setAllEntries(refreshJson.data.entries || []);
@@ -251,7 +422,83 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [editData, entry.employeeId]);
+  }, [editData, employeeDbId]);
+
+  // Open Add New dialog
+  const openAddNewDialog = useCallback(() => {
+    // Pre-fill with last record's doc type and number
+    const lastEntry = allEntries.length > 0 ? allEntries[0] : entry; // allEntries is desc order, so first = latest
+    setAddDocType(lastEntry.documentType);
+    setAddDocNumber(lastEntry.documentNumber);
+    setAddItems({ ...DEFAULT_ITEMS });
+    setAddSite(null);
+    setAddTeamLeader('');
+    setAddCreatedAt(toDateString(new Date()));
+    setAddDialogOpen(true);
+  }, [allEntries, entry]);
+
+  // Submit new record
+  const handleAddNew = useCallback(async () => {
+    if (!addDocType) {
+      toast({ title: 'Validation Error', description: 'Please select a document type', variant: 'destructive' });
+      return;
+    }
+    if (!addDocNumber.trim()) {
+      toast({ title: 'Validation Error', description: 'Please enter a document number', variant: 'destructive' });
+      return;
+    }
+
+    const activeItems = (Object.keys(addItems) as (keyof ItemsMap)[]).filter((k) => addItems[k]);
+    if (activeItems.length === 0) {
+      toast({ title: 'Validation Error', description: 'Please select at least one item', variant: 'destructive' });
+      return;
+    }
+
+    setAddSubmitting(true);
+    try {
+      const res = await fetch('/api/uniform-registry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          employeeName: entry.employeeName,
+          employeeId: employeeDbId,
+          documentType: addDocType,
+          documentNumber: addDocNumber.trim(),
+          items: JSON.stringify(addItems),
+          siteName: addSite?.name || null,
+          teamLeaderName: addTeamLeader || null,
+          isRenewal: false,
+          previousTokenId: null,
+          createdAt: addCreatedAt || undefined,
+        }),
+      });
+
+      const json = await res.json();
+      if (json.success) {
+        toast({
+          title: 'Entry Created',
+          description: `New uniform registry entry for ${entry.employeeName} has been created successfully.`,
+        });
+        setAddDialogOpen(false);
+        // Refresh entries
+        const refreshRes = await fetch(`/api/uniform-registry/employee/${employeeDbId}`);
+        const refreshJson = await refreshRes.json();
+        if (refreshJson.success) {
+          setAllEntries(refreshJson.data.entries || []);
+        }
+      } else {
+        toast({
+          title: 'Error',
+          description: json.error || 'Failed to create entry',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Something went wrong', variant: 'destructive' });
+    } finally {
+      setAddSubmitting(false);
+    }
+  }, [addDocType, addDocNumber, addItems, addSite, addTeamLeader, addCreatedAt, entry.employeeName, employeeDbId]);
 
   if (loading) {
     return (
@@ -272,14 +519,21 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
           <ArrowLeft className="h-4 w-4" />
           Back
         </Button>
-        <div>
+        <div className="flex-1 min-w-0">
           <h2 className="text-xl font-bold text-white uppercase">
             TOKEN #{entry.tokenNumber} — {entry.employeeName.toUpperCase()}
           </h2>
           <p className="text-sm text-slate-400 uppercase">
-            EMPLOYEE ID: {entry.employeeId} · {allEntries.length} ENTRIES TOTAL
+            EMPLOYEE ID: {employeeDisplayId} · {allEntries.length} ENTRIES TOTAL
           </p>
         </div>
+        <Button
+          onClick={openAddNewDialog}
+          className="gap-1.5 bg-blue-500 hover:bg-blue-600 text-white font-semibold shrink-0"
+        >
+          <Plus className="h-4 w-4" />
+          Add New
+        </Button>
       </div>
 
       {/* Month Tabs */}
@@ -361,20 +615,43 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
                           </Badge>
                         )}
                       </td>
-                      <td className="border border-slate-700 px-3 py-2 text-slate-300">
-                        <Badge
-                          className={cn(
-                            'text-[10px] px-1.5 py-0',
-                            entryItem.documentType === 'passport'
-                              ? 'bg-amber-500/15 text-amber-400 border-amber-500/25'
-                              : 'bg-slate-500/15 text-slate-400 border-slate-500/25'
-                          )}
-                        >
-                          {entryItem.documentType === 'passport' ? 'PASSPORT' : 'ID'}
-                        </Badge>
+                      <td className="border border-slate-700 px-3 py-2">
+                        {isEditing ? (
+                          <Select
+                            value={editData.documentType as string}
+                            onValueChange={(val) => setEditData(prev => ({ ...prev, documentType: val }))}
+                          >
+                            <SelectTrigger className="h-7 text-[11px] bg-slate-900 border-slate-600 text-slate-200">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-800 border-slate-700">
+                              <SelectItem value="id">ID</SelectItem>
+                              <SelectItem value="passport">PASSPORT</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge
+                            className={cn(
+                              'text-[10px] px-1.5 py-0',
+                              entryItem.documentType === 'passport'
+                                ? 'bg-amber-500/15 text-amber-400 border-amber-500/25'
+                                : 'bg-slate-500/15 text-slate-400 border-slate-500/25'
+                            )}
+                          >
+                            {entryItem.documentType === 'passport' ? 'PASSPORT' : 'ID'}
+                          </Badge>
+                        )}
                       </td>
-                      <td className="border border-slate-700 px-3 py-2 text-slate-300 font-mono">
-                        {entryItem.documentNumber.toUpperCase()}
+                      <td className="border border-slate-700 px-3 py-2">
+                        {isEditing ? (
+                          <Input
+                            value={editData.documentNumber as string}
+                            onChange={(e) => setEditData(prev => ({ ...prev, documentNumber: e.target.value.toUpperCase() }))}
+                            className="h-7 text-[11px] uppercase font-mono bg-slate-900 border-slate-600 text-slate-200"
+                          />
+                        ) : (
+                          <span className="text-slate-300 font-mono">{entryItem.documentNumber.toUpperCase()}</span>
+                        )}
                       </td>
                       <td className="border border-slate-700 px-3 py-2">
                         {isEditing ? (
@@ -427,8 +704,17 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
                           })}
                         </div>
                       </td>
-                      <td className="border border-slate-700 px-3 py-2 text-center text-slate-400 text-[10px]">
-                        {formatDateShort(entryItem.createdAt)}
+                      <td className="border border-slate-700 px-3 py-2 text-center">
+                        {isEditing ? (
+                          <Input
+                            type="date"
+                            value={editData.createdAt as string}
+                            onChange={(e) => setEditData(prev => ({ ...prev, createdAt: e.target.value }))}
+                            className="h-7 text-[10px] bg-slate-900 border-slate-600 text-slate-200"
+                          />
+                        ) : (
+                          <span className="text-slate-400 text-[10px]">{formatDateShort(entryItem.createdAt)}</span>
+                        )}
                       </td>
                       <td className="border border-slate-700 px-3 py-2 text-center text-[10px]">
                         {(() => {
@@ -501,6 +787,166 @@ export function UniformEntryDetails({ entry, onBack, onRenew }: Props) {
           </div>
         </Card>
       )}
+
+      {/* ──────── Add New Record Dialog ──────── */}
+      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-slate-200 max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-white">Add New Uniform Record</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Create a new uniform registry entry for {entry.employeeName}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-5 py-2">
+            {/* Employee (preselected, read-only) */}
+            <div className="space-y-2">
+              <Label className="text-slate-300 text-sm">Employee</Label>
+              <div className="flex items-center gap-2 p-3 bg-slate-900/50 rounded-lg border border-slate-700">
+                <User className="h-4 w-4 text-slate-400" />
+                <span className="text-white text-sm font-medium">{entry.employeeName}</span>
+                <span className="text-slate-500 text-xs">({employeeDisplayId})</span>
+              </div>
+            </div>
+
+            {/* Document Type & Number */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label className="text-slate-300 text-sm">
+                  Document Type <span className="text-red-400">*</span>
+                </Label>
+                <Select value={addDocType} onValueChange={setAddDocType}>
+                  <SelectTrigger className="bg-slate-900 border-slate-600 text-white">
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="id">
+                      <span className="flex items-center gap-2">
+                        <FileText className="h-3.5 w-3.5" />
+                        ID
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="passport">
+                      <span className="flex items-center gap-2">
+                        <FileText className="h-3.5 w-3.5" />
+                        Passport
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-slate-300 text-sm">
+                  Document Number <span className="text-red-400">*</span>
+                </Label>
+                <Input
+                  placeholder="e.g. A12345678"
+                  value={addDocNumber}
+                  onChange={(e) => setAddDocNumber(e.target.value)}
+                  className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500"
+                />
+              </div>
+            </div>
+
+            {/* Creation Date & Expiry Date */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label className="text-slate-300 text-sm">
+                  Date of Creation <span className="text-red-400">*</span>
+                </Label>
+                <Input
+                  type="date"
+                  value={addCreatedAt}
+                  onChange={(e) => setAddCreatedAt(e.target.value)}
+                  className="bg-slate-900 border-slate-600 text-white"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-slate-300 text-sm">Expiry Date</Label>
+                <Input
+                  type="date"
+                  value={addRenewalDate}
+                  readOnly
+                  className="bg-slate-900/50 border-slate-600 text-slate-400 cursor-not-allowed"
+                />
+                <p className="text-[10px] text-slate-500">Auto-calculated: 6 months from creation</p>
+              </div>
+            </div>
+
+            {/* Items Checkboxes */}
+            <div className="space-y-2">
+              <Label className="text-slate-300 text-sm">
+                Items Given <span className="text-red-400">*</span>
+              </Label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700">
+                {(Object.keys(DEFAULT_ITEMS) as (keyof ItemsMap)[]).map((key) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`add-item-${key}`}
+                      checked={addItems[key]}
+                      onCheckedChange={(checked) =>
+                        setAddItems((prev) => ({ ...prev, [key]: !!checked }))
+                      }
+                      className="border-slate-600 data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500"
+                    />
+                    <label
+                      htmlFor={`add-item-${key}`}
+                      className="text-sm text-slate-300 cursor-pointer select-none"
+                    >
+                      {ITEM_ICONS[key]} {ITEM_LABELS[key]}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Site Selection */}
+            <div className="space-y-2">
+              <Label className="text-slate-300 text-sm">Site</Label>
+              <SiteCombobox
+                sites={sites}
+                selectedSite={addSite}
+                onSelect={setAddSite}
+              />
+            </div>
+
+            {/* Team Leader */}
+            <div className="space-y-2">
+              <Label className="text-slate-300 text-sm">Team Leader</Label>
+              <Input
+                placeholder="Team leader name"
+                value={addTeamLeader}
+                onChange={(e) => setAddTeamLeader(e.target.value)}
+                className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setAddDialogOpen(false)}
+              className="text-slate-400 hover:text-white"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddNew}
+              disabled={addSubmitting}
+              className="bg-blue-500 hover:bg-blue-600 text-white"
+            >
+              {addSubmitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Creating...
+                </>
+              ) : (
+                'Create Entry'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

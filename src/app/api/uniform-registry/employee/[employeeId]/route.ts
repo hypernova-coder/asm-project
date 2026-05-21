@@ -20,6 +20,7 @@ export async function GET(
           select: {
             id: true,
             fullName: true,
+            employeeId: true,
             isTeamLeader: true,
             currentSite: true,
             photo: true,

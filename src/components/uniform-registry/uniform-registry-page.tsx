@@ -101,6 +101,7 @@ interface UniformEntry {
   employee?: {
     id: string;
     fullName: string;
+    employeeId: string;
     isTeamLeader: boolean;
     currentSite: string | null;
   };
@@ -1640,7 +1641,19 @@ export function UniformRegistryPage() {
                 <Label className="text-slate-300 text-sm">
                   Document Type <span className="text-red-400">*</span>
                 </Label>
-                <Select value={documentType} onValueChange={setDocumentType}>
+                <Select value={documentType} onValueChange={(val) => {
+                  setDocumentType(val);
+                  // Auto-fill document number based on the selected type
+                  if (selectedEmployee) {
+                    if (val === 'id' && selectedEmployee.idNumber) {
+                      setDocumentNumber(selectedEmployee.idNumber);
+                    } else if (val === 'passport' && selectedEmployee.passportNumber) {
+                      setDocumentNumber(selectedEmployee.passportNumber);
+                    } else {
+                      // Keep current value if no matching document number
+                    }
+                  }
+                }}>
                   <SelectTrigger className="bg-slate-900 border-slate-600 text-white">
                     <SelectValue placeholder="Select type" />
                   </SelectTrigger>

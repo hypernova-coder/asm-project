@@ -16,6 +16,7 @@ export async function GET(
           select: {
             id: true,
             fullName: true,
+            employeeId: true,
             isTeamLeader: true,
             currentSite: true,
             photo: true,
@@ -68,7 +69,7 @@ export async function PUT(
       );
     }
 
-    // Only allow updating specific fields
+    // Allow updating multiple fields
     const updateData: Record<string, unknown> = {};
     if (body.items !== undefined) {
       updateData.items = typeof body.items === 'string' ? body.items : JSON.stringify(body.items);
@@ -79,6 +80,37 @@ export async function PUT(
     if (body.teamLeaderName !== undefined) {
       updateData.teamLeaderName = body.teamLeaderName;
     }
+    if (body.documentType !== undefined) {
+      updateData.documentType = body.documentType;
+    }
+    if (body.documentNumber !== undefined) {
+      updateData.documentNumber = body.documentNumber;
+    }
+
+    // If createdAt is provided, update it and recalculate renewalDate
+    if (body.createdAt !== undefined) {
+      const createdAtDate = new Date(body.createdAt);
+      updateData.createdAt = createdAtDate;
+      // Recalculate renewalDate = createdAt + 6 months
+      const renewalDate = new Date(createdAtDate);
+      renewalDate.setMonth(renewalDate.getMonth() + 6);
+      updateData.renewalDate = renewalDate;
+    } else if (body.renewalDate !== undefined) {
+      updateData.renewalDate = new Date(body.renewalDate);
+    }
+
+    // If employee has no site and a site is provided, assign the site to the employee
+    if (body.siteName && existing.employeeId) {
+      const employee = await db.employee.findUnique({
+        where: { id: existing.employeeId },
+      });
+      if (employee && !employee.currentSite) {
+        await db.employee.update({
+          where: { id: existing.employeeId },
+          data: { currentSite: body.siteName },
+        });
+      }
+    }
 
     const entry = await db.uniformRegistry.update({
       where: { id },
@@ -88,6 +120,7 @@ export async function PUT(
           select: {
             id: true,
             fullName: true,
+            employeeId: true,
             isTeamLeader: true,
             currentSite: true,
             photo: true,

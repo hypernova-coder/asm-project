@@ -38,6 +38,7 @@ export async function GET(request: NextRequest) {
             select: {
               id: true,
               fullName: true,
+              employeeId: true,
               isTeamLeader: true,
               currentSite: true,
               photo: true,
@@ -128,10 +129,19 @@ export async function POST(request: NextRequest) {
     });
     const tokenNumber = (maxToken?.tokenNumber ?? 0) + 1;
 
+    // Use provided createdAt or default to now
+    const createdAtDate = body.createdAt ? new Date(body.createdAt) : new Date();
     // Calculate renewalDate = createdAt + 6 months
-    const now = new Date();
-    const renewalDate = new Date(now);
+    const renewalDate = new Date(createdAtDate);
     renewalDate.setMonth(renewalDate.getMonth() + 6);
+
+    // If employee has no site and a site is provided, assign the site to the employee
+    if (siteName && !employee.currentSite) {
+      await db.employee.update({
+        where: { id: employeeId },
+        data: { currentSite: siteName },
+      });
+    }
 
     const entry = await db.uniformRegistry.create({
       data: {
@@ -145,6 +155,7 @@ export async function POST(request: NextRequest) {
         teamLeaderName: teamLeaderName || null,
         isRenewal: isRenewal ?? false,
         previousTokenId: previousTokenId || null,
+        createdAt: createdAtDate,
         renewalDate,
       },
       include: {
@@ -152,6 +163,7 @@ export async function POST(request: NextRequest) {
           select: {
             id: true,
             fullName: true,
+            employeeId: true,
             isTeamLeader: true,
             currentSite: true,
             photo: true,
