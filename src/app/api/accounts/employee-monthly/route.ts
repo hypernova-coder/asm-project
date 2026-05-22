@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { allocateEmployeeHours } from '@/lib/allocation-engine';
 
 // GET: Get monthly hours data for a specific employee and year
 export async function GET(request: NextRequest) {
@@ -147,6 +148,7 @@ export async function PUT(request: NextRequest) {
 
     const results = [];
     const errors = [];
+    const monthsToReallocate = new Set<string>();
 
     for (const monthEntry of monthlyData) {
       const { month, totalHours, rtPerHour } = monthEntry;
@@ -188,10 +190,57 @@ export async function PUT(request: NextRequest) {
           where: { empId, month, year: parseInt(String(year), 10), isDeleted: false },
         });
 
-        const totalSalary = numTotalHours * numRtPerHour;
+        const premiumRecords = existingSalaryRecords.filter(sr => sr.rateTier === 'premium');
 
-        if (existingSalaryRecords.length > 0) {
-          // Update existing salary records
+        if (existingSalaryRecords.length > 0 && premiumRecords.length > 0) {
+          // ── SPLIT RECORDS (standard + premium) exist ──
+          // Consolidate: set the standard record's totalHours to the raw total hours,
+          // soft-delete the premium record, then let the allocation engine re-split.
+          // Group by site to handle multi-site correctly.
+          const siteMap = new Map<string, { standard: typeof existingSalaryRecords[0] | undefined; premium: typeof existingSalaryRecords[0] | undefined }>();
+
+          for (const sr of existingSalaryRecords) {
+            if (!siteMap.has(sr.siteId)) {
+              siteMap.set(sr.siteId, { standard: undefined, premium: undefined });
+            }
+            const group = siteMap.get(sr.siteId)!;
+            if (sr.rateTier === 'standard') group.standard = sr;
+            if (sr.rateTier === 'premium') group.premium = sr;
+          }
+
+          for (const [siteId, group] of siteMap) {
+            // Compute raw hours for this site (standard + premium combined)
+            const rawHoursForSite = (group.standard?.totalHours || 0) + (group.premium?.totalHours || 0);
+
+            if (group.standard) {
+              // Update the standard record with the raw (total) hours for this site
+              const totalSalary = rawHoursForSite * numRtPerHour;
+              await db.salaryRecord.update({
+                where: { id: group.standard.id },
+                data: {
+                  totalHours: rawHoursForSite,
+                  rtPerHour: numRtPerHour,
+                  totalSalary,
+                  balanceSalary: totalSalary - group.standard.deduction - group.standard.advance,
+                },
+              });
+            }
+
+            // Soft-delete the premium record so allocation engine can re-create it if needed
+            if (group.premium) {
+              await db.salaryRecord.update({
+                where: { id: group.premium.id },
+                data: { isDeleted: true },
+              });
+            }
+          }
+
+          // Mark this month for reallocation so the allocation engine re-splits based on threshold
+          monthsToReallocate.add(month);
+        } else if (existingSalaryRecords.length > 0) {
+          // ── SINGLE RECORD TYPE (only standard or only premium) ──
+          // Update it with the new hours and rate, then reallocate to ensure proper split
+          const totalSalary = numTotalHours * numRtPerHour;
           for (const sr of existingSalaryRecords) {
             await db.salaryRecord.update({
               where: { id: sr.id },
@@ -203,8 +252,11 @@ export async function PUT(request: NextRequest) {
               },
             });
           }
+          // Mark this month for reallocation to ensure proper split
+          monthsToReallocate.add(month);
         } else if (numTotalHours > 0) {
-          // Try to create salary record if we can find a site
+          // ── NO EXISTING RECORDS ──
+          // Try to create a salary record if we can find a site
           const siteRecords = await db.empCountSitePerMonth.findMany({
             where: { empId, month, deletedDate: null },
             include: { site: { select: { id: true, name: true } } },
@@ -239,6 +291,7 @@ export async function PUT(request: NextRequest) {
 
           if (siteId) {
             const salaryYear = parseInt(month.split('-')[0], 10);
+            const totalSalary = numTotalHours * numRtPerHour;
             await db.salaryRecord.create({
               data: {
                 empId,
@@ -260,12 +313,27 @@ export async function PUT(request: NextRequest) {
                 isPaid: false,
               },
             });
+            // Mark this month for reallocation to ensure proper split
+            monthsToReallocate.add(month);
           }
         }
       } catch (monthError: unknown) {
         const errMsg = monthError instanceof Error ? monthError.message : 'Unknown error';
         console.error(`[employee-monthly PUT] Error saving month ${month}:`, errMsg);
         errors.push({ month, error: errMsg });
+      }
+    }
+
+    // Run the allocation engine for each unique month that was updated
+    // This will re-split the consolidated hours into standard + premium based on the threshold
+    for (const month of monthsToReallocate) {
+      try {
+        const salaryYear = parseInt(month.split('-')[0], 10);
+        await allocateEmployeeHours(month, salaryYear);
+      } catch (allocError: unknown) {
+        const errMsg = allocError instanceof Error ? allocError.message : 'Unknown error';
+        console.error(`[employee-monthly PUT] Error reallocating month ${month}:`, errMsg);
+        // Don't fail the whole request, just log the error
       }
     }
 
@@ -283,6 +351,7 @@ export async function PUT(request: NextRequest) {
         results,
         errors: errors.length > 0 ? errors : undefined,
         totalWorkingHours: aggregateTotalHours,
+        reallocatedMonths: Array.from(monthsToReallocate),
       },
     });
   } catch (error: unknown) {

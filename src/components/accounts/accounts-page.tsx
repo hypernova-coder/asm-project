@@ -1033,10 +1033,25 @@ function ManageWorkingHoursPage({
         )
       );
       const failed = results.filter((r) => r.status === 'rejected').length;
+
+      // After saving thresholds, run allocation engine for the current month
+      // to re-split salary records based on the new threshold
+      try {
+        const now = new Date();
+        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        await fetch('/api/accounts/allocate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ month: currentMonth, year: now.getFullYear() }),
+        });
+      } catch (allocErr) {
+        console.error('Failed to run allocation after threshold save:', allocErr);
+      }
+
       if (failed > 0) {
         toast({ title: 'Partial Save', description: `${failed} record(s) failed to save.`, variant: 'destructive' });
       } else {
-        toast({ title: 'Saved', description: 'All working hours updated successfully.' });
+        toast({ title: 'Saved', description: 'All working hours updated successfully. Salary splits recalculated.' });
       }
       fetchWorkingHours();
     } catch {
