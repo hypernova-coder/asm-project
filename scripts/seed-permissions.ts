@@ -10,6 +10,7 @@ const DEFAULT_PERMISSIONS = [
   { name: 'Cancellations', slug: 'cancellation_requests', group: 'workforce' },
   { name: 'Notifications', slug: 'notifications', group: 'general' },
   { name: 'Admin Management', slug: 'admins', group: 'admin' },
+  { name: 'Accounts', slug: 'accounts', group: 'workforce' },
   { name: 'Settings', slug: 'settings', group: 'admin' },
   { name: 'Payroll', slug: 'payroll', group: 'workforce' },
   { name: 'Reports', slug: 'reports', group: 'general' },

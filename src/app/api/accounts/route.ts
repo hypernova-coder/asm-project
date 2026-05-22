@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
+// Helper: Calculate RT/HR with team leader and supervisor support
+function calcRtPerHour(
+  totalWorkingHours: number,
+  isTeamLeaderForSite: boolean,
+  isSupervisorForSite: boolean,
+  isCustom: boolean,
+  customRtPerHour: number
+): number {
+  if (isCustom) return customRtPerHour;
+  const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
+  if (totalWorkingHours >= 1000) {
+    return hasBonus ? 5.5 : 5.0;
+  }
+  return hasBonus ? 3.0 : 2.5;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -66,7 +82,7 @@ export async function GET(request: NextRequest) {
           orderBy: { empName: 'asc' },
         });
 
-        // Deduplicate by empId (an employee might have multiple records for same site+month)
+        // Deduplicate by empId
         const seenEmpIds = new Set<string>();
         const uniqueEmployees: typeof empRecords = [];
         for (const record of empRecords) {
@@ -100,22 +116,23 @@ export async function GET(request: NextRequest) {
               where: { empId: empRecord.empId },
             });
 
-            // Calculate RT/HR
-            let rtPerHour = 2.5; // Basic rate
-            if (workingHours) {
-              if (workingHours.isCustom) {
-                rtPerHour = workingHours.rtPerHour;
-              } else {
-                const totalHrs = workingHours.totalWorkingHours;
-                const isTeamLeaderForSite =
-                  emp.isTeamLeader && emp.teamLeaderSiteId === site.id;
+            // Calculate RT/HR with supervisor support
+            const isTeamLeaderForSite = emp.isTeamLeader && emp.teamLeaderSiteId === site.id;
+            const isSupervisorForSite = emp.isSupervisor && emp.supervisorSiteId === site.id;
 
-                if (totalHrs >= 1000) {
-                  rtPerHour = isTeamLeaderForSite ? 5.5 : 5.0;
-                } else {
-                  rtPerHour = isTeamLeaderForSite ? 3.0 : 2.5;
-                }
-              }
+            let rtPerHour = 2.5;
+            if (workingHours) {
+              rtPerHour = calcRtPerHour(
+                workingHours.totalWorkingHours,
+                isTeamLeaderForSite,
+                isSupervisorForSite,
+                workingHours.isCustom,
+                workingHours.rtPerHour
+              );
+            } else {
+              // No working hours record yet, use basic calculation
+              const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
+              rtPerHour = hasBonus ? 3.0 : 2.5;
             }
 
             return {
@@ -124,8 +141,8 @@ export async function GET(request: NextRequest) {
               employeeCode: emp.employeeId,
               nationality: emp.nationality || '',
               trade: emp.trade || '',
-              isTeamLeader: emp.isTeamLeader && emp.teamLeaderSiteId === site.id,
-              isSupervisor: emp.isSupervisor && emp.supervisorSiteId === site.id,
+              isTeamLeader: isTeamLeaderForSite,
+              isSupervisor: isSupervisorForSite,
               salaryRecord: salaryRecord
                 ? {
                     ...salaryRecord,
@@ -187,21 +204,18 @@ export async function GET(request: NextRequest) {
             },
           });
 
+          const isTeamLeaderForSite = empInfo?.isTeamLeader && empInfo?.teamLeaderSiteId === site.id;
+          const isSupervisorForSite = empInfo?.isSupervisor && empInfo?.supervisorSiteId === site.id;
+
           let rtPerHour = 2.5;
           if (workingHours) {
-            if (workingHours.isCustom) {
-              rtPerHour = workingHours.rtPerHour;
-            } else {
-              const totalHrs = workingHours.totalWorkingHours;
-              const isTeamLeaderForSite =
-                empInfo?.isTeamLeader && empInfo?.teamLeaderSiteId === site.id;
-
-              if (totalHrs >= 1000) {
-                rtPerHour = isTeamLeaderForSite ? 5.5 : 5.0;
-              } else {
-                rtPerHour = isTeamLeaderForSite ? 3.0 : 2.5;
-              }
-            }
+            rtPerHour = calcRtPerHour(
+              workingHours.totalWorkingHours,
+              isTeamLeaderForSite,
+              isSupervisorForSite,
+              workingHours.isCustom,
+              workingHours.rtPerHour
+            );
           }
 
           employeesWithSalary.push({
@@ -210,10 +224,8 @@ export async function GET(request: NextRequest) {
             employeeCode: manualRecord.employeeCode || empInfo?.employeeId || '',
             nationality: manualRecord.nationality || empInfo?.nationality || '',
             trade: manualRecord.trade || empInfo?.trade || '',
-            isTeamLeader:
-              empInfo?.isTeamLeader && empInfo?.teamLeaderSiteId === site.id,
-            isSupervisor:
-              empInfo?.isSupervisor && empInfo?.supervisorSiteId === site.id,
+            isTeamLeader: isTeamLeaderForSite,
+            isSupervisor: isSupervisorForSite,
             salaryRecord: {
               ...manualRecord,
               createdAt: manualRecord.createdAt.toISOString(),

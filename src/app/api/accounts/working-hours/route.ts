@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
-// Helper: Calculate RT/HR based on working hours and team leader status
+// Helper: Calculate RT/HR based on working hours and team leader/supervisor status
 function calculateRtPerHour(
   totalWorkingHours: number,
   isTeamLeader: boolean,
+  isSupervisor: boolean,
   isCustom: boolean,
   customRtPerHour: number
 ): number {
@@ -15,19 +16,53 @@ function calculateRtPerHour(
 
   // Basic rate: 2.5 for everyone
   // If totalWorkingHours >= 1000: rate becomes 5.0
-  // If employee is Team Leader: add 0.5 to both (3.0 basic, 5.5 after 1000hrs)
+  // If employee is Team Leader OR Supervisor: add 0.5 to both (3.0 basic, 5.5 after 1000hrs)
+  const hasBonus = isTeamLeader || isSupervisor;
   if (totalWorkingHours >= 1000) {
-    return isTeamLeader ? 5.5 : 5.0;
+    return hasBonus ? 5.5 : 5.0;
   }
-  return isTeamLeader ? 3.0 : 2.5;
+  return hasBonus ? 3.0 : 2.5;
 }
 
 // GET: Get all working hours records (with optional search)
+// Or get available employees not yet in the table (available=true)
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const search = searchParams.get('search');
     const empId = searchParams.get('empId');
+    const available = searchParams.get('available');
+
+    // If available=true, return employees NOT in TotalEmployeeWorkingHours
+    if (available === 'true') {
+      const existingRecords = await db.totalEmployeeWorkingHours.findMany({
+        select: { empId: true },
+      });
+      const existingEmpIds = existingRecords.map((r) => r.empId);
+
+      const employees = await db.employee.findMany({
+        where: {
+          id: { notIn: existingEmpIds },
+          status: 'active',
+        },
+        select: {
+          id: true,
+          fullName: true,
+          employeeId: true,
+          trade: true,
+          nationality: true,
+          isTeamLeader: true,
+          isSupervisor: true,
+          currentSite: true,
+        },
+        orderBy: { fullName: 'asc' },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: { employees },
+      });
+    }
 
     // If a specific empId is requested, return that single record
     if (empId) {
@@ -42,6 +77,7 @@ export async function GET(request: NextRequest) {
               trade: true,
               nationality: true,
               isTeamLeader: true,
+              isSupervisor: true,
               teamLeaderSiteId: true,
               currentSite: true,
             },
@@ -59,6 +95,7 @@ export async function GET(request: NextRequest) {
       const calculatedRtPerHour = calculateRtPerHour(
         record.totalWorkingHours,
         record.employee.isTeamLeader,
+        record.employee.isSupervisor,
         record.isCustom,
         record.rtPerHour
       );
@@ -115,6 +152,7 @@ export async function GET(request: NextRequest) {
             trade: true,
             nationality: true,
             isTeamLeader: true,
+            isSupervisor: true,
             teamLeaderSiteId: true,
             currentSite: true,
           },
@@ -127,6 +165,7 @@ export async function GET(request: NextRequest) {
       const calculatedRtPerHour = calculateRtPerHour(
         record.totalWorkingHours,
         record.employee.isTeamLeader,
+        record.employee.isSupervisor,
         record.isCustom,
         record.rtPerHour
       );
@@ -163,12 +202,73 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST: Create a new working hours record (or update if exists for empId)
+// POST: Create new working hours records
+// Supports: single record (empId, empName) or batch (employeeIds array)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { empId, empName, totalWorkingHours, rtPerHour, isCustom } = body;
+    const { empId, empName, totalWorkingHours, rtPerHour, isCustom, employeeIds } = body;
 
+    // Batch creation from AddEmployeeDialog
+    if (employeeIds && Array.isArray(employeeIds) && employeeIds.length > 0) {
+      const results = [];
+      for (const eid of employeeIds) {
+        const employee = await db.employee.findUnique({
+          where: { id: eid },
+          select: {
+            id: true,
+            fullName: true,
+            employeeId: true,
+            trade: true,
+            nationality: true,
+            isTeamLeader: true,
+            isSupervisor: true,
+          },
+        });
+
+        if (!employee) continue;
+
+        // Check if already exists
+        const existing = await db.totalEmployeeWorkingHours.findUnique({
+          where: { empId: eid },
+        });
+
+        if (existing) continue;
+
+        const calculatedRt = calculateRtPerHour(0, employee.isTeamLeader, employee.isSupervisor, false, 2.5);
+
+        const record = await db.totalEmployeeWorkingHours.create({
+          data: {
+            empId: eid,
+            empName: employee.fullName,
+            totalWorkingHours: 0,
+            rtPerHour: calculatedRt,
+            isCustom: false,
+          },
+        });
+
+        results.push({
+          id: record.id,
+          empId: record.empId,
+          empName: record.empName,
+          totalWorkingHours: record.totalWorkingHours,
+          rtPerHour: record.rtPerHour,
+          isCustom: record.isCustom,
+          calculatedRtPerHour: calculatedRt,
+          employee,
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          created: results.length,
+          records: results,
+        },
+      });
+    }
+
+    // Single record creation (legacy)
     if (!empId || !empName) {
       return NextResponse.json(
         { success: false, error: 'empId and empName are required' },
@@ -186,6 +286,7 @@ export async function POST(request: NextRequest) {
         trade: true,
         nationality: true,
         isTeamLeader: true,
+        isSupervisor: true,
         teamLeaderSiteId: true,
         currentSite: true,
       },
@@ -206,6 +307,7 @@ export async function POST(request: NextRequest) {
     const calculatedRtPerHour = calculateRtPerHour(
       parsedTotalHours,
       employee.isTeamLeader,
+      employee.isSupervisor,
       parsedIsCustom,
       parsedRtPerHour
     );
@@ -281,6 +383,7 @@ export async function PUT(request: NextRequest) {
               trade: true,
               nationality: true,
               isTeamLeader: true,
+              isSupervisor: true,
               teamLeaderSiteId: true,
               currentSite: true,
             },
@@ -299,6 +402,7 @@ export async function PUT(request: NextRequest) {
               trade: true,
               nationality: true,
               isTeamLeader: true,
+              isSupervisor: true,
               teamLeaderSiteId: true,
               currentSite: true,
             },
@@ -332,9 +436,10 @@ export async function PUT(request: NextRequest) {
       // Use the custom rtPerHour value
       updateData.rtPerHour = typeof rtPerHour === 'number' ? rtPerHour : existing.rtPerHour;
     } else {
-      // Auto-calculate based on total hours and team leader status
+      // Auto-calculate based on total hours and team leader/supervisor status
       const isTeamLeader = existing.employee?.isTeamLeader || false;
-      const calculatedRt = calculateRtPerHour(finalTotalHours, isTeamLeader, false, finalCustomRtPerHour);
+      const isSupervisor = existing.employee?.isSupervisor || false;
+      const calculatedRt = calculateRtPerHour(finalTotalHours, isTeamLeader, isSupervisor, false, finalCustomRtPerHour);
       updateData.rtPerHour = calculatedRt;
     }
 
@@ -350,6 +455,7 @@ export async function PUT(request: NextRequest) {
             trade: true,
             nationality: true,
             isTeamLeader: true,
+            isSupervisor: true,
             teamLeaderSiteId: true,
             currentSite: true,
           },
@@ -360,9 +466,35 @@ export async function PUT(request: NextRequest) {
     const calculatedRtPerHour = calculateRtPerHour(
       updated.totalWorkingHours,
       updated.employee.isTeamLeader,
+      updated.employee.isSupervisor,
       updated.isCustom,
       updated.rtPerHour
     );
+
+    // Bidirectional sync: if rtPerHour changed, update all salary records for this employee
+    if (typeof rtPerHour === 'number' || typeof totalWorkingHours === 'number') {
+      const newRtPerHour = updated.rtPerHour;
+      // Get all active salary records for this employee and update their rtPerHour
+      const salaryRecords = await db.salaryRecord.findMany({
+        where: {
+          empId: existing.empId,
+          isDeleted: false,
+        },
+      });
+
+      for (const sr of salaryRecords) {
+        const newTotalSalary = sr.totalHours * newRtPerHour;
+        const newBalanceSalary = newTotalSalary - sr.deduction - sr.advance;
+        await db.salaryRecord.update({
+          where: { id: sr.id },
+          data: {
+            rtPerHour: newRtPerHour,
+            totalSalary: newTotalSalary,
+            balanceSalary: newBalanceSalary,
+          },
+        });
+      }
+    }
 
     return NextResponse.json({
       success: true,

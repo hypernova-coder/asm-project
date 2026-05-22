@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
-// Helper: Calculate RT/HR based on working hours and team leader status
+// Helper: Calculate RT/HR based on working hours and team leader/supervisor status
 async function calculateRtPerHour(
   empId: string,
   siteId: string
@@ -11,7 +11,7 @@ async function calculateRtPerHour(
   });
   const employee = await db.employee.findUnique({
     where: { id: empId },
-    select: { isTeamLeader: true, teamLeaderSiteId: true },
+    select: { isTeamLeader: true, teamLeaderSiteId: true, isSupervisor: true, supervisorSiteId: true },
   });
 
   if (workingHours && workingHours.isCustom) {
@@ -21,11 +21,14 @@ async function calculateRtPerHour(
   const totalHrs = workingHours?.totalWorkingHours || 0;
   const isTeamLeaderForSite =
     employee?.isTeamLeader && employee?.teamLeaderSiteId === siteId;
+  const isSupervisorForSite =
+    employee?.isSupervisor && employee?.supervisorSiteId === siteId;
+  const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
 
   if (totalHrs >= 1000) {
-    return isTeamLeaderForSite ? 5.5 : 5.0;
+    return hasBonus ? 5.5 : 5.0;
   }
-  return isTeamLeaderForSite ? 3.0 : 2.5;
+  return hasBonus ? 3.0 : 2.5;
 }
 
 // POST: Create a new salary record
@@ -51,6 +54,7 @@ export async function POST(request: NextRequest) {
       balanceSalary,
       isPaid,
       totalWorkingHours, // optional: to update TotalEmployeeWorkingHours
+      updateWorkingHours, // bidirectional sync flag
     } = body;
 
     // Validate required fields
@@ -111,22 +115,32 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Update working hours if provided
-      if (typeof totalWorkingHours === 'number') {
-        await db.totalEmployeeWorkingHours.upsert({
-          where: { empId },
-          update: {
-            totalWorkingHours,
-            empName,
-          },
-          create: {
-            empId,
-            empName,
-            totalWorkingHours,
-            rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : 2.5,
-            isCustom: false,
-          },
-        });
+      // Bidirectional sync: update TotalEmployeeWorkingHours
+      if (updateWorkingHours || typeof totalWorkingHours === 'number') {
+        const newTotalHours = typeof totalWorkingHours === 'number'
+          ? totalWorkingHours
+          : typeof totalHours === 'number'
+            ? totalHours
+            : undefined;
+        const newRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : undefined;
+
+        if (newTotalHours !== undefined || newRtPerHour !== undefined) {
+          await db.totalEmployeeWorkingHours.upsert({
+            where: { empId },
+            update: {
+              ...(newTotalHours !== undefined ? { totalWorkingHours: newTotalHours } : {}),
+              ...(newRtPerHour !== undefined ? { rtPerHour: newRtPerHour } : {}),
+              empName,
+            },
+            create: {
+              empId,
+              empName,
+              totalWorkingHours: newTotalHours || 0,
+              rtPerHour: newRtPerHour || 2.5,
+              isCustom: false,
+            },
+          });
+        }
       }
 
       return NextResponse.json({
@@ -164,22 +178,32 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Update working hours if provided
-    if (typeof totalWorkingHours === 'number') {
-      await db.totalEmployeeWorkingHours.upsert({
-        where: { empId },
-        update: {
-          totalWorkingHours,
-          empName,
-        },
-        create: {
-          empId,
-          empName,
-          totalWorkingHours,
-          rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : 2.5,
-          isCustom: false,
-        },
-      });
+    // Bidirectional sync: update TotalEmployeeWorkingHours
+    if (updateWorkingHours || typeof totalWorkingHours === 'number') {
+      const newTotalHours = typeof totalWorkingHours === 'number'
+        ? totalWorkingHours
+        : typeof totalHours === 'number'
+          ? totalHours
+          : undefined;
+      const newRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : undefined;
+
+      if (newTotalHours !== undefined || newRtPerHour !== undefined) {
+        await db.totalEmployeeWorkingHours.upsert({
+          where: { empId },
+          update: {
+            ...(newTotalHours !== undefined ? { totalWorkingHours: newTotalHours } : {}),
+            ...(newRtPerHour !== undefined ? { rtPerHour: newRtPerHour } : {}),
+            empName,
+          },
+          create: {
+            empId,
+            empName,
+            totalWorkingHours: newTotalHours || 0,
+            rtPerHour: newRtPerHour || 2.5,
+            isCustom: false,
+          },
+        });
+      }
     }
 
     return NextResponse.json(
@@ -218,6 +242,7 @@ export async function PUT(request: NextRequest) {
       balanceSalary,
       isPaid,
       totalWorkingHours, // optional: to update TotalEmployeeWorkingHours
+      updateWorkingHours, // bidirectional sync flag
     } = body;
 
     if (!id) {
@@ -258,7 +283,28 @@ export async function PUT(request: NextRequest) {
       data: updateData,
     });
 
-    // Update working hours if provided
+    // Bidirectional sync: update TotalEmployeeWorkingHours
+    if (updateWorkingHours) {
+      const updateWH: Record<string, unknown> = {};
+      if (typeof totalHours === 'number') updateWH.totalWorkingHours = totalHours;
+      if (typeof rtPerHour === 'number') updateWH.rtPerHour = rtPerHour;
+
+      if (Object.keys(updateWH).length > 0) {
+        await db.totalEmployeeWorkingHours.upsert({
+          where: { empId: existing.empId },
+          update: updateWH,
+          create: {
+            empId: existing.empId,
+            empName: existing.empName,
+            totalWorkingHours: typeof totalHours === 'number' ? totalHours : 0,
+            rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : 2.5,
+            isCustom: false,
+          },
+        });
+      }
+    }
+
+    // Also update working hours if totalWorkingHours is explicitly provided
     if (typeof totalWorkingHours === 'number') {
       await db.totalEmployeeWorkingHours.upsert({
         where: { empId: existing.empId },

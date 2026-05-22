@@ -12,6 +12,7 @@ const PERMISSION_SEEDS = [
   { name: 'Cancellations', slug: 'cancellation_requests', group: 'workforce' },
   { name: 'Notifications', slug: 'notifications', group: 'general' },
   { name: 'Admin Management', slug: 'admins', group: 'admin' },
+  { name: 'Accounts', slug: 'accounts', group: 'workforce' },
 ];
 
 // Menus always visible to all users (including admin)
