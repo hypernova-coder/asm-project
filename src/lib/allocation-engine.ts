@@ -244,6 +244,10 @@ export async function allocateEmployeeHours(
       const siteData = sortedSites[i];
       const alloc = siteAllocations[i];
 
+      // Determine the isPaid status for this employee+site+month+year
+      // Use OR logic: if either standard or premium is paid, both should be paid
+      const carryIsPaidForSite = siteData.existingStandard?.isPaid || siteData.existingPremium?.isPaid || false;
+
       // --- Standard (lowRate) record ---
       if (alloc.lowRateHours > 0) {
         // Preserve user-edited rate from existing record if it differs from default
@@ -254,7 +258,6 @@ export async function allocateEmployeeHours(
         const totalSalary = alloc.lowRateHours * effectiveLowRate;
         const carryDeduction = siteData.existingStandard?.deduction ?? 0;
         const carryAdvance = siteData.existingStandard?.advance ?? 0;
-        const carryIsPaid = siteData.existingStandard?.isPaid ?? false;
         const balanceSalary = totalSalary - carryDeduction - carryAdvance;
 
         await db.salaryRecord.upsert({
@@ -279,7 +282,7 @@ export async function allocateEmployeeHours(
             deduction: carryDeduction,
             advance: carryAdvance,
             balanceSalary,
-            isPaid: carryIsPaid,
+            isPaid: carryIsPaidForSite,
             isDeleted: false,
           },
           create: {
@@ -299,7 +302,7 @@ export async function allocateEmployeeHours(
             deduction: carryDeduction,
             advance: carryAdvance,
             balanceSalary,
-            isPaid: carryIsPaid,
+            isPaid: carryIsPaidForSite,
             rateTier: 'standard',
           },
         });
@@ -334,7 +337,6 @@ export async function allocateEmployeeHours(
         const totalSalary = alloc.highRateHours * effectiveHighRate;
         const carryDeduction = siteData.existingPremium?.deduction ?? 0;
         const carryAdvance = siteData.existingPremium?.advance ?? 0;
-        const carryIsPaid = siteData.existingPremium?.isPaid ?? false;
         const balanceSalary = totalSalary - carryDeduction - carryAdvance;
 
         await db.salaryRecord.upsert({
@@ -359,7 +361,7 @@ export async function allocateEmployeeHours(
             deduction: carryDeduction,
             advance: carryAdvance,
             balanceSalary,
-            isPaid: carryIsPaid,
+            isPaid: carryIsPaidForSite,
             isDeleted: false,
           },
           create: {
@@ -379,7 +381,7 @@ export async function allocateEmployeeHours(
             deduction: carryDeduction,
             advance: carryAdvance,
             balanceSalary,
-            isPaid: carryIsPaid,
+            isPaid: carryIsPaidForSite,
             rateTier: 'premium',
           },
         });

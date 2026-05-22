@@ -1328,9 +1328,45 @@ function SiteSalarySheet({
     );
   };
 
-  const handlePaidToggle = (index: number, currentIsPaid: boolean) => {
-    if (currentIsPaid && !editMode) return;
-    handleCellChange(index, 'isPaid', !currentIsPaid);
+  const handlePaidToggle = async (index: number, currentIsPaid: boolean) => {
+    const newIsPaid = !currentIsPaid;
+
+    // Optimistic UI update
+    handleCellChange(index, 'isPaid', newIsPaid);
+
+    // Immediately call the toggle-paid API to sync across all pages
+    const emp = mergedEmployees[index];
+    if (!emp) return;
+
+    try {
+      const monthStr = getMonthString(year, month);
+      const res = await fetch('/api/accounts/salary/toggle-paid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          empId: emp.empId,
+          siteId: site.id,
+          month: monthStr,
+          year,
+          isPaid: newIsPaid,
+        }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        // Revert on failure
+        handleCellChange(index, 'isPaid', currentIsPaid);
+        toast({ title: 'Error', description: json.error || 'Failed to update payment status', variant: 'destructive' });
+      } else {
+        toast({
+          title: newIsPaid ? 'Marked as Paid' : 'Marked as Unpaid',
+          description: `${emp.empName} - ${site.name}`,
+        });
+      }
+    } catch {
+      // Revert on failure
+      handleCellChange(index, 'isPaid', currentIsPaid);
+      toast({ title: 'Error', description: 'Failed to update payment status', variant: 'destructive' });
+    }
   };
 
   const handleAddRow = () => {
@@ -1420,7 +1456,7 @@ function SiteSalarySheet({
           deduction: 0,
           advance: 0,
           balanceSalary: emp.highRateHours * emp.highRate,
-          isPaid: false,
+          isPaid: emp.isPaid, // Sync isPaid with standard record
           rateTier: 'premium',
         });
       }
@@ -1664,13 +1700,10 @@ function SiteSalarySheet({
                   <button
                     onClick={() => handlePaidToggle(index, emp.isPaid)}
                     className={cn(
-                      'inline-flex items-center justify-center rounded px-2 py-0.5 text-[10px] font-bold transition-colors',
+                      'inline-flex items-center justify-center rounded px-2 py-0.5 text-[10px] font-bold transition-colors cursor-pointer',
                       emp.isPaid
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30'
                         : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
-                      !emp.isPaid && 'cursor-pointer',
-                      emp.isPaid && !editMode && 'cursor-default',
-                      emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30'
                     )}
                   >
                     {emp.isPaid ? 'PAID' : 'UNPAID'}

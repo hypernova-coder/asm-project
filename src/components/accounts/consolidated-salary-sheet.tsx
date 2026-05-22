@@ -216,7 +216,8 @@ function mergeApiEntries(
 
     const deduction = standardEntry?.salaryRecord?.deduction ?? 0;
     const advance = standardEntry?.salaryRecord?.advance ?? 0;
-    const isPaid = standardEntry?.salaryRecord?.isPaid ?? false;
+    // Use OR logic: if either record is paid, the merged row shows as paid
+    const isPaid = (standardEntry?.salaryRecord?.isPaid ?? false) || (premiumEntry?.salaryRecord?.isPaid ?? false);
 
     let rateTier: 'standard' | 'premium' | 'split' = 'standard';
     if (standardEntry && premiumEntry) {
@@ -351,7 +352,7 @@ export function ConsolidatedSalarySheet() {
         if (field === 'totalHours') {
           // When totalHours changes, recalculate the split based on cumulative threshold
           const threshold = 1000; // Default, allocation engine will use actual
-          const cumulativeBefore = 0; // Simplified; allocation engine recalculates correctly after save
+          const cumulativeBefore = u.previousCumulativeHours; // Use actual cumulative from previous months
           const remainingThreshold = threshold - cumulativeBefore;
           const totalHrs = u.totalHours;
 
@@ -407,9 +408,45 @@ export function ConsolidatedSalarySheet() {
     });
   };
 
-  const handlePaidToggle = (siteId: string, index: number, currentIsPaid: boolean) => {
-    if (currentIsPaid && !editMode) return;
-    handleCellChange(siteId, index, 'isPaid', !currentIsPaid);
+  const handlePaidToggle = async (siteId: string, index: number, currentIsPaid: boolean) => {
+    const newIsPaid = !currentIsPaid;
+
+    // Optimistic UI update
+    handleCellChange(siteId, index, 'isPaid', newIsPaid);
+
+    // Immediately call the toggle-paid API to sync across all pages
+    const employees = siteEmployees[siteId] || [];
+    const emp = employees[index];
+    if (!emp) return;
+
+    try {
+      const res = await fetch('/api/accounts/salary/toggle-paid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          empId: emp.empId,
+          siteId: emp.siteId || siteId,
+          month: monthStr,
+          year: selectedYear,
+          isPaid: newIsPaid,
+        }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        // Revert on failure
+        handleCellChange(siteId, index, 'isPaid', currentIsPaid);
+        toast({ title: 'Error', description: json.error || 'Failed to update payment status', variant: 'destructive' });
+      } else {
+        toast({
+          title: newIsPaid ? 'Marked as Paid' : 'Marked as Unpaid',
+          description: `${emp.empName} - ${emp.siteName}`,
+        });
+      }
+    } catch {
+      // Revert on failure
+      handleCellChange(siteId, index, 'isPaid', currentIsPaid);
+      toast({ title: 'Error', description: 'Failed to update payment status', variant: 'destructive' });
+    }
   };
 
   const handleAddRow = (siteId: string) => {
@@ -543,7 +580,7 @@ export function ConsolidatedSalarySheet() {
               deduction: 0,
               advance: 0,
               balanceSalary: emp.highRateHours * emp.highRate,
-              isPaid: false,
+              isPaid: emp.isPaid, // Sync isPaid with standard record
               rateTier: 'premium',
             };
             allRecords.push(premiumRecord);
@@ -1059,13 +1096,10 @@ export function ConsolidatedSalarySheet() {
                                   <button
                                     onClick={() => handlePaidToggle(site.id, index, emp.isPaid)}
                                     className={cn(
-                                      'inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[9px] font-bold transition-colors',
+                                      'inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[9px] font-bold transition-colors cursor-pointer',
                                       emp.isPaid
-                                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30'
                                         : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
-                                      !emp.isPaid && 'cursor-pointer',
-                                      emp.isPaid && !editMode && 'cursor-default',
-                                      emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30',
                                     )}
                                   >
                                     {emp.isPaid ? 'PAID' : 'UNPAID'}
