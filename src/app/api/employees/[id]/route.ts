@@ -290,6 +290,73 @@ export async function PUT(
       });
     }
 
+    // Cascade update trade and nationality across referencing tables
+    if (body.trade !== undefined && body.trade !== existing.trade) {
+      const newTrade = body.trade as string;
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { trade: newTrade },
+      });
+    }
+
+    if (body.nationality !== undefined && body.nationality !== existing.nationality) {
+      const newNationality = body.nationality as string;
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { nationality: newNationality || '' },
+      });
+    }
+
+    // Cascade update TL/Supervisor status changes to related tables
+    const tlChanged = body.isTeamLeader !== undefined && body.isTeamLeader !== existing.isTeamLeader;
+    const supChanged = body.isSupervisor !== undefined && body.isSupervisor !== existing.isSupervisor;
+    if (tlChanged || supChanged) {
+      const newIsTeamLeader = body.isTeamLeader ?? existing.isTeamLeader;
+      const newIsSupervisor = body.isSupervisor ?? existing.isSupervisor;
+      const hasBonus = newIsTeamLeader || newIsSupervisor;
+
+      // Recalculate and update rates in SalaryRecord for this employee
+      const salaryRecords = await db.salaryRecord.findMany({
+        where: { empId: id, isDeleted: false },
+      });
+
+      for (const sr of salaryRecords) {
+        const newRate = sr.rateTier === 'premium'
+          ? (hasBonus ? 5.5 : 5.0)
+          : (hasBonus ? 3.0 : 2.5);
+        const newTotalSalary = sr.totalHours * newRate;
+
+        await db.salaryRecord.update({
+          where: { id: sr.id },
+          data: {
+            rtPerHour: newRate,
+            totalSalary: newTotalSalary,
+            balanceSalary: newTotalSalary - sr.deduction - sr.advance,
+          },
+        });
+      }
+
+      // Recalculate and update rates in TotalEmployeeWorkingHours
+      const whRecords = await db.totalEmployeeWorkingHours.findMany({
+        where: { empId: id, isDeleted: false },
+      });
+
+      for (const wh of whRecords) {
+        if (!wh.isCustom) {
+          // Get aggregate total for this employee
+          const aggregateTotal = whRecords.reduce((s, r) => s + r.totalWorkingHours, 0);
+          const autoRate = aggregateTotal >= 1000
+            ? (hasBonus ? 5.5 : 5.0)
+            : (hasBonus ? 3.0 : 2.5);
+
+          await db.totalEmployeeWorkingHours.update({
+            where: { id: wh.id },
+            data: { rtPerHour: autoRate },
+          });
+        }
+      }
+    }
+
     // Track EmpCountSitePerMonth when currentSite changes
     if (body.currentSite !== undefined && body.currentSite !== existing.currentSite) {
       const now = new Date();

@@ -319,12 +319,8 @@ export async function GET(request: NextRequest) {
           siteHours = currentMonthHours;
         }
 
-        // Site-specific TL / Supervisor check
-        const isTeamLeaderForSite =
-          entry.isTeamLeader && entry.teamLeaderSiteId === entry.siteId;
-        const isSupervisorForSite =
-          entry.isSupervisor && entry.supervisorSiteId === entry.siteId;
-        const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
+        // TL / Supervisor bonus applies across all sites
+        const hasBonus = entry.isTeamLeader || entry.isSupervisor;
 
         const basicRate = hasBonus ? 3.0 : 2.5;
         const premiumRate = hasBonus ? 5.5 : 5.0;
@@ -384,10 +380,7 @@ export async function GET(request: NextRequest) {
           latestRtPerHour,
         } = hoursInfo;
 
-        const isTeamLeaderForSite =
-          entry.isTeamLeader && entry.teamLeaderSiteId === entry.siteId;
-        const isSupervisorForSite =
-          entry.isSupervisor && entry.supervisorSiteId === entry.siteId;
+        const hasBonus = entry.isTeamLeader || entry.isSupervisor;
 
         for (const decision of decisions) {
           // Skip entries with zero hours (can happen at boundary)
@@ -481,8 +474,8 @@ export async function GET(request: NextRequest) {
             employeeCode: entry.employeeCode,
             nationality: entry.nationality,
             trade: entry.trade,
-            isTeamLeader: isTeamLeaderForSite,
-            isSupervisor: isSupervisorForSite,
+            isTeamLeader: entry.isTeamLeader,
+            isSupervisor: entry.isSupervisor,
             rateTier: decision.rateTier,
             salaryRecord: salaryRecordData,
             workingHours: workingHoursObj,

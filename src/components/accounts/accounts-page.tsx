@@ -1131,21 +1131,39 @@ function SiteSalarySheet({
   }, [site.employees]);
 
   // Use index-based identification for split entries (same empId can appear twice)
-  const handleCellChange = (index: number, field: string, value: number | boolean) => {
-    setEmployees((prev) =>
-      prev.map((emp, i) => {
-        if (i !== index) return emp;
-        const updated = { ...emp, [field]: value };
+  const handleCellChange = (index: number, field: string, value: number | boolean | string) => {
+    setEmployees((prev) => {
+      const currentEmp = prev[index];
+      if (!currentEmp) return prev;
 
-        // Auto-calculate totals
-        if (field === 'totalHours' || field === 'rtPerHour' || field === 'deduction' || field === 'advance') {
-          updated.totalSalary = updated.totalHours * updated.rtPerHour;
-          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+      // Fields that should sync to the sibling split row (same empId, different rateTier)
+      const syncFields = new Set(['empName', 'nationality', 'trade', 'employeeCode', 'deduction', 'advance', 'isPaid']);
+
+      return prev.map((emp, i) => {
+        if (i === index) {
+          const updated = { ...emp, [field]: value };
+          // Auto-calculate totals
+          if (field === 'totalHours' || field === 'rtPerHour' || field === 'deduction' || field === 'advance') {
+            updated.totalSalary = updated.totalHours * updated.rtPerHour;
+            updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+          }
+          return updated;
         }
 
-        return updated;
-      })
-    );
+        // Sync shared fields to the sibling split row
+        if (syncFields.has(field) && emp.empId === currentEmp.empId && emp.rateTier !== currentEmp.rateTier) {
+          const updated = { ...emp, [field]: value };
+          // Recalculate balance if deduction/advance changed
+          if (field === 'deduction' || field === 'advance') {
+            updated.totalSalary = updated.totalHours * updated.rtPerHour;
+            updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+          }
+          return updated;
+        }
+
+        return emp;
+      });
+    });
   };
 
   const handlePaidToggle = (index: number, currentIsPaid: boolean) => {
@@ -1264,20 +1282,6 @@ function SiteSalarySheet({
     return trade;
   };
 
-  // Check if an employee entry is a "split duplicate" (premium row of a split)
-  // A split entry is one where the same empId appears more than once in the employees array
-  const isSplitDuplicate = (emp: EmployeeSalaryData, idx: number): boolean => {
-    if (emp.rateTier !== 'premium') return false;
-    // Check if there's a standard entry with the same empId before this index
-    return employees.some((e, i) => i < idx && e.empId === emp.empId && e.rateTier === 'standard');
-  };
-
-  // Find the standard (first) entry's data for a split employee to copy into premium row
-  const getStandardEntryForSplit = (emp: EmployeeSalaryData): EmployeeSalaryData | undefined => {
-    if (emp.rateTier !== 'premium') return undefined;
-    return employees.find((e) => e.empId === emp.empId && e.rateTier === 'standard');
-  };
-
   return (
     <div className="space-y-4">
       {/* Title rows */}
@@ -1310,13 +1314,6 @@ function SiteSalarySheet({
           </TableHeader>
           <TableBody>
             {employees.map((emp, index) => {
-              const isPremiumSplit = isSplitDuplicate(emp, index);
-              const standardEntry = isPremiumSplit ? getStandardEntryForSplit(emp) : null;
-              // For premium split rows, show same identity data as standard row
-              const displayName = isPremiumSplit && standardEntry ? standardEntry.empName : emp.empName;
-              const displayNationality = isPremiumSplit && standardEntry ? standardEntry.nationality : emp.nationality;
-              const displayTrade = isPremiumSplit && standardEntry ? standardEntry : emp;
-              const displayEmpCode = isPremiumSplit && standardEntry ? standardEntry.employeeCode : emp.employeeCode;
               return (
                 <TableRow
                   key={`${emp.empId}-${emp.rateTier}-${index}`}
@@ -1329,51 +1326,39 @@ function SiteSalarySheet({
                 >
                   <TableCell className="text-slate-400 text-xs text-center font-mono">{emp.slNo}</TableCell>
                   <TableCell>
-                    {editMode && !isPremiumSplit ? (
+                    {editMode ? (
                       <Input
                         value={emp.nationality}
-                        onChange={(e) =>
-                          setEmployees((prev) =>
-                            prev.map((em, i) => (i === index ? { ...em, nationality: e.target.value } : em))
-                          )
-                        }
+                        onChange={(e) => handleCellChange(index, 'nationality', e.target.value)}
                         className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[70px]"
                       />
                     ) : (
-                      <span className="text-xs text-slate-300 px-1">{displayNationality || '-'}</span>
+                      <span className="text-xs text-slate-300 px-1">{emp.nationality || '-'}</span>
                     )}
                   </TableCell>
                   <TableCell>
-                    {editMode && !isPremiumSplit ? (
+                    {editMode ? (
                       <Input
                         value={emp.empName}
-                        onChange={(e) =>
-                          setEmployees((prev) =>
-                            prev.map((em, i) => (i === index ? { ...em, empName: e.target.value } : em))
-                          )
-                        }
+                        onChange={(e) => handleCellChange(index, 'empName', e.target.value)}
                         className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[110px]"
                       />
                     ) : (
-                      <span className="text-xs text-white font-medium px-1">{displayName || '-'}</span>
+                      <span className="text-xs text-white font-medium px-1">{emp.empName || '-'}</span>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-slate-300">
-                    {tradeDisplay(displayTrade)}
+                    {tradeDisplay(emp)}
                   </TableCell>
                   <TableCell>
-                    {editMode && !isPremiumSplit ? (
+                    {editMode ? (
                       <Input
                         value={emp.employeeCode}
-                        onChange={(e) =>
-                          setEmployees((prev) =>
-                            prev.map((em, i) => (i === index ? { ...em, employeeCode: e.target.value } : em))
-                          )
-                        }
+                        onChange={(e) => handleCellChange(index, 'employeeCode', e.target.value)}
                         className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[75px]"
                       />
                     ) : (
-                      <span className="text-xs text-slate-300 font-mono px-1">{displayEmpCode || '-'}</span>
+                      <span className="text-xs text-slate-300 font-mono px-1">{emp.employeeCode || '-'}</span>
                     )}
                   </TableCell>
                   <TableCell>
@@ -1424,7 +1409,7 @@ function SiteSalarySheet({
                       />
                     ) : (
                       <span className={cn('text-xs text-right block', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                        {isPremiumSplit && emp.deduction === 0 ? '—' : (emp.deduction || '-')}
+                        {emp.deduction || '-'}
                       </span>
                     )}
                   </TableCell>
@@ -1440,7 +1425,7 @@ function SiteSalarySheet({
                       />
                     ) : (
                       <span className={cn('text-xs text-right block', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                        {isPremiumSplit && emp.advance === 0 ? '—' : (emp.advance || '-')}
+                        {emp.advance || '-'}
                       </span>
                     )}
                   </TableCell>

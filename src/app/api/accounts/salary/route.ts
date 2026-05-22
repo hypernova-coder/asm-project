@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 // Helper: Calculate RT/HR based on working hours and team leader/supervisor status
 async function calculateRtPerHour(
   empId: string,
-  siteId: string
+  _siteId: string
 ): Promise<number> {
   // Get all monthly working hours records for aggregate total
   const workingHoursRecords = await db.totalEmployeeWorkingHours.findMany({
@@ -18,14 +18,11 @@ async function calculateRtPerHour(
 
   const employee = await db.employee.findUnique({
     where: { id: empId },
-    select: { isTeamLeader: true, teamLeaderSiteId: true, isSupervisor: true, supervisorSiteId: true },
+    select: { isTeamLeader: true, isSupervisor: true },
   });
 
-  const isTeamLeaderForSite =
-    employee?.isTeamLeader && employee?.teamLeaderSiteId === siteId;
-  const isSupervisorForSite =
-    employee?.isSupervisor && employee?.supervisorSiteId === siteId;
-  const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
+  // TL / Supervisor bonus applies across all sites
+  const hasBonus = employee?.isTeamLeader || employee?.isSupervisor || false;
 
   if (totalHrs >= 1000) {
     return hasBonus ? 5.5 : 5.0;
@@ -246,6 +243,10 @@ export async function PUT(request: NextRequest) {
       balanceSalary,
       isPaid,
       rateTier,
+      employeeCode,
+      empName,
+      nationality,
+      trade,
       totalWorkingHours, // optional: to update TotalEmployeeWorkingHours
       updateWorkingHours, // bidirectional sync flag
     } = body;
@@ -283,6 +284,10 @@ export async function PUT(request: NextRequest) {
     if (typeof balanceSalary === 'number') updateData.balanceSalary = balanceSalary;
     if (typeof isPaid === 'boolean') updateData.isPaid = isPaid;
     if (typeof rateTier === 'string' && rateTier) updateData.rateTier = rateTier;
+    if (typeof employeeCode === 'string') updateData.employeeCode = employeeCode;
+    if (typeof empName === 'string' && empName) updateData.empName = empName;
+    if (typeof nationality === 'string') updateData.nationality = nationality;
+    if (typeof trade === 'string') updateData.trade = trade;
 
     const updated = await db.salaryRecord.update({
       where: { id },
