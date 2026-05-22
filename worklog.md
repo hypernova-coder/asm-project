@@ -200,3 +200,41 @@ Stage Summary:
 - All 7 configurable menus have toggle switches per admin
 - Always-on menus shown with green "Always On" badge (non-toggleable)
 - Visual feedback: Eye/EyeOff icons, blue highlight when granted, dimmed when revoked
+
+---
+Task ID: 11
+Agent: Main Agent
+Task: Fix uniform registry creation, cascade soft-deletion, employee PDF generation
+
+Work Log:
+- Fixed "Failed to create uniform registry entry" bug:
+  - The uniformId Int @unique field was not being set during POST creation
+  - Added auto-increment logic for uniformId (find max + 1)
+- Implemented cascade soft-deletion when employee is deleted:
+  - Attendance: isHidden = true
+  - Uniform Registry: isDeleted = true
+  - Notifications: isHidden = true
+  - Warnings: isHidden = true
+  - Fines: isHidden = true
+  - Leave Requests: isHidden = true
+  - Cancellation Requests: isHidden = true
+- Added isHidden: false filter to all GET routes:
+  - /api/attendance, /api/warnings, /api/fines
+  - /api/leave-requests, /api/cancellation-requests
+  - /api/notifications (including unread count query)
+- Implemented employee PDF generation (A4, single page):
+  - Professional two-column CV format with company header
+  - Left column: Profile photo, Contact info, Trade & Skills
+  - Right column: Name header bar, Employee Information grid, Employment Status
+  - Footer with generation timestamp
+  - Uses jsPDF library
+- Added Share via WhatsApp button using Web Share API with fallback
+- Added Download PDF button for direct download as EMPLOYEE_DATA.pdf
+- Pushed to GitHub
+
+Stage Summary:
+- Uniform registry creation fixed (uniformId auto-increment)
+- Full cascade soft-deletion for all employee-related records
+- All list APIs filter out hidden/deleted records
+- Professional A4 single-page employee PDF with company header
+- WhatsApp sharing via Web Share API + download fallback
