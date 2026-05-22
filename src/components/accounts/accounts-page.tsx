@@ -229,8 +229,10 @@ function EmployeeDetailPage({
 }) {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [monthlyData, setMonthlyData] = useState<MonthlyHoursData[]>([]);
+  const [originalData, setOriginalData] = useState<MonthlyHoursData[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [employeeInfo, setEmployeeInfo] = useState<{
     isTeamLeader: boolean;
     isSupervisor: boolean;
@@ -247,11 +249,12 @@ function EmployeeDetailPage({
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      // Fetch salary records for this employee for the selected year
       const res = await fetch(`/api/accounts/employee-monthly?empId=${empId}&year=${selectedYear}`);
       const json = await res.json();
       if (json.success) {
-        setMonthlyData(json.data.monthlyData || []);
+        const data = json.data.monthlyData || [];
+        setMonthlyData(data);
+        setOriginalData(data);
         setEmployeeInfo(json.data.employeeInfo || null);
       } else {
         toast({ title: 'Error', description: json.error || 'Failed to load data', variant: 'destructive' });
@@ -264,6 +267,7 @@ function EmployeeDetailPage({
   }, [empId, selectedYear]);
 
   useEffect(() => {
+    setEditMode(false);
     fetchData();
   }, [fetchData]);
 
@@ -285,16 +289,32 @@ function EmployeeDetailPage({
     );
   };
 
+  const handleEditToggle = () => {
+    if (editMode) {
+      // Cancel edit - revert to original data
+      setMonthlyData(originalData);
+      setEditMode(false);
+    } else {
+      setEditMode(true);
+    }
+  };
+
   const handleSave = async () => {
     try {
       setSaving(true);
+      // Only send available months (up to current month)
+      const availableMonths = monthlyData.filter((m) => {
+        const monthNum = parseInt(m.month.split('-')[1], 10) - 1;
+        return isMonthAvailable(selectedYear, monthNum);
+      });
+
       const res = await fetch('/api/accounts/employee-monthly', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           empId,
           year: selectedYear,
-          monthlyData: monthlyData.map((m) => ({
+          monthlyData: availableMonths.map((m) => ({
             month: m.month,
             totalHours: m.totalHours,
             rtPerHour: m.rtPerHour,
@@ -304,6 +324,7 @@ function EmployeeDetailPage({
       const json = await res.json();
       if (json.success) {
         toast({ title: 'Saved', description: 'Monthly hours updated successfully.' });
+        setEditMode(false);
         fetchData();
       } else {
         toast({ title: 'Error', description: json.error || 'Failed to save', variant: 'destructive' });
@@ -315,8 +336,13 @@ function EmployeeDetailPage({
     }
   };
 
-  // Compute total hours for the year
-  const totalYearHours = monthlyData.reduce((s, m) => s + m.totalHours, 0);
+  // Compute total hours for available months only
+  const totalYearHours = monthlyData
+    .filter((m) => {
+      const monthNum = parseInt(m.month.split('-')[1], 10) - 1;
+      return isMonthAvailable(selectedYear, monthNum);
+    })
+    .reduce((s, m) => s + m.totalHours, 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -340,20 +366,34 @@ function EmployeeDetailPage({
               Monthly working hours breakdown
               {employeeInfo && (
                 <span className="ml-2">
-                  ({employeeInfo.isTeamLeader ? 'Team Leader' : employeeInfo.isSupervisor ? 'Supervisor' : 'Employee'} • Total: {employeeInfo.totalWorkingHours} hrs • RT/HR: {employeeInfo.rtPerHour})
+                  ({employeeInfo.isTeamLeader ? 'Team Leader' : employeeInfo.isSupervisor ? 'Supervisor' : 'Employee'} • Total: {formatNumber(employeeInfo.totalWorkingHours)} hrs • RT/HR: {employeeInfo.rtPerHour})
                 </span>
               )}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {editMode && (
+            <Button
+              onClick={handleSave}
+              disabled={saving}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
+          )}
           <Button
-            onClick={handleSave}
-            disabled={saving}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+            onClick={handleEditToggle}
+            className={cn(
+              'gap-2',
+              editMode
+                ? 'bg-slate-600 hover:bg-slate-500 text-white'
+                : 'bg-amber-600 hover:bg-amber-700 text-white'
+            )}
           >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Save
+            {editMode ? <X className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+            {editMode ? 'Cancel' : 'Edit'}
           </Button>
           <Button
             variant="outline"
@@ -388,33 +428,6 @@ function EmployeeDetailPage({
         </Select>
       </div>
 
-      {/* Month Buttons (only up to current month) */}
-      <Card className="bg-slate-800/50 border-slate-700/50">
-        <CardContent className="p-4">
-          <div className="flex flex-wrap gap-1.5">
-            {MONTH_SHORT.map((m, i) => {
-              const available = isMonthAvailable(selectedYear, i);
-              const monthData = monthlyData.find((md) => md.month === getMonthString(selectedYear, i));
-              return (
-                <div
-                  key={m}
-                  className={cn(
-                    'h-8 px-3 flex items-center justify-center text-xs font-semibold rounded-md',
-                    available
-                      ? monthData?.totalHours
-                        ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/30'
-                        : 'bg-slate-700/30 text-slate-400 border border-slate-700/50'
-                      : 'bg-slate-800/30 text-slate-600 border border-slate-800/50 cursor-not-allowed'
-                  )}
-                >
-                  {m}
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-
       {/* Monthly Table */}
       {loading ? (
         <div className="space-y-3">
@@ -423,61 +436,71 @@ function EmployeeDetailPage({
           ))}
         </div>
       ) : (
-        <Card className="bg-slate-800/50 border-slate-700/50">
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-slate-700 hover:bg-transparent">
-                    <TableHead className="text-slate-400 font-semibold">Month</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-right">Total Hours</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-right">RT/HR</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {MONTH_FULL.map((monthName, i) => {
-                    const available = isMonthAvailable(selectedYear, i);
-                    const monthStr = getMonthString(selectedYear, i);
-                    const monthData = monthlyData.find((md) => md.month === monthStr);
-                    if (!available) return null;
-                    return (
-                      <TableRow key={monthStr} className="border-slate-700/50 hover:bg-slate-700/30">
-                        <TableCell className="text-white text-sm font-medium">{monthName}</TableCell>
-                        <TableCell>
+        <Card className="bg-slate-800/50 border-slate-700/50 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b border-slate-700 bg-slate-800/80">
+                  <th className="text-left text-slate-400 font-semibold text-sm py-3 px-4 w-[180px]">Month</th>
+                  <th className="text-right text-slate-400 font-semibold text-sm py-3 px-4 w-[160px]">Total Hours</th>
+                  <th className="text-right text-slate-400 font-semibold text-sm py-3 px-4 w-[140px]">RT/HR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {MONTH_FULL.map((monthName, i) => {
+                  const available = isMonthAvailable(selectedYear, i);
+                  const monthStr = getMonthString(selectedYear, i);
+                  const monthData = monthlyData.find((md) => md.month === monthStr);
+                  if (!available) return null;
+                  const hours = monthData?.totalHours || 0;
+                  const rate = monthData?.rtPerHour || 2.5;
+                  return (
+                    <tr key={monthStr} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                      <td className="text-white text-sm font-medium py-2.5 px-4">{monthName}</td>
+                      <td className="py-2.5 px-4 text-right">
+                        {editMode ? (
                           <Input
                             type="number"
                             min={0}
                             step={1}
-                            value={monthData?.totalHours || 0}
+                            value={hours}
                             onChange={(e) => handleMonthlyHoursChange(monthStr, parseFloat(e.target.value) || 0)}
-                            className="w-28 h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
+                            className="w-full h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
                           />
-                        </TableCell>
-                        <TableCell>
+                        ) : (
+                          <span className={cn('text-sm', hours > 0 ? 'text-white' : 'text-slate-500')}>
+                            {formatNumber(hours)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-4 text-right">
+                        {editMode ? (
                           <Input
                             type="number"
                             min={0}
                             step={0.5}
-                            value={monthData?.rtPerHour || 2.5}
+                            value={rate}
                             onChange={(e) => handleMonthlyRateChange(monthStr, parseFloat(e.target.value) || 0)}
-                            className="w-24 h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
+                            className="w-full h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
                           />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  }).filter(Boolean)}
-                  {/* Total Row */}
-                  <TableRow className="border-slate-700 bg-slate-800/60 hover:bg-transparent font-semibold">
-                    <TableCell className="text-xs text-slate-300 font-bold">TOTAL</TableCell>
-                    <TableCell className="text-xs text-white text-right font-bold">
-                      {formatNumber(totalYearHours)}
-                    </TableCell>
-                    <TableCell></TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
+                        ) : (
+                          <span className="text-sm text-white">{formatNumber(rate)}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                }).filter(Boolean)}
+              </tbody>
+              {/* Total Row - visually separated */}
+              <tfoot>
+                <tr className="border-t-2 border-slate-500 bg-slate-900/60">
+                  <td className="text-sm text-slate-300 font-bold py-3 px-4">TOTAL</td>
+                  <td className="text-sm text-white font-bold py-3 px-4 text-right">{formatNumber(totalYearHours)}</td>
+                  <td className="py-3 px-4"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </Card>
       )}
 
@@ -493,6 +516,7 @@ function EmployeeDetailPage({
                 <li>After 1000 hours: <span className="text-white font-medium">5.0 AED/hr</span></li>
                 <li>Team Leader / Supervisor bonus: <span className="text-white font-medium">+0.5 AED/hr</span> (3.0 basic, 5.5 after 1000 hrs)</li>
                 <li>Editing rate here will sync to the salary table</li>
+                <li>Click <span className="text-amber-400 font-medium">Edit</span> to modify hours and rates</li>
               </ul>
             </div>
           </div>

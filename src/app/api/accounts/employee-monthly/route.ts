@@ -115,6 +115,7 @@ export async function PUT(request: NextRequest) {
         employeeId: true,
         isTeamLeader: true,
         isSupervisor: true,
+        currentSite: true,
       },
     });
 
@@ -130,20 +131,10 @@ export async function PUT(request: NextRequest) {
     for (const monthEntry of monthlyData) {
       const { month, totalHours, rtPerHour } = monthEntry;
 
-      // For each month, we need to update/create salary records for ALL sites this employee works at
-      // First, find all EmpCountSitePerMonth records for this employee+month
-      const siteRecords = await db.empCountSitePerMonth.findMany({
-        where: {
-          empId,
-          month,
-          deletedDate: null,
-        },
-        include: {
-          site: { select: { id: true, name: true } },
-        },
-      });
+      // Skip months with no data change needed
+      if (typeof totalHours !== 'number' || typeof rtPerHour !== 'number') continue;
 
-      // Also find any existing salary records for this employee+month
+      // Find existing salary records for this employee+month+year
       const existingSalaryRecords = await db.salaryRecord.findMany({
         where: {
           empId,
@@ -156,27 +147,37 @@ export async function PUT(request: NextRequest) {
       // Calculate total salary and balance
       const totalSalary = totalHours * rtPerHour;
 
-      if (siteRecords.length > 0) {
-        // Update salary records for each site
-        for (const siteRecord of siteRecords) {
-          const existingSalary = existingSalaryRecords.find(
-            (sr) => sr.siteId === siteRecord.siteId
-          );
+      if (existingSalaryRecords.length > 0) {
+        // Update all existing salary records for this month
+        for (const existingSalary of existingSalaryRecords) {
+          const updated = await db.salaryRecord.update({
+            where: { id: existingSalary.id },
+            data: {
+              totalHours,
+              rtPerHour,
+              totalSalary,
+              balanceSalary: totalSalary - existingSalary.deduction - existingSalary.advance,
+            },
+          });
+          results.push({ month, siteId: existingSalary.siteId, action: 'updated', id: updated.id });
+        }
+      } else if (totalHours > 0) {
+        // No existing salary records for this month, but hours were entered
+        // Find site assignments for this employee+month
+        const siteRecords = await db.empCountSitePerMonth.findMany({
+          where: {
+            empId,
+            month,
+            deletedDate: null,
+          },
+          include: {
+            site: { select: { id: true, name: true } },
+          },
+        });
 
-          if (existingSalary) {
-            // Update existing salary record
-            const updated = await db.salaryRecord.update({
-              where: { id: existingSalary.id },
-              data: {
-                totalHours,
-                rtPerHour,
-                totalSalary,
-                balanceSalary: totalSalary - existingSalary.deduction - existingSalary.advance,
-              },
-            });
-            results.push({ month, siteId: siteRecord.siteId, action: 'updated', id: updated.id });
-          } else {
-            // Create new salary record
+        if (siteRecords.length > 0) {
+          // Create salary records for each site
+          for (const siteRecord of siteRecords) {
             const created = await db.salaryRecord.create({
               data: {
                 empId,
@@ -200,50 +201,113 @@ export async function PUT(request: NextRequest) {
             });
             results.push({ month, siteId: siteRecord.siteId, action: 'created', id: created.id });
           }
-        }
-      } else if (existingSalaryRecords.length > 0) {
-        // Update existing salary records even if no site records found
-        for (const existingSalary of existingSalaryRecords) {
-          const updated = await db.salaryRecord.update({
-            where: { id: existingSalary.id },
-            data: {
-              totalHours,
-              rtPerHour,
-              totalSalary,
-              balanceSalary: totalSalary - existingSalary.deduction - existingSalary.advance,
-            },
-          });
-          results.push({ month, siteId: existingSalary.siteId, action: 'updated', id: updated.id });
+        } else {
+          // No site assignment found - try to use the employee's current site
+          if (employee.currentSite) {
+            const site = await db.site.findUnique({
+              where: { id: employee.currentSite },
+              select: { id: true, name: true },
+            });
+            if (site) {
+              const created = await db.salaryRecord.create({
+                data: {
+                  empId,
+                  empName: employee.fullName,
+                  siteId: site.id,
+                  siteName: site.name,
+                  month,
+                  year,
+                  nationality: '',
+                  trade: '',
+                  employeeCode: employee.employeeId,
+                  slNo: 0,
+                  totalHours,
+                  rtPerHour,
+                  totalSalary,
+                  deduction: 0,
+                  advance: 0,
+                  balanceSalary: totalSalary,
+                  isPaid: false,
+                },
+              });
+              results.push({ month, siteId: site.id, action: 'created', id: created.id });
+            }
+          } else {
+            // Fallback: find any site the employee has ever been assigned to
+            const anySiteRecord = await db.empCountSitePerMonth.findFirst({
+              where: { empId },
+              include: { site: { select: { id: true, name: true } } },
+              orderBy: { createdDate: 'desc' },
+            });
+            if (anySiteRecord) {
+              const created = await db.salaryRecord.create({
+                data: {
+                  empId,
+                  empName: employee.fullName,
+                  siteId: anySiteRecord.siteId,
+                  siteName: anySiteRecord.site.name,
+                  month,
+                  year,
+                  nationality: '',
+                  trade: '',
+                  employeeCode: employee.employeeId,
+                  slNo: 0,
+                  totalHours,
+                  rtPerHour,
+                  totalSalary,
+                  deduction: 0,
+                  advance: 0,
+                  balanceSalary: totalSalary,
+                  isPaid: false,
+                },
+              });
+              results.push({ month, siteId: anySiteRecord.siteId, action: 'created', id: created.id });
+            }
+          }
         }
       }
     }
 
-    // Update TotalEmployeeWorkingHours - recalculate total from all months
-    // Sum up all salary record hours across all years
+    // Update TotalEmployeeWorkingHours - recalculate total from ALL salary records
     const allSalaryHours = await db.salaryRecord.findMany({
       where: {
         empId,
         isDeleted: false,
       },
-      select: { totalHours: true },
+      select: { totalHours: true, rtPerHour: true },
     });
     const totalWorkingHours = allSalaryHours.reduce((sum, sr) => sum + sr.totalHours, 0);
 
-    // Get the latest rtPerHour from the monthly data
-    const latestRtPerHour = monthlyData.length > 0 ? monthlyData[monthlyData.length - 1].rtPerHour : 2.5;
+    // Use the latest non-zero rtPerHour from salary records, or the one from monthlyData
+    const latestRtPerHour = monthlyData
+      .filter((m: { rtPerHour: number }) => m.rtPerHour > 0)
+      .pop()?.rtPerHour || allSalaryHours
+      .filter((sr) => sr.rtPerHour > 0)
+      .pop()?.rtPerHour || 2.5;
+
+    // Calculate auto rate based on total hours and TL/Supervisor status
+    const hasBonus = employee.isTeamLeader || employee.isSupervisor;
+    const autoRate = totalWorkingHours >= 1000 ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
+
+    // Get current working hours record to check if custom
+    const currentWH = await db.totalEmployeeWorkingHours.findUnique({
+      where: { empId },
+    });
+
+    const finalRtPerHour = currentWH?.isCustom ? latestRtPerHour : autoRate;
 
     await db.totalEmployeeWorkingHours.upsert({
       where: { empId },
       update: {
         totalWorkingHours,
-        rtPerHour: latestRtPerHour,
+        rtPerHour: finalRtPerHour,
         empName: employee.fullName,
       },
       create: {
         empId,
         empName: employee.fullName,
         totalWorkingHours,
-        rtPerHour: latestRtPerHour,
+        rtPerHour: finalRtPerHour,
         isCustom: false,
       },
     });
