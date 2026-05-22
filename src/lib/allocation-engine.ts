@@ -5,15 +5,21 @@ import { db } from '@/lib/db';
 // ---------------------------------------------------------------------------
 // Business Rules:
 //   For each employee in a given month:
-//     | Hours Range    | Employee Rate | TL/Supervisor Rate |
-//     | First N hrs    | 2.5           | 3.0                |
-//     | Above N hrs    | 5.0           | 5.5                |
+//     | Hours Range                        | Employee Rate | TL/Supervisor Rate |
+//     | First N hrs (cumulative threshold) | 2.5           | 3.0                |
+//     | Above N hrs (cumulative threshold) | 5.0           | 5.5                |
 //   Where N = employee's hoursThreshold (default 1000).
 //
+//   KEY: The threshold is CUMULATIVE across all months, NOT per-month.
+//   We compute previous months' aggregate hours, then apply remaining
+//   threshold to the current month's site hours in sequential order.
+//
 //   Sequential Allocation:
-//     1. Sort employee's sites alphabetically by site name
-//     2. Walk sites sequentially, consuming the threshold
-//     3. Split each site's hours into lowRate (standard) and highRate (premium)
+//     1. Compute previous months' cumulative hours for the employee
+//     2. remainingThreshold = max(0, threshold - previousCumulative)
+//     3. Sort employee's sites alphabetically by site name
+//     4. Walk sites sequentially, consuming the remaining threshold
+//     5. Split each site's hours into lowRate (standard) and highRate (premium)
 // ---------------------------------------------------------------------------
 
 export interface SiteAllocation {
@@ -30,6 +36,8 @@ export interface EmployeeAllocation {
   empId: string;
   empName: string;
   threshold: number;
+  previousCumulative: number;
+  currentMonthTotal: number;
   totalRawHours: number;
   sites: SiteAllocation[];
   validation: {
@@ -53,7 +61,11 @@ export interface AllocationResult {
  * This function:
  * 1. Fetches all non-deleted salary records for the given month+year
  * 2. Groups them by employee
- * 3. For each employee, applies sequential allocation across sites
+ * 3. For each employee:
+ *    a. Fetches employee details and ALL previous months' working hours
+ *    b. Computes cumulative hours from previous months
+ *    c. Calculates remaining threshold
+ *    d. Applies sequential allocation across sites
  * 4. Creates/updates/soft-deletes salary records (standard & premium tiers)
  * 5. Updates TotalEmployeeWorkingHours for each processed employee
  * 6. Returns allocation results
@@ -113,7 +125,24 @@ export async function allocateEmployeeHours(
     const lowRate = hasBonus ? 3.0 : 2.5;
     const highRate = hasBonus ? 5.5 : 5.0;
 
-    // 3b. Group by site, calculate rawHours per site
+    // ------------------------------------------------------------------
+    // 3b. Compute previous months' cumulative hours
+    // ------------------------------------------------------------------
+    const allWorkingHours = await db.totalEmployeeWorkingHours.findMany({
+      where: { empId, isDeleted: false },
+    });
+
+    // Previous cumulative = sum of hours from months BEFORE current month
+    const previousCumulative = allWorkingHours
+      .filter((r) => r.month < month)
+      .reduce((sum, r) => sum + r.totalWorkingHours, 0);
+
+    // The current month's record may or may not exist yet
+    const currentMonthRecord = allWorkingHours.find((r) => r.month === month);
+
+    // ------------------------------------------------------------------
+    // 3c. Group by site, calculate rawHours per site
+    // ------------------------------------------------------------------
     const siteMap = new Map<
       string,
       {
@@ -146,16 +175,25 @@ export async function allocateEmployeeHours(
       }
     }
 
-    // 3c. Sort by site name (alphabetically)
+    // ------------------------------------------------------------------
+    // 3d. Sort by site name (alphabetically) for deterministic allocation
+    // ------------------------------------------------------------------
     const sortedSites = Array.from(siteMap.values()).sort((a, b) =>
       a.siteName.localeCompare(b.siteName),
     );
 
-    // 3d. Calculate total raw hours across all sites
-    const totalRawHours = sortedSites.reduce((sum, s) => sum + s.rawHours, 0);
+    // ------------------------------------------------------------------
+    // 3e. Calculate total raw hours across all sites for current month
+    // ------------------------------------------------------------------
+    const currentMonthTotal = sortedSites.reduce((sum, s) => sum + s.rawHours, 0);
 
-    // 3e. Apply sequential allocation algorithm
-    let consumedThreshold = 0;
+    // ------------------------------------------------------------------
+    // 3f. Apply sequential allocation algorithm with cumulative threshold
+    // ------------------------------------------------------------------
+    // KEY CHANGE: Start consumedThreshold from previous cumulative hours
+    // This means if the employee already has 800 hours from previous months,
+    // only 200 more hours can be at the low rate in this month
+    let consumedThreshold = Math.min(previousCumulative, threshold);
     const siteAllocations: SiteAllocation[] = [];
 
     for (const site of sortedSites) {
@@ -167,14 +205,17 @@ export async function allocateEmployeeHours(
         lowRateHours = 0;
         highRateHours = 0;
       } else if (remainingThreshold >= site.rawHours) {
+        // Case 1: Site fully inside remaining threshold → all hours at low rate
         lowRateHours = site.rawHours;
         highRateHours = 0;
         consumedThreshold += site.rawHours;
       } else if (remainingThreshold > 0) {
+        // Case 2: Site crosses the threshold → split
         lowRateHours = remainingThreshold;
         highRateHours = site.rawHours - remainingThreshold;
         consumedThreshold = threshold;
       } else {
+        // Case 3: Threshold already exhausted → all hours at high rate
         lowRateHours = 0;
         highRateHours = site.rawHours;
       }
@@ -190,7 +231,9 @@ export async function allocateEmployeeHours(
       });
     }
 
-    // 3f. Create / update / soft-delete salary records
+    // ------------------------------------------------------------------
+    // 3g. Create / update / soft-delete salary records
+    // ------------------------------------------------------------------
     for (let i = 0; i < sortedSites.length; i++) {
       const siteData = sortedSites[i];
       const alloc = siteAllocations[i];
@@ -346,7 +389,9 @@ export async function allocateEmployeeHours(
       }
     }
 
-    // 3g. Validation checks
+    // ------------------------------------------------------------------
+    // 3h. Validation checks
+    // ------------------------------------------------------------------
     const totalLowRateHours = siteAllocations.reduce(
       (sum, s) => sum + s.lowRateHours,
       0,
@@ -361,7 +406,7 @@ export async function allocateEmployeeHours(
     );
 
     const totalMatch =
-      Math.abs(totalLowRateHours + totalHighRateHours - totalRawHours) < 0.01;
+      Math.abs(totalLowRateHours + totalHighRateHours - currentMonthTotal) < 0.01;
 
     const noNegative = siteAllocations.every(
       (s) => s.lowRateHours >= 0 && s.highRateHours >= 0 && s.rawHours >= 0,
@@ -371,12 +416,14 @@ export async function allocateEmployeeHours(
       empId,
       empName: employee.fullName,
       threshold,
-      totalRawHours,
+      previousCumulative,
+      currentMonthTotal,
+      totalRawHours: previousCumulative + currentMonthTotal,
       sites: siteAllocations,
       validation: {
         totalLowRateHours,
         totalHighRateHours,
-        lowRateHoursWithinThreshold: totalLowRateHours <= threshold + 0.01,
+        lowRateHoursWithinThreshold: (previousCumulative + totalLowRateHours) <= threshold + 0.01,
         hoursMatch: perSiteMatch && totalMatch && noNegative,
       },
     });
@@ -470,4 +517,67 @@ export async function allocateEmployeeHours(
     employeesProcessed: allocations.length,
     allocations,
   };
+}
+
+/**
+ * Compute the allocation split for a single employee in a given month
+ * WITHOUT writing to the database. Useful for previewing the split
+ * or for the GET endpoint to show calculated splits.
+ */
+export function computeAllocationSplit(params: {
+  previousCumulative: number;
+  currentMonthSiteHours: Array<{ siteId: string; siteName: string; rawHours: number }>;
+  threshold: number;
+  isTeamLeader: boolean;
+  isSupervisor: boolean;
+}): SiteAllocation[] {
+  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor } = params;
+  const hasBonus = isTeamLeader || isSupervisor;
+  const lowRate = hasBonus ? 3.0 : 2.5;
+  const highRate = hasBonus ? 5.5 : 5.0;
+
+  let consumedThreshold = Math.min(previousCumulative, threshold);
+  const siteAllocations: SiteAllocation[] = [];
+
+  // Sort sites alphabetically by name for deterministic allocation
+  const sortedSites = [...currentMonthSiteHours].sort((a, b) =>
+    a.siteName.localeCompare(b.siteName),
+  );
+
+  for (const site of sortedSites) {
+    const remainingThreshold = threshold - consumedThreshold;
+    let lowRateHours = 0;
+    let highRateHours = 0;
+
+    if (site.rawHours <= 0) {
+      lowRateHours = 0;
+      highRateHours = 0;
+    } else if (remainingThreshold >= site.rawHours) {
+      // Case 1: Site fully inside remaining threshold
+      lowRateHours = site.rawHours;
+      highRateHours = 0;
+      consumedThreshold += site.rawHours;
+    } else if (remainingThreshold > 0) {
+      // Case 2: Site crosses the threshold
+      lowRateHours = remainingThreshold;
+      highRateHours = site.rawHours - remainingThreshold;
+      consumedThreshold = threshold;
+    } else {
+      // Case 3: Threshold already exhausted
+      lowRateHours = 0;
+      highRateHours = site.rawHours;
+    }
+
+    siteAllocations.push({
+      siteId: site.siteId,
+      siteName: site.siteName,
+      rawHours: site.rawHours,
+      lowRateHours,
+      highRateHours,
+      lowRate,
+      highRate,
+    });
+  }
+
+  return siteAllocations;
 }

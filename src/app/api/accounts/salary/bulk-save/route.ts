@@ -13,12 +13,17 @@ import { allocateEmployeeHours } from '@/lib/allocation-engine';
 //       - not exists → create new
 //
 // After saving ALL records:
-//   1. Soft-delete salary records for the same employee+site+month+year
-//      that are NOT in the submitted list (handles removed split rows)
-//   2. If runAllocation is true (default), call the allocation engine to
-//      recalculate splits and update TotalEmployeeWorkingHours
-//   3. If runAllocation is false, manually update TotalEmployeeWorkingHours
-//      for all affected employees
+//   1. If runAllocation is true (default), call the allocation engine to
+//      recalculate splits and update TotalEmployeeWorkingHours.
+//      NOTE: When runAllocation is true, the allocation engine is the
+//      single source of truth for which records should exist. It handles
+//      creating/updating/soft-deleting records as needed. We do NOT
+//      soft-delete records before running the engine, because the engine
+//      will recalculate the split and decide which records to keep/delete.
+//   2. If runAllocation is false:
+//      a. Soft-delete salary records for the same employee+site+month+year
+//         that are NOT in the submitted list (handles removed split rows)
+//      b. Manually update TotalEmployeeWorkingHours for all affected employees
 // ---------------------------------------------------------------------------
 
 interface BulkSaveRecord {
@@ -231,54 +236,25 @@ export async function POST(request: NextRequest) {
     }
 
     // ------------------------------------------------------------------
-    // 3. Soft-delete records NOT in the submitted list
+    // 3. Handle orphan record cleanup + allocation or manual update
     // ------------------------------------------------------------------
-    // Group submitted records by (empId, siteId, month, year, rateTier) to
-    // identify which rate tiers should be kept.
-    const submittedKeys = new Set(
-      savedRecords.map((r) => `${r.empId}|${r.siteId}|${r.month}|${r.year}|${r.rateTier}`),
-    );
-
-    // Unique (empId, siteId, month, year) combos from submitted records
-    const empSiteMonthYearCombos = new Set(
-      savedRecords.map((r) => `${r.empId}|${r.siteId}|${r.month}|${r.year}`),
-    );
-
     let softDeletedCount = 0;
-    for (const combo of empSiteMonthYearCombos) {
-      const [empId, siteId, month, yearStr] = combo.split('|');
-      const yearNum = parseInt(yearStr, 10);
-
-      // Find all non-deleted salary records for this employee+site+month+year
-      const existingRecords = await db.salaryRecord.findMany({
-        where: {
-          empId,
-          siteId,
-          month,
-          year: yearNum,
-          isDeleted: false,
-        },
-      });
-
-      for (const existing of existingRecords) {
-        const key = `${empId}|${siteId}|${month}|${yearNum}|${existing.rateTier}`;
-        if (!submittedKeys.has(key)) {
-          // This record is NOT in the submitted list — soft-delete it
-          await db.salaryRecord.update({
-            where: { id: existing.id },
-            data: { isDeleted: true },
-          });
-          softDeletedCount++;
-        }
-      }
-    }
-
-    // ------------------------------------------------------------------
-    // 4. Run allocation engine or update working hours manually
-    // ------------------------------------------------------------------
-    let allocationResult = null;
 
     if (runAllocation) {
+      // ── When allocation engine runs, it is the source of truth ──
+      // The allocation engine will:
+      //   - Read all salary records for the month
+      //   - Recalculate the correct split for each employee
+      //   - Upsert standard/premium records as needed
+      //   - Soft-delete records that should no longer exist
+      //
+      // We do NOT do pre-emptive soft-deletes here because:
+      //   1. The user may have edited totalHours but the UI still shows
+      //      the old split (lowRateHours/highRateHours). The allocation
+      //      engine will recalculate the split based on cumulative hours.
+      //   2. Pre-emptively deleting a premium record that the allocation
+      //      engine would want to keep causes data loss (the deletion bug).
+
       // Get unique (month, year) combinations from saved records
       const monthYearCombos = new Map<string, number>();
       for (const r of savedRecords) {
@@ -294,8 +270,96 @@ export async function POST(request: NextRequest) {
         allocationResults.push(result);
       }
 
-      allocationResult = allocationResults.length === 1 ? allocationResults[0] : allocationResults;
+      const allocationResult = allocationResults.length === 1 ? allocationResults[0] : allocationResults;
+
+      // After allocation, count soft-deleted records for reporting
+      // (the allocation engine handles soft-deletes internally)
+      const affectedEmpIds = new Set(savedRecords.map((r) => r.empId));
+      const affectedMonths = new Set(savedRecords.map((r) => r.month));
+      for (const empId of affectedEmpIds) {
+        for (const m of affectedMonths) {
+          const deletedRecords = await db.salaryRecord.findMany({
+            where: { empId, month: m, isDeleted: true },
+            select: { id: true },
+          });
+          // Don't double-count — just note the count for reporting
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // 4. Return results
+      // ------------------------------------------------------------------
+      // Fetch the final state of all saved records (after allocation may have
+      // modified them) to return to the caller.
+      const affectedEmployeeIds = new Set(savedRecords.map((r) => r.empId));
+      const affectedMonthStrs = new Set(savedRecords.map((r) => r.month));
+      const affectedYearNums = new Set(savedRecords.map((r) => r.year));
+
+      // Get ALL non-deleted records for the affected employees+months
+      // This ensures we return the complete picture after allocation
+      const finalRecords = await db.salaryRecord.findMany({
+        where: {
+          empId: { in: Array.from(affectedEmployeeIds) },
+          month: { in: Array.from(affectedMonthStrs) },
+          isDeleted: false,
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          savedCount: savedRecords.length,
+          softDeletedCount: 0, // Allocation engine handles deletes internally
+          records: finalRecords.map((r) => ({
+            ...r,
+            createdAt: r.createdAt.toISOString(),
+            updatedAt: r.updatedAt.toISOString(),
+          })),
+          allocation: allocationResult,
+        },
+      });
     } else {
+      // ── Manual mode (runAllocation = false) ──
+      // In manual mode, we soft-delete records NOT in the submitted list
+      // to handle removed split rows.
+
+      const submittedKeys = new Set(
+        savedRecords.map((r) => `${r.empId}|${r.siteId}|${r.month}|${r.year}|${r.rateTier}`),
+      );
+
+      // Unique (empId, siteId, month, year) combos from submitted records
+      const empSiteMonthYearCombos = new Set(
+        savedRecords.map((r) => `${r.empId}|${r.siteId}|${r.month}|${r.year}`),
+      );
+
+      for (const combo of empSiteMonthYearCombos) {
+        const [empId, siteId, month, yearStr] = combo.split('|');
+        const yearNum = parseInt(yearStr, 10);
+
+        // Find all non-deleted salary records for this employee+site+month+year
+        const existingRecords = await db.salaryRecord.findMany({
+          where: {
+            empId,
+            siteId,
+            month,
+            year: yearNum,
+            isDeleted: false,
+          },
+        });
+
+        for (const existing of existingRecords) {
+          const key = `${empId}|${siteId}|${month}|${yearNum}|${existing.rateTier}`;
+          if (!submittedKeys.has(key)) {
+            // This record is NOT in the submitted list — soft-delete it
+            await db.salaryRecord.update({
+              where: { id: existing.id },
+              data: { isDeleted: true },
+            });
+            softDeletedCount++;
+          }
+        }
+      }
+
       // Manually update TotalEmployeeWorkingHours for all affected employees
       const affectedEmpMonthCombos = new Set(
         savedRecords.map((r) => `${r.empId}|${r.month}`),
@@ -333,31 +397,29 @@ export async function POST(request: NextRequest) {
           },
         });
       }
+
+      // ------------------------------------------------------------------
+      // 5. Return results
+      // ------------------------------------------------------------------
+      const finalRecordIds = savedRecords.map((r) => r.id);
+      const finalRecords = await db.salaryRecord.findMany({
+        where: { id: { in: finalRecordIds } },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          savedCount: savedRecords.length,
+          softDeletedCount,
+          records: finalRecords.map((r) => ({
+            ...r,
+            createdAt: r.createdAt.toISOString(),
+            updatedAt: r.updatedAt.toISOString(),
+          })),
+          allocation: null,
+        },
+      });
     }
-
-    // ------------------------------------------------------------------
-    // 5. Return results
-    // ------------------------------------------------------------------
-    // Fetch the final state of all saved records (after allocation may have
-    // modified them) to return to the caller.
-    const finalRecordIds = savedRecords.map((r) => r.id);
-    const finalRecords = await db.salaryRecord.findMany({
-      where: { id: { in: finalRecordIds } },
-    });
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        savedCount: savedRecords.length,
-        softDeletedCount,
-        records: finalRecords.map((r) => ({
-          ...r,
-          createdAt: r.createdAt.toISOString(),
-          updatedAt: r.updatedAt.toISOString(),
-        })),
-        allocation: allocationResult,
-      },
-    });
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Internal server error';

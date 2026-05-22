@@ -1338,7 +1338,11 @@ function SiteSalarySheet({
 
     const records: Record<string, unknown>[] = [];
     for (const emp of mergedEmployees) {
-      // Always include standard record
+      // Send a single record per employee per site with totalHours.
+      // The allocation engine will recalculate the split (lowRateHours/highRateHours)
+      // based on cumulative threshold across all months.
+      // We use the standard rateTier and let the allocation engine create
+      // the premium record if needed.
       records.push({
         salaryRecordId: emp.standardRecordId,
         empId: emp.empId,
@@ -1351,18 +1355,20 @@ function SiteSalarySheet({
         trade: emp.trade,
         employeeCode: emp.employeeCode,
         slNo: emp.slNo,
-        totalHours: emp.totalHours,  // TOTAL hours, allocation engine will split
+        totalHours: emp.totalHours,  // Full site total — allocation engine will split
         rtPerHour: emp.lowRate,
-        totalSalary: emp.lowRateHours * emp.lowRate,
+        totalSalary: emp.totalHours * emp.lowRate, // Temporary; allocation engine will fix
         deduction: emp.deduction,
         advance: emp.advance,
-        balanceSalary: (emp.lowRateHours * emp.lowRate) - emp.deduction - emp.advance,
+        balanceSalary: (emp.totalHours * emp.lowRate) - emp.deduction - emp.advance,
         isPaid: emp.isPaid,
         rateTier: 'standard',
       });
 
-      // Include premium record if it exists
-      if (emp.premiumRecordId || emp.highRateHours > 0) {
+      // If there's an existing premium record, send it with 0 hours so the
+      // allocation engine knows to evaluate it. It will be soft-deleted by
+      // the engine if not needed, or updated with correct split hours.
+      if (emp.premiumRecordId) {
         records.push({
           salaryRecordId: emp.premiumRecordId,
           empId: emp.empId,
@@ -1375,12 +1381,12 @@ function SiteSalarySheet({
           trade: emp.trade,
           employeeCode: emp.employeeCode,
           slNo: emp.slNo,
-          totalHours: emp.highRateHours,
+          totalHours: 0,
           rtPerHour: emp.highRate,
-          totalSalary: emp.highRateHours * emp.highRate,
+          totalSalary: 0,
           deduction: 0,
           advance: 0,
-          balanceSalary: emp.highRateHours * emp.highRate,
+          balanceSalary: 0,
           isPaid: false,
           rateTier: 'premium',
         });

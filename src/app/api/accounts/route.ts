@@ -304,8 +304,10 @@ export async function GET(request: NextRequest) {
 
     // -----------------------------------------------------------------------
     // 5. Apply the basic / premium split algorithm
-    //    KEY FIX: Only apply split for entries with NO existing salary records.
-    //    When salary records exist, use them directly to preserve user edits.
+    //    KEY: The threshold is CUMULATIVE across all months, NOT per-month.
+    //    We use previousAggregate hours to determine remaining threshold.
+    //    For entries with existing salary records, we use them directly.
+    //    For new entries, we apply the sequential allocation algorithm.
     // -----------------------------------------------------------------------
     const employeeSplitDecisions = new Map<string, Map<string, SplitDecision[]>>();
 
@@ -316,8 +318,12 @@ export async function GET(request: NextRequest) {
       // Get the threshold from the first entry (all entries for same emp have same threshold)
       const threshold = entries[0]?.hoursThreshold || 1000;
 
-      const { aggregateTotal, previousAggregate, currentMonthHours } = hoursInfo;
-      let remainingBasic = Math.max(0, threshold - previousAggregate);
+      const { previousAggregate } = hoursInfo;
+
+      // KEY: Start consumedThreshold from previous cumulative hours
+      // If employee has 800 hrs from previous months and threshold is 1000,
+      // only 200 more hrs can be at the low rate in this month
+      let consumedThreshold = Math.min(previousAggregate, threshold);
 
       const empDecisions = new Map<string, SplitDecision[]>();
 
@@ -327,7 +333,7 @@ export async function GET(request: NextRequest) {
         const basicRate = hasBonus ? 3.0 : 2.5;
         const premiumRate = hasBonus ? 5.5 : 5.0;
 
-        // KEY FIX: If salary records exist, use them directly instead of recalculating split
+        // KEY: If salary records exist, use them directly instead of recalculating split
         if (entry.salaryRecords.length > 0) {
           const decisions: SplitDecision[] = entry.salaryRecords.map(sr => ({
             rateTier: (sr.rateTier === 'premium' ? 'premium' : 'standard') as 'standard' | 'premium',
@@ -335,38 +341,27 @@ export async function GET(request: NextRequest) {
             rate: sr.rtPerHour,
           }));
           empDecisions.set(entry.siteId, decisions);
+          // Update consumedThreshold based on existing records for consistency
+          // (even though we're using saved data, we need accurate tracking for other sites)
+          const stdRecord = entry.salaryRecords.find(sr => sr.rateTier === 'standard');
+          const premRecord = entry.salaryRecords.find(sr => sr.rateTier === 'premium');
+          const stdHours = stdRecord?.totalHours ?? 0;
+          const premHours = premRecord?.totalHours ?? 0;
+          // Only count low-rate hours toward consumed threshold
+          consumedThreshold += stdHours;
+          if (consumedThreshold > threshold) consumedThreshold = threshold;
+          // If there are also premium hours, threshold is fully consumed
+          if (premHours > 0) consumedThreshold = threshold;
           continue;
         }
 
-        // No salary records yet — apply split algorithm for new entries
-        let siteHours = currentMonthHours;
+        // No salary records yet — apply sequential allocation for new entries
+        // For new entries without salary records, hours are 0 (user hasn't entered yet)
+        // Default to basic rate with 0 hours
+        const siteHours = 0;
 
         const decisions: SplitDecision[] = [];
-
-        if (aggregateTotal <= threshold) {
-          // Employee has not crossed threshold aggregate hours — all at basic rate
-          decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
-        } else if (remainingBasic >= siteHours) {
-          // All hours at this site fit within the remaining basic bucket
-          decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
-          remainingBasic -= siteHours;
-        } else if (remainingBasic > 0) {
-          // SPLIT — some basic, rest premium
-          decisions.push({
-            rateTier: 'standard',
-            hours: remainingBasic,
-            rate: basicRate,
-          });
-          decisions.push({
-            rateTier: 'premium',
-            hours: siteHours - remainingBasic,
-            rate: premiumRate,
-          });
-          remainingBasic = 0;
-        } else {
-          // No basic hours left — all premium
-          decisions.push({ rateTier: 'premium', hours: siteHours, rate: premiumRate });
-        }
+        decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
 
         empDecisions.set(entry.siteId, decisions);
       }
