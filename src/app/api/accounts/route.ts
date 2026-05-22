@@ -53,9 +53,20 @@ export async function GET(request: NextRequest) {
       orderBy: { name: 'asc' },
     });
 
-    // 2. For each site, get distinct employees from EmpCountSitePerMonth
+    // 2. Get activated sites from SiteMonthActivation for this month/year
+    const activatedSites = await db.siteMonthActivation.findMany({
+      where: { month, year },
+      include: { site: { select: { id: true, name: true, clientName: true, projectName: true, isActive: true } } },
+    });
+    const activatedSiteIds = new Set(activatedSites.map(a => a.siteId));
+
+    // Combine: include all active sites + any activated sites (even if site is somehow not in active list)
+    const allSiteIds = new Set([...activeSites.map(s => s.id), ...activatedSiteIds]);
+    const sitesToProcess = activeSites.filter(s => allSiteIds.has(s.id));
+
+    // 3. For each site, get distinct employees from EmpCountSitePerMonth
     const siteResults = await Promise.all(
-      activeSites.map(async (site) => {
+      sitesToProcess.map(async (site) => {
         // Get distinct employee records for this site and month where not deleted
         const empRecords = await db.empCountSitePerMonth.findMany({
           where: {
@@ -94,7 +105,7 @@ export async function GET(request: NextRequest) {
 
         const employeeCount = uniqueEmployees.length;
 
-        // 3. For each employee, get salary record and working hours
+        // 4. For each employee, get salary record and working hours
         const employeesWithSalary = await Promise.all(
           uniqueEmployees.map(async (empRecord) => {
             const emp = empRecord.employee;
@@ -177,7 +188,7 @@ export async function GET(request: NextRequest) {
           })
         );
 
-        // 4. Also include any SalaryRecord entries that have siteId matching
+        // 5. Also include any SalaryRecord entries that have siteId matching
         // but might not be in EmpCountSitePerMonth (for manually added entries)
         const manualSalaryRecords = await db.salaryRecord.findMany({
           where: {
@@ -260,7 +271,7 @@ export async function GET(request: NextRequest) {
           });
         }
 
-        // 5. Calculate totals
+        // 6. Calculate totals
         const totalHours = employeesWithSalary.reduce(
           (sum, e) => sum + (e.salaryRecord?.totalHours || 0),
           0
@@ -282,6 +293,9 @@ export async function GET(request: NextRequest) {
           0
         );
 
+        const isActiveForMonth = activatedSiteIds.has(site.id);
+        const totalEmpCount = employeeCount + manualSalaryRecords.length;
+
         return {
           site: {
             id: site.id,
@@ -289,29 +303,30 @@ export async function GET(request: NextRequest) {
             clientName: site.clientName,
             projectName: site.projectName,
           },
-          employeeCount: employeeCount + manualSalaryRecords.length,
+          employeeCount: totalEmpCount,
           totalHours,
           totalSalary,
           totalDeductions,
           totalAdvances,
           totalBalanceSalary,
           employees: employeesWithSalary,
+          isActivated: isActiveForMonth, // flag to indicate this site was manually activated
         };
       })
     );
 
-    // Filter out sites with no employees for this month
-    const sitesWithEmployees = siteResults.filter((s) => s.employeeCount > 0);
+    // Include sites that have employees OR are activated for this month
+    const sitesToShow = siteResults.filter((s) => s.employeeCount > 0 || s.isActivated);
 
     // Grand totals
     const grandTotals = {
-      totalSites: sitesWithEmployees.length,
-      totalEmployees: sitesWithEmployees.reduce((sum, s) => sum + s.employeeCount, 0),
-      totalHours: sitesWithEmployees.reduce((sum, s) => sum + s.totalHours, 0),
-      totalSalary: sitesWithEmployees.reduce((sum, s) => sum + s.totalSalary, 0),
-      totalDeductions: sitesWithEmployees.reduce((sum, s) => sum + s.totalDeductions, 0),
-      totalAdvances: sitesWithEmployees.reduce((sum, s) => sum + s.totalAdvances, 0),
-      totalBalanceSalary: sitesWithEmployees.reduce((sum, s) => sum + s.totalBalanceSalary, 0),
+      totalSites: sitesToShow.length,
+      totalEmployees: sitesToShow.reduce((sum, s) => sum + s.employeeCount, 0),
+      totalHours: sitesToShow.reduce((sum, s) => sum + s.totalHours, 0),
+      totalSalary: sitesToShow.reduce((sum, s) => sum + s.totalSalary, 0),
+      totalDeductions: sitesToShow.reduce((sum, s) => sum + s.totalDeductions, 0),
+      totalAdvances: sitesToShow.reduce((sum, s) => sum + s.totalAdvances, 0),
+      totalBalanceSalary: sitesToShow.reduce((sum, s) => sum + s.totalBalanceSalary, 0),
     };
 
     return NextResponse.json({
@@ -319,9 +334,149 @@ export async function GET(request: NextRequest) {
       data: {
         month,
         year,
-        sites: sitesWithEmployees,
+        sites: sitesToShow,
         grandTotals,
       },
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[accounts GET] Error:', message);
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 500 }
+    );
+  }
+}
+
+// POST: Add sites to a specific month (SiteMonthActivation)
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { siteIds, month, year, customSiteName, customClientName, customProjectName } = body;
+
+    if (!month || !year) {
+      return NextResponse.json(
+        { success: false, error: 'month and year are required' },
+        { status: 400 }
+      );
+    }
+
+    const monthRegex = /^\d{4}-\d{2}$/;
+    if (!monthRegex.test(month)) {
+      return NextResponse.json(
+        { success: false, error: 'month must be in YYYY-MM format' },
+        { status: 400 }
+      );
+    }
+
+    const results = [];
+
+    // Handle custom site creation
+    if (customSiteName && typeof customSiteName === 'string' && customSiteName.trim()) {
+      const trimmedName = customSiteName.trim();
+
+      // Check if site already exists
+      let site = await db.site.findUnique({ where: { name: trimmedName } });
+
+      if (!site) {
+        // Create the new site
+        site = await db.site.create({
+          data: {
+            name: trimmedName,
+            clientName: typeof customClientName === 'string' ? customClientName.trim() : undefined,
+            projectName: typeof customProjectName === 'string' ? customProjectName.trim() : undefined,
+            isActive: true,
+          },
+        });
+      }
+
+      // Activate this site for the month
+      const activation = await db.siteMonthActivation.upsert({
+        where: { siteId_month_year: { siteId: site.id, month, year: parseInt(String(year), 10) } },
+        update: {},
+        create: {
+          siteId: site.id,
+          month,
+          year: parseInt(String(year), 10),
+        },
+      });
+
+      results.push({ siteId: site.id, siteName: site.name, activationId: activation.id, isNewSite: true });
+    }
+
+    // Handle existing site activations
+    if (siteIds && Array.isArray(siteIds)) {
+      for (const siteId of siteIds) {
+        // Verify site exists
+        const site = await db.site.findUnique({ where: { id: siteId } });
+        if (!site) continue;
+
+        const activation = await db.siteMonthActivation.upsert({
+          where: { siteId_month_year: { siteId, month, year: parseInt(String(year), 10) } },
+          update: {},
+          create: {
+            siteId,
+            month,
+            year: parseInt(String(year), 10),
+          },
+        });
+
+        results.push({ siteId, siteName: site.name, activationId: activation.id, isNewSite: false });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        activated: results.length,
+        results,
+      },
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[accounts POST] Error:', message);
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE: Remove a site activation for a specific month
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const siteId = searchParams.get('siteId');
+    const month = searchParams.get('month');
+    const yearParam = searchParams.get('year');
+
+    if (!siteId || !month || !yearParam) {
+      return NextResponse.json(
+        { success: false, error: 'siteId, month, and year are required' },
+        { status: 400 }
+      );
+    }
+
+    const year = parseInt(yearParam, 10);
+
+    const activation = await db.siteMonthActivation.findUnique({
+      where: { siteId_month_year: { siteId, month, year } },
+    });
+
+    if (!activation) {
+      return NextResponse.json(
+        { success: false, error: 'Site activation not found' },
+        { status: 404 }
+      );
+    }
+
+    await db.siteMonthActivation.delete({
+      where: { id: activation.id },
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: { message: 'Site activation removed successfully' },
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';

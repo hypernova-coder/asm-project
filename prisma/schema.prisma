@@ -95,7 +95,8 @@ model Site {
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
-  employeeHistory EmpCountSitePerMonth[]
+  employeeHistory   EmpCountSitePerMonth[]
+  monthActivations  SiteMonthActivation[]
 }
 
 model Attendance {
@@ -343,4 +344,18 @@ model EmpCountSitePerMonth {
   @@index([siteId])
   @@index([month])
   @@index([empId, siteId])
+}
+
+model SiteMonthActivation {
+  id        String   @id @default(cuid())
+  siteId    String   // FK to Site
+  month     String   // YYYY-MM format
+  year      Int
+  createdAt DateTime @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, month, year])
+  @@index([month, year])
+  @@index([siteId])
 }

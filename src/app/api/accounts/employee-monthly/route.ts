@@ -77,8 +77,8 @@ export async function GET(request: NextRequest) {
 
       monthlyData.push({
         month: monthStr,
-        totalHours: record?.totalWorkingHours || 0,
-        rtPerHour: record?.rtPerHour || (hasCustom ? latestRate : autoRate),
+        totalHours: record?.totalWorkingHours ?? 0,
+        rtPerHour: record?.rtPerHour ?? (hasCustom ? latestRate : autoRate),
         recordId: record?.id || null,
       });
     }
@@ -98,6 +98,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[employee-monthly GET] Error:', message);
     return NextResponse.json(
       { success: false, error: message },
       { status: 500 }
@@ -105,7 +106,9 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// PUT: Update monthly hours for a specific employee and year
+// PUT: Update monthly hours for a specific employee
+// This endpoint handles saving per-month hours to TotalEmployeeWorkingHours
+// and bidirectionally syncing with SalaryRecord
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
@@ -139,90 +142,125 @@ export async function PUT(request: NextRequest) {
     }
 
     const results = [];
+    const errors = [];
 
     for (const monthEntry of monthlyData) {
       const { month, totalHours, rtPerHour } = monthEntry;
 
-      if (typeof totalHours !== 'number' || typeof rtPerHour !== 'number') continue;
+      // Validate each entry
+      if (!month || typeof month !== 'string') {
+        errors.push({ month, error: 'Invalid month value' });
+        continue;
+      }
 
-      // Upsert into TotalEmployeeWorkingHours (per employee per month)
-      const upserted = await db.totalEmployeeWorkingHours.upsert({
-        where: {
-          empId_month: { empId, month },
-        },
-        update: {
-          totalWorkingHours: totalHours,
-          rtPerHour,
-          empName: employee.fullName,
-        },
-        create: {
-          empId,
-          empName: employee.fullName,
-          month,
-          totalWorkingHours: totalHours,
-          rtPerHour,
-          isCustom: false,
-        },
-      });
-      results.push({ month, action: 'upserted', id: upserted.id });
+      const numTotalHours = typeof totalHours === 'number' ? totalHours : 0;
+      const numRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : 2.5;
 
-      // Also sync to SalaryRecord if records exist
-      const existingSalaryRecords = await db.salaryRecord.findMany({
-        where: { empId, month, year, isDeleted: false },
-      });
+      try {
+        // Upsert into TotalEmployeeWorkingHours (per employee per month)
+        const upserted = await db.totalEmployeeWorkingHours.upsert({
+          where: {
+            empId_month: { empId, month },
+          },
+          update: {
+            totalWorkingHours: numTotalHours,
+            rtPerHour: numRtPerHour,
+            empName: employee.fullName,
+          },
+          create: {
+            empId,
+            empName: employee.fullName,
+            month,
+            totalWorkingHours: numTotalHours,
+            rtPerHour: numRtPerHour,
+            isCustom: false,
+          },
+        });
+        results.push({ month, action: 'upserted', id: upserted.id, totalWorkingHours: upserted.totalWorkingHours });
 
-      const totalSalary = totalHours * rtPerHour;
-
-      if (existingSalaryRecords.length > 0) {
-        for (const sr of existingSalaryRecords) {
-          await db.salaryRecord.update({
-            where: { id: sr.id },
-            data: {
-              totalHours,
-              rtPerHour,
-              totalSalary,
-              balanceSalary: totalSalary - sr.deduction - sr.advance,
-            },
-          });
-        }
-      } else if (totalHours > 0) {
-        // Try to create salary record if we can find a site
-        const siteRecords = await db.empCountSitePerMonth.findMany({
-          where: { empId, month, deletedDate: null },
-          include: { site: { select: { id: true, name: true } } },
+        // Bidirectional sync: update SalaryRecord if records exist for this month
+        const existingSalaryRecords = await db.salaryRecord.findMany({
+          where: { empId, month, year: parseInt(String(year), 10), isDeleted: false },
         });
 
-        let siteId: string | null = null;
-        let siteName = '';
+        const totalSalary = numTotalHours * numRtPerHour;
 
-        if (siteRecords.length > 0) {
-          siteId = siteRecords[0].siteId;
-          siteName = siteRecords[0].site.name;
-        } else if (employee.currentSite) {
-          const site = await db.site.findUnique({ where: { id: employee.currentSite } });
-          if (site) { siteId = site.id; siteName = site.name; }
-        }
-
-        if (!siteId) {
-          const anySiteRecord = await db.empCountSitePerMonth.findFirst({
-            where: { empId },
+        if (existingSalaryRecords.length > 0) {
+          // Update existing salary records
+          for (const sr of existingSalaryRecords) {
+            await db.salaryRecord.update({
+              where: { id: sr.id },
+              data: {
+                totalHours: numTotalHours,
+                rtPerHour: numRtPerHour,
+                totalSalary,
+                balanceSalary: totalSalary - sr.deduction - sr.advance,
+              },
+            });
+          }
+        } else if (numTotalHours > 0) {
+          // Try to create salary record if we can find a site
+          const siteRecords = await db.empCountSitePerMonth.findMany({
+            where: { empId, month, deletedDate: null },
             include: { site: { select: { id: true, name: true } } },
-            orderBy: { createdDate: 'desc' },
           });
-          if (anySiteRecord) { siteId = anySiteRecord.siteId; siteName = anySiteRecord.site.name; }
-        }
 
-        if (siteId) {
-          const salaryYear = parseInt(month.split('-')[0], 10);
-          await db.salaryRecord.create({
-            data: {
-              empId, empName: employee.fullName, siteId, siteName, month, year: salaryYear,
-              nationality: '', trade: '', employeeCode: employee.employeeId, slNo: 0,
-              totalHours, rtPerHour, totalSalary, deduction: 0, advance: 0,
-              balanceSalary: totalSalary, isPaid: false,
-            },
-          });
+          let siteId: string | null = null;
+          let siteName = '';
+
+          if (siteRecords.length > 0) {
+            siteId = siteRecords[0].siteId;
+            siteName = siteRecords[0].site.name;
+          } else if (employee.currentSite) {
+            const site = await db.site.findUnique({ where: { id: employee.currentSite } });
+            if (site) {
+              siteId = site.id;
+              siteName = site.name;
+            }
+          }
+
+          if (!siteId) {
+            // Try any historical site assignment
+            const anySiteRecord = await db.empCountSitePerMonth.findFirst({
+              where: { empId },
+              include: { site: { select: { id: true, name: true } } },
+              orderBy: { createdDate: 'desc' },
+            });
+            if (anySiteRecord) {
+              siteId = anySiteRecord.siteId;
+              siteName = anySiteRecord.site.name;
+            }
+          }
+
+          if (siteId) {
+            const salaryYear = parseInt(month.split('-')[0], 10);
+            await db.salaryRecord.create({
+              data: {
+                empId,
+                empName: employee.fullName,
+                siteId,
+                siteName,
+                month,
+                year: salaryYear,
+                nationality: '',
+                trade: '',
+                employeeCode: employee.employeeId,
+                slNo: 0,
+                totalHours: numTotalHours,
+                rtPerHour: numRtPerHour,
+                totalSalary,
+                deduction: 0,
+                advance: 0,
+                balanceSalary: totalSalary,
+                isPaid: false,
+              },
+            });
+          }
         }
+      } catch (monthError: unknown) {
+        const errMsg = monthError instanceof Error ? monthError.message : 'Unknown error';
+        console.error(`[employee-monthly PUT] Error saving month ${month}:`, errMsg);
+        errors.push({ month, error: errMsg });
       }
     }
 
@@ -238,11 +276,13 @@ export async function PUT(request: NextRequest) {
       data: {
         updated: results.length,
         results,
+        errors: errors.length > 0 ? errors : undefined,
         totalWorkingHours: aggregateTotalHours,
       },
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[employee-monthly PUT] Error:', message);
     return NextResponse.json(
       { success: false, error: message },
       { status: 500 }

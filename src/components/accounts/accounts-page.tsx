@@ -118,6 +118,7 @@ interface MonthlyHoursData {
   month: string; // YYYY-MM
   totalHours: number;
   rtPerHour: number;
+  recordId: string | null; // TotalEmployeeWorkingHours record ID
   salaryRecordId: string | null;
 }
 
@@ -303,10 +304,31 @@ function EmployeeDetailPage({
     try {
       setSaving(true);
       // Only send available months (up to current month)
+      // AND only send months that have non-zero hours OR were changed from original
       const availableMonths = monthlyData.filter((m) => {
         const monthNum = parseInt(m.month.split('-')[1], 10) - 1;
-        return isMonthAvailable(selectedYear, monthNum);
+        const available = isMonthAvailable(selectedYear, monthNum);
+        if (!available) return false;
+
+        // Always include months with non-zero hours
+        if (m.totalHours > 0) return true;
+
+        // Include months that were changed (even if back to 0)
+        const orig = originalData.find((o) => o.month === m.month);
+        if (orig && orig.totalHours !== m.totalHours) return true;
+        if (orig && orig.rtPerHour !== m.rtPerHour) return true;
+
+        // Include months that have existing records (even with 0 hours) to preserve them
+        if (m.recordId) return true;
+
+        return false;
       });
+
+      if (availableMonths.length === 0) {
+        toast({ title: 'No Changes', description: 'No months to save.' });
+        setSaving(false);
+        return;
+      }
 
       const res = await fetch('/api/accounts/employee-monthly', {
         method: 'PUT',
@@ -323,7 +345,12 @@ function EmployeeDetailPage({
       });
       const json = await res.json();
       if (json.success) {
-        toast({ title: 'Saved', description: 'Monthly hours updated successfully.' });
+        const errorCount = json.data?.errors?.length || 0;
+        if (errorCount > 0) {
+          toast({ title: 'Partial Save', description: `${json.data.updated} month(s) saved, ${errorCount} failed.`, variant: 'destructive' });
+        } else {
+          toast({ title: 'Saved', description: `${json.data.updated} month(s) updated successfully.` });
+        }
         setEditMode(false);
         fetchData();
       } else {
@@ -1405,6 +1432,234 @@ function SiteSalarySheet({
   );
 }
 
+/* ───────── Add New Sites Dialog ───────── */
+
+interface AvailableSite {
+  id: string;
+  name: string;
+  clientName?: string | null;
+  projectName?: string | null;
+}
+
+function AddNewSitesDialog({
+  open,
+  onOpenChange,
+  month,
+  year,
+  existingSiteIds,
+  onAdded,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  month: number;
+  year: number;
+  existingSiteIds: Set<string>;
+  onAdded: () => void;
+}) {
+  const [availableSites, setAvailableSites] = useState<AvailableSite[]>([]);
+  const [selectedSiteIds, setSelectedSiteIds] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState('');
+  const [customSiteName, setCustomSiteName] = useState('');
+  const [customClientName, setCustomClientName] = useState('');
+  const [customProjectName, setCustomProjectName] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      fetchAvailableSites();
+      setSelectedSiteIds(new Set());
+      setSearch('');
+      setCustomSiteName('');
+      setCustomClientName('');
+      setCustomProjectName('');
+    }
+  }, [open]);
+
+  const fetchAvailableSites = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/sites');
+      const json = await res.json();
+      if (json.success) {
+        setAvailableSites(json.data.sites || []);
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to load sites', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Filter sites: exclude sites already in the current view, and apply search
+  const filteredSites = useMemo(() => {
+    const notAlreadyAdded = availableSites.filter(s => !existingSiteIds.has(s.id));
+    if (!search) return notAlreadyAdded;
+    const q = search.toLowerCase();
+    return notAlreadyAdded.filter(
+      s =>
+        s.name.toLowerCase().includes(q) ||
+        (s.clientName && s.clientName.toLowerCase().includes(q)) ||
+        (s.projectName && s.projectName.toLowerCase().includes(q))
+    );
+  }, [availableSites, existingSiteIds, search]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedSiteIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleAdd = async () => {
+    if (selectedSiteIds.size === 0 && !customSiteName.trim()) return;
+    try {
+      setAdding(true);
+      const monthStr = getMonthString(year, month);
+      const body: Record<string, unknown> = { month: monthStr, year };
+
+      if (selectedSiteIds.size > 0) {
+        body.siteIds = Array.from(selectedSiteIds);
+      }
+      if (customSiteName.trim()) {
+        body.customSiteName = customSiteName.trim();
+        if (customClientName.trim()) body.customClientName = customClientName.trim();
+        if (customProjectName.trim()) body.customProjectName = customProjectName.trim();
+      }
+
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (json.success) {
+        toast({ title: 'Sites Added', description: `${json.data.activated} site(s) activated for ${MONTH_FULL[month]} ${year}.` });
+        onAdded();
+        onOpenChange(false);
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to add sites', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to add sites', variant: 'destructive' });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="text-white">Add New Sites</DialogTitle>
+          <p className="text-sm text-slate-400 mt-1">
+            Select sites for {MONTH_FULL[month]} {year}
+          </p>
+        </DialogHeader>
+
+        {/* Search */}
+        <div className="relative mt-2">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+          <Input
+            placeholder="Search sites..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-10 bg-slate-900 border-slate-600 text-white placeholder:text-slate-500"
+          />
+        </div>
+
+        {/* Site List */}
+        <div className="flex-1 overflow-y-auto mt-3 min-h-0 max-h-[300px]">
+          {loading ? (
+            <div className="space-y-2 py-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-10 bg-slate-700 rounded" />
+              ))}
+            </div>
+          ) : filteredSites.length === 0 ? (
+            <div className="text-center text-slate-500 py-6 text-sm">
+              No additional sites available.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {filteredSites.map((site) => (
+                <label
+                  key={site.id}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors',
+                    selectedSiteIds.has(site.id)
+                      ? 'bg-emerald-600/20 border border-emerald-500/30'
+                      : 'hover:bg-slate-700/50 border border-transparent'
+                  )}
+                >
+                  <Checkbox
+                    checked={selectedSiteIds.has(site.id)}
+                    onCheckedChange={() => toggleSelect(site.id)}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-white font-medium truncate">{site.name}</div>
+                    <div className="text-xs text-slate-400">
+                      {site.clientName && <span>{site.clientName}</span>}
+                      {site.clientName && site.projectName && <span> • </span>}
+                      {site.projectName && <span>{site.projectName}</span>}
+                    </div>
+                  </div>
+                  <Building2 className="h-4 w-4 text-slate-500 shrink-0" />
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Custom Site Section */}
+        <div className="border-t border-slate-700/50 mt-3 pt-3 space-y-2">
+          <p className="text-sm font-medium text-slate-300">Add Custom Site</p>
+          <Input
+            placeholder="Site name *"
+            value={customSiteName}
+            onChange={(e) => setCustomSiteName(e.target.value)}
+            className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500 h-9 text-sm"
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <Input
+              placeholder="Client name (optional)"
+              value={customClientName}
+              onChange={(e) => setCustomClientName(e.target.value)}
+              className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500 h-9 text-sm"
+            />
+            <Input
+              placeholder="Project name (optional)"
+              value={customProjectName}
+              onChange={(e) => setCustomProjectName(e.target.value)}
+              className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500 h-9 text-sm"
+            />
+          </div>
+        </div>
+
+        <DialogFooter className="mt-4 gap-2">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            className="bg-slate-700/50 border-slate-600 text-slate-200"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={(selectedSiteIds.size === 0 && !customSiteName.trim()) || adding}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+          >
+            {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Add {selectedSiteIds.size > 0 ? `(${selectedSiteIds.size}${customSiteName.trim() ? ' + 1' : ''})` : customSiteName.trim() ? '(1)' : ''}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ───────── Main Accounts Page ───────── */
 
 export function AccountsPage() {
@@ -1722,6 +1977,16 @@ export function AccountsPage() {
           </div>
         )}
       </div>
+
+      {/* Add New Sites Dialog */}
+      <AddNewSitesDialog
+        open={addSiteDialogOpen}
+        onOpenChange={setAddSiteDialogOpen}
+        month={selectedMonth}
+        year={selectedYear}
+        existingSiteIds={new Set(sites.map(s => s.id))}
+        onAdded={fetchAccounts}
+      />
     </div>
   );
 }
