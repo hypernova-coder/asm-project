@@ -408,3 +408,29 @@ Stage Summary:
 - Committed as c3e44d1 and pushed to GitHub
 - All lint checks pass
 - Key new features: edit mode, add employee dialog, employee monthly detail view, supervisor rate parity, bidirectional sync, future month restriction
+
+---
+Task ID: 6
+Agent: Main Agent
+Task: Continue session - verify all pending tasks from previous session
+
+Work Log:
+- Verified Prisma schema already has `month` field in TotalEmployeeWorkingHours with `@@unique([empId, month])` constraint
+- Verified API routes properly handle per-month hours saving:
+  - `/api/accounts/employee-monthly` (GET/PUT) correctly upserts per-month records
+  - `/api/accounts/working-hours` (GET/POST/PUT) handles monthly records with month field
+  - `/api/accounts/salary` has bidirectional sync with TotalEmployeeWorkingHours
+  - `/api/accounts` (GET/POST/DELETE) handles site activation for months
+- Verified EmployeeDetailPage properly saves per-month hours via PUT to `/api/accounts/employee-monthly`
+- Verified AddNewSitesDialog component exists with site selection and custom site creation
+- Verified "Add New Sites" button exists on Accounts Management main screen
+- Investigated potential code corruption (MONTH_FULLonth] / onthStr) - confirmed these are display artifacts, actual file content is correct
+- Verified database schema is in sync with Prisma schema (`prisma db push` confirmed)
+- Verified all code passes ESLint checks
+- Confirmed all changes are committed (7af1568) and pushed to GitHub (up-to-date)
+
+Stage Summary:
+- All pending tasks from previous session were already completed
+- Schema has month field, API routes handle per-month CRUD, frontend has Add New Sites
+- No code corruption found - file content is correct
+- Database is in sync, lint passes, everything pushed to GitHub
