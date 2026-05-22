@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
 // Helper: Calculate RT/HR with team leader and supervisor support
+// Kept for backward compatibility — the split logic below replaces per-employee rate calculation
 function calcRtPerHour(
   totalWorkingHours: number,
   isTeamLeaderForSite: boolean,
@@ -16,6 +17,50 @@ function calcRtPerHour(
   }
   return hasBonus ? 3.0 : 2.5;
 }
+
+// ---------------------------------------------------------------------------
+// Types used during the split calculation
+// ---------------------------------------------------------------------------
+
+interface RawEmployeeEntry {
+  empId: string;
+  empName: string;
+  employeeCode: string;
+  nationality: string;
+  trade: string;
+  isTeamLeader: boolean;
+  isSupervisor: boolean;
+  teamLeaderSiteId: string | null;
+  supervisorSiteId: string | null;
+  siteId: string;
+  siteName: string;
+  // findMany — there can be "standard" AND "premium" records for the same emp+site+month
+  salaryRecords: Awaited<ReturnType<typeof db.salaryRecord.findMany>>;
+  isManual: boolean;
+}
+
+interface SplitDecision {
+  rateTier: 'standard' | 'premium';
+  hours: number;
+  rate: number;
+}
+
+interface FinalEmployeeEntry {
+  empId: string;
+  empName: string;
+  employeeCode: string;
+  nationality: string;
+  trade: string;
+  isTeamLeader: boolean;
+  isSupervisor: boolean;
+  rateTier: 'standard' | 'premium';
+  salaryRecord: Record<string, unknown> | null;
+  workingHours: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// GET handler — with basic / premium hour split
+// ---------------------------------------------------------------------------
 
 export async function GET(request: NextRequest) {
   try {
@@ -47,33 +92,37 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 1. Get all active sites
+    // -----------------------------------------------------------------------
+    // 1. Get all active sites + activated sites for the month
+    // -----------------------------------------------------------------------
     const activeSites = await db.site.findMany({
       where: { isActive: true },
       orderBy: { name: 'asc' },
     });
 
-    // 2. Get activated sites from SiteMonthActivation for this month/year
     const activatedSites = await db.siteMonthActivation.findMany({
       where: { month, year },
-      include: { site: { select: { id: true, name: true, clientName: true, projectName: true, isActive: true } } },
+      include: {
+        site: {
+          select: { id: true, name: true, clientName: true, projectName: true, isActive: true },
+        },
+      },
     });
     const activatedSiteIds = new Set(activatedSites.map(a => a.siteId));
 
-    // Combine: include all active sites + any activated sites (even if site is somehow not in active list)
     const allSiteIds = new Set([...activeSites.map(s => s.id), ...activatedSiteIds]);
     const sitesToProcess = activeSites.filter(s => allSiteIds.has(s.id));
 
-    // 3. For each site, get distinct employees from EmpCountSitePerMonth
-    const siteResults = await Promise.all(
+    // -----------------------------------------------------------------------
+    // 2. Collect raw employee data per site (parallel)
+    // -----------------------------------------------------------------------
+    const siteRawData = await Promise.all(
       sitesToProcess.map(async (site) => {
-        // Get distinct employee records for this site and month where not deleted
+        const rawEntries: RawEmployeeEntry[] = [];
+
+        // 2a. Get distinct employees from EmpCountSitePerMonth
         const empRecords = await db.empCountSitePerMonth.findMany({
-          where: {
-            siteId: site.id,
-            month,
-            deletedDate: null,
-          },
+          where: { siteId: site.id, month, deletedDate: null },
           include: {
             employee: {
               select: {
@@ -86,110 +135,48 @@ export async function GET(request: NextRequest) {
                 teamLeaderSiteId: true,
                 isSupervisor: true,
                 supervisorSiteId: true,
-                currentSite: true,
               },
             },
           },
           orderBy: { empName: 'asc' },
         });
 
-        // Deduplicate by empId
         const seenEmpIds = new Set<string>();
-        const uniqueEmployees: typeof empRecords = [];
         for (const record of empRecords) {
-          if (!seenEmpIds.has(record.empId)) {
-            seenEmpIds.add(record.empId);
-            uniqueEmployees.push(record);
-          }
+          if (seenEmpIds.has(record.empId)) continue;
+          seenEmpIds.add(record.empId);
+
+          const emp = record.employee;
+
+          // Use findMany — could have "standard" AND "premium" records
+          const salaryRecords = await db.salaryRecord.findMany({
+            where: {
+              empId: record.empId,
+              siteId: site.id,
+              month,
+              year,
+              isDeleted: false,
+            },
+          });
+
+          rawEntries.push({
+            empId: record.empId,
+            empName: record.empName,
+            employeeCode: emp.employeeId,
+            nationality: emp.nationality || '',
+            trade: emp.trade || '',
+            isTeamLeader: emp.isTeamLeader,
+            isSupervisor: emp.isSupervisor,
+            teamLeaderSiteId: emp.teamLeaderSiteId,
+            supervisorSiteId: emp.supervisorSiteId,
+            siteId: site.id,
+            siteName: site.name,
+            salaryRecords,
+            isManual: false,
+          });
         }
 
-        const employeeCount = uniqueEmployees.length;
-
-        // 4. For each employee, get salary record and working hours
-        const employeesWithSalary = await Promise.all(
-          uniqueEmployees.map(async (empRecord) => {
-            const emp = empRecord.employee;
-
-            // Get salary record for this employee+site+month+year
-            const salaryRecord = await db.salaryRecord.findUnique({
-              where: {
-                empId_siteId_month_year: {
-                  empId: empRecord.empId,
-                  siteId: site.id,
-                  month,
-                  year,
-                },
-              },
-            });
-
-            // Get working hours for RT/HR calculation (aggregate from all monthly records)
-            const workingHoursRecords = await db.totalEmployeeWorkingHours.findMany({
-              where: { empId: empRecord.empId },
-            });
-            const aggregateTotalHours = workingHoursRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
-            const hasCustomRate = workingHoursRecords.some(r => r.isCustom);
-            const latestRtPerHour = workingHoursRecords.length > 0
-              ? workingHoursRecords[workingHoursRecords.length - 1].rtPerHour
-              : 2.5;
-
-            // Calculate RT/HR with supervisor support
-            const isTeamLeaderForSite = emp.isTeamLeader && emp.teamLeaderSiteId === site.id;
-            const isSupervisorForSite = emp.isSupervisor && emp.supervisorSiteId === site.id;
-
-            let rtPerHour = 2.5;
-            if (workingHoursRecords.length > 0) {
-              rtPerHour = calcRtPerHour(
-                aggregateTotalHours,
-                isTeamLeaderForSite,
-                isSupervisorForSite,
-                hasCustomRate,
-                latestRtPerHour
-              );
-            } else {
-              // No working hours record yet, use basic calculation
-              const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
-              rtPerHour = hasBonus ? 3.0 : 2.5;
-            }
-
-            return {
-              empId: empRecord.empId,
-              empName: empRecord.empName,
-              employeeCode: emp.employeeId,
-              nationality: emp.nationality || '',
-              trade: emp.trade || '',
-              isTeamLeader: isTeamLeaderForSite,
-              isSupervisor: isSupervisorForSite,
-              salaryRecord: salaryRecord
-                ? {
-                    ...salaryRecord,
-                    createdAt: salaryRecord.createdAt.toISOString(),
-                    updatedAt: salaryRecord.updatedAt.toISOString(),
-                  }
-                : null,
-              workingHours: workingHoursRecords.length > 0
-                ? {
-                    id: workingHoursRecords[0].id,
-                    empId: empRecord.empId,
-                    empName: empRecord.empName,
-                    totalWorkingHours: aggregateTotalHours,
-                    rtPerHour: hasCustomRate ? latestRtPerHour : rtPerHour,
-                    isCustom: hasCustomRate,
-                    calculatedRtPerHour: rtPerHour,
-                  }
-                : {
-                    empId: empRecord.empId,
-                    empName: empRecord.empName,
-                    totalWorkingHours: 0,
-                    rtPerHour: 2.5,
-                    isCustom: false,
-                    calculatedRtPerHour: rtPerHour,
-                  },
-            };
-          })
-        );
-
-        // 5. Also include any SalaryRecord entries that have siteId matching
-        // but might not be in EmpCountSitePerMonth (for manually added entries)
+        // 2b. Manual salary records (not in EmpCountSitePerMonth)
         const manualSalaryRecords = await db.salaryRecord.findMany({
           where: {
             siteId: site.id,
@@ -201,15 +188,6 @@ export async function GET(request: NextRequest) {
         });
 
         for (const manualRecord of manualSalaryRecords) {
-          // Get working hours for this employee too (aggregate from monthly records)
-          const whRecords = await db.totalEmployeeWorkingHours.findMany({
-            where: { empId: manualRecord.empId },
-          });
-          const whTotal = whRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
-          const whHasCustom = whRecords.some(r => r.isCustom);
-          const whLatestRt = whRecords.length > 0 ? whRecords[whRecords.length - 1].rtPerHour : 2.5;
-
-          // Get employee info
           const empInfo = await db.employee.findUnique({
             where: { id: manualRecord.empId },
             select: {
@@ -223,100 +201,364 @@ export async function GET(request: NextRequest) {
             },
           });
 
-          const isTeamLeaderForSite = empInfo?.isTeamLeader && empInfo?.teamLeaderSiteId === site.id;
-          const isSupervisorForSite = empInfo?.isSupervisor && empInfo?.supervisorSiteId === site.id;
-
-          let rtPerHour = 2.5;
-          if (whRecords.length > 0) {
-            rtPerHour = calcRtPerHour(
-              whTotal,
-              isTeamLeaderForSite,
-              isSupervisorForSite,
-              whHasCustom,
-              whLatestRt
-            );
-          }
-
-          employeesWithSalary.push({
+          rawEntries.push({
             empId: manualRecord.empId,
             empName: manualRecord.empName,
             employeeCode: manualRecord.employeeCode || empInfo?.employeeId || '',
             nationality: manualRecord.nationality || empInfo?.nationality || '',
             trade: manualRecord.trade || empInfo?.trade || '',
-            isTeamLeader: isTeamLeaderForSite,
-            isSupervisor: isSupervisorForSite,
-            salaryRecord: {
-              ...manualRecord,
-              createdAt: manualRecord.createdAt.toISOString(),
-              updatedAt: manualRecord.updatedAt.toISOString(),
-            },
-            workingHours: whRecords.length > 0
-              ? {
-                  id: whRecords[0].id,
-                  empId: manualRecord.empId,
-                  empName: manualRecord.empName,
-                  totalWorkingHours: whTotal,
-                  rtPerHour: whHasCustom ? whLatestRt : rtPerHour,
-                  isCustom: whHasCustom,
-                  calculatedRtPerHour: rtPerHour,
-                }
-              : {
-                  empId: manualRecord.empId,
-                  empName: manualRecord.empName,
-                  totalWorkingHours: 0,
-                  rtPerHour: 2.5,
-                  isCustom: false,
-                  calculatedRtPerHour: rtPerHour,
-                },
+            isTeamLeader: empInfo?.isTeamLeader ?? false,
+            isSupervisor: empInfo?.isSupervisor ?? false,
+            teamLeaderSiteId: empInfo?.teamLeaderSiteId ?? null,
+            supervisorSiteId: empInfo?.supervisorSiteId ?? null,
+            siteId: site.id,
+            siteName: site.name,
+            salaryRecords: [manualRecord],
+            isManual: true,
           });
         }
 
-        // 6. Calculate totals
-        const totalHours = employeesWithSalary.reduce(
-          (sum, e) => sum + (e.salaryRecord?.totalHours || 0),
-          0
-        );
-        const totalSalary = employeesWithSalary.reduce(
-          (sum, e) => sum + (e.salaryRecord?.totalSalary || 0),
-          0
-        );
-        const totalDeductions = employeesWithSalary.reduce(
-          (sum, e) => sum + (e.salaryRecord?.deduction || 0),
-          0
-        );
-        const totalAdvances = employeesWithSalary.reduce(
-          (sum, e) => sum + (e.salaryRecord?.advance || 0),
-          0
-        );
-        const totalBalanceSalary = employeesWithSalary.reduce(
-          (sum, e) => sum + (e.salaryRecord?.balanceSalary || 0),
-          0
-        );
-
-        const isActiveForMonth = activatedSiteIds.has(site.id);
-        const totalEmpCount = employeeCount + manualSalaryRecords.length;
-
-        return {
-          site: {
-            id: site.id,
-            name: site.name,
-            clientName: site.clientName,
-            projectName: site.projectName,
-          },
-          employeeCount: totalEmpCount,
-          totalHours,
-          totalSalary,
-          totalDeductions,
-          totalAdvances,
-          totalBalanceSalary,
-          employees: employeesWithSalary,
-          isActivated: isActiveForMonth, // flag to indicate this site was manually activated
-        };
+        return { site, rawEntries };
       })
     );
 
+    // -----------------------------------------------------------------------
+    // 3. Batch-fetch aggregate working-hours for every employee
+    // -----------------------------------------------------------------------
+    const allEmpIds = new Set<string>();
+    for (const { rawEntries } of siteRawData) {
+      for (const entry of rawEntries) {
+        allEmpIds.add(entry.empId);
+      }
+    }
+
+    const allWhRecords = await db.totalEmployeeWorkingHours.findMany({
+      where: { empId: { in: Array.from(allEmpIds) } },
+    });
+
+    // Group working-hours records by empId
+    const whByEmpId = new Map<string, typeof allWhRecords>();
+    for (const rec of allWhRecords) {
+      if (!whByEmpId.has(rec.empId)) whByEmpId.set(rec.empId, []);
+      whByEmpId.get(rec.empId)!.push(rec);
+    }
+
+    // Build per-employee hours info
+    const employeeHoursInfo = new Map<
+      string,
+      {
+        aggregateTotal: number;
+        previousAggregate: number;
+        currentMonthHours: number;
+        allRecords: typeof allWhRecords;
+        hasCustomRate: boolean;
+        latestRtPerHour: number;
+      }
+    >();
+
+    for (const empId of allEmpIds) {
+      const records = whByEmpId.get(empId) ?? [];
+      const aggregateTotal = records.reduce((s, r) => s + r.totalWorkingHours, 0);
+      const previousAggregate = records
+        .filter(r => r.month < month)
+        .reduce((s, r) => s + r.totalWorkingHours, 0);
+      const currentMonthHours = records
+        .filter(r => r.month === month)
+        .reduce((s, r) => s + r.totalWorkingHours, 0);
+      const hasCustomRate = records.some(r => r.isCustom);
+      const latestRtPerHour = records.length > 0 ? records[records.length - 1].rtPerHour : 2.5;
+
+      employeeHoursInfo.set(empId, {
+        aggregateTotal,
+        previousAggregate,
+        currentMonthHours,
+        allRecords: records,
+        hasCustomRate,
+        latestRtPerHour,
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Group raw entries by employee & sort sites alphabetically per employee
+    // -----------------------------------------------------------------------
+    const employeeEntriesMap = new Map<string, RawEmployeeEntry[]>();
+    for (const { rawEntries } of siteRawData) {
+      for (const entry of rawEntries) {
+        if (!employeeEntriesMap.has(entry.empId)) {
+          employeeEntriesMap.set(entry.empId, []);
+        }
+        employeeEntriesMap.get(entry.empId)!.push(entry);
+      }
+    }
+    // Sort each employee's entries by site name (alphabetical)
+    for (const [, entries] of employeeEntriesMap) {
+      entries.sort((a, b) => a.siteName.localeCompare(b.siteName));
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Apply the basic / premium split algorithm
+    // -----------------------------------------------------------------------
+    const employeeSplitDecisions = new Map<string, Map<string, SplitDecision[]>>();
+
+    for (const [empId, entries] of employeeEntriesMap) {
+      const hoursInfo = employeeHoursInfo.get(empId);
+      if (!hoursInfo) continue;
+
+      const { aggregateTotal, previousAggregate, currentMonthHours } = hoursInfo;
+      let remainingBasic = Math.max(0, 1000 - previousAggregate);
+
+      const empDecisions = new Map<string, SplitDecision[]>();
+
+      for (const entry of entries) {
+        // Determine siteHours — hours at this site for the current month
+        let siteHours: number;
+        if (entry.salaryRecords.length > 0) {
+          siteHours = entry.salaryRecords.reduce((s, sr) => s + sr.totalHours, 0);
+        } else {
+          // No salary records yet — use current month's totalWorkingHours
+          siteHours = currentMonthHours;
+        }
+
+        // Site-specific TL / Supervisor check
+        const isTeamLeaderForSite =
+          entry.isTeamLeader && entry.teamLeaderSiteId === entry.siteId;
+        const isSupervisorForSite =
+          entry.isSupervisor && entry.supervisorSiteId === entry.siteId;
+        const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
+
+        const basicRate = hasBonus ? 3.0 : 2.5;
+        const premiumRate = hasBonus ? 5.5 : 5.0;
+
+        const decisions: SplitDecision[] = [];
+
+        if (aggregateTotal <= 1000) {
+          // Employee has not crossed 1000 aggregate hours — all at basic rate
+          decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
+        } else if (remainingBasic >= siteHours) {
+          // All hours at this site fit within the remaining basic bucket
+          decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
+          remainingBasic -= siteHours;
+        } else if (remainingBasic > 0) {
+          // SPLIT — some basic, rest premium
+          decisions.push({
+            rateTier: 'standard',
+            hours: remainingBasic,
+            rate: basicRate,
+          });
+          decisions.push({
+            rateTier: 'premium',
+            hours: siteHours - remainingBasic,
+            rate: premiumRate,
+          });
+          remainingBasic = 0;
+        } else {
+          // No basic hours left — all premium
+          decisions.push({ rateTier: 'premium', hours: siteHours, rate: premiumRate });
+        }
+
+        empDecisions.set(entry.siteId, decisions);
+      }
+
+      employeeSplitDecisions.set(empId, empDecisions);
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Build final per-site employee entries using the split decisions
+    // -----------------------------------------------------------------------
+    const siteFinalEntries = new Map<string, FinalEmployeeEntry[]>();
+
+    for (const { site, rawEntries } of siteRawData) {
+      const finalEntries: FinalEmployeeEntry[] = [];
+
+      for (const entry of rawEntries) {
+        const hoursInfo = employeeHoursInfo.get(entry.empId);
+        const empDecisions = employeeSplitDecisions.get(entry.empId);
+        const decisions = empDecisions?.get(entry.siteId);
+
+        if (!decisions || !hoursInfo) continue;
+
+        const {
+          allRecords: whRecords,
+          aggregateTotal,
+          hasCustomRate,
+          latestRtPerHour,
+        } = hoursInfo;
+
+        const isTeamLeaderForSite =
+          entry.isTeamLeader && entry.teamLeaderSiteId === entry.siteId;
+        const isSupervisorForSite =
+          entry.isSupervisor && entry.supervisorSiteId === entry.siteId;
+
+        for (const decision of decisions) {
+          // Skip entries with zero hours (can happen at boundary)
+          if (decision.hours <= 0) continue;
+
+          // Find a matching salary record for this rateTier
+          const matchingRecord = entry.salaryRecords.find(
+            sr => sr.rateTier === decision.rateTier
+          );
+
+          let salaryRecordData: Record<string, unknown> | null = null;
+
+          if (matchingRecord) {
+            // Existing DB record for this tier — return as-is
+            salaryRecordData = {
+              ...matchingRecord,
+              createdAt: matchingRecord.createdAt.toISOString(),
+              updatedAt: matchingRecord.updatedAt.toISOString(),
+            };
+          } else if (decision.rateTier === 'standard' && entry.salaryRecords.length > 0) {
+            // No "standard" record in DB yet, but other records exist.
+            // Preserve deduction / advance / isPaid from the first available record.
+            const template = entry.salaryRecords.find(sr => sr.rateTier === 'standard')
+              ?? entry.salaryRecords[0];
+            const computedTotalSalary = decision.hours * decision.rate;
+            salaryRecordData = {
+              ...template,
+              rateTier: 'standard' as const,
+              totalHours: decision.hours,
+              rtPerHour: decision.rate,
+              totalSalary: computedTotalSalary,
+              deduction: template.deduction,
+              advance: template.advance,
+              balanceSalary: computedTotalSalary - template.deduction - template.advance,
+              isPaid: template.isPaid,
+              createdAt: template.createdAt.toISOString(),
+              updatedAt: template.updatedAt.toISOString(),
+            };
+          } else if (decision.rateTier === 'premium') {
+            // Premium entry — 0 deduction / advance by default
+            const anyRecord = entry.salaryRecords[0];
+            if (anyRecord) {
+              const computedTotalSalary = decision.hours * decision.rate;
+              salaryRecordData = {
+                ...anyRecord,
+                rateTier: 'premium' as const,
+                totalHours: decision.hours,
+                rtPerHour: decision.rate,
+                totalSalary: computedTotalSalary,
+                deduction: 0,
+                advance: 0,
+                balanceSalary: computedTotalSalary,
+                isPaid: false,
+                createdAt: anyRecord.createdAt.toISOString(),
+                updatedAt: anyRecord.updatedAt.toISOString(),
+              };
+            }
+            // If no record exists at all, salaryRecordData stays null
+          }
+
+          // Build workingHours object
+          const workingHoursObj: Record<string, unknown> =
+            whRecords.length > 0
+              ? {
+                  id: whRecords[0].id,
+                  empId: entry.empId,
+                  empName: entry.empName,
+                  totalWorkingHours: aggregateTotal,
+                  rtPerHour: hasCustomRate ? latestRtPerHour : decision.rate,
+                  isCustom: hasCustomRate,
+                  calculatedRtPerHour: decision.rate,
+                }
+              : {
+                  empId: entry.empId,
+                  empName: entry.empName,
+                  totalWorkingHours: 0,
+                  rtPerHour: decision.rate,
+                  isCustom: false,
+                  calculatedRtPerHour: decision.rate,
+                };
+
+          finalEntries.push({
+            empId: entry.empId,
+            empName: entry.empName,
+            employeeCode: entry.employeeCode,
+            nationality: entry.nationality,
+            trade: entry.trade,
+            isTeamLeader: isTeamLeaderForSite,
+            isSupervisor: isSupervisorForSite,
+            rateTier: decision.rateTier,
+            salaryRecord: salaryRecordData,
+            workingHours: workingHoursObj,
+          });
+        }
+      }
+
+      // Sort: by empName, then standard before premium
+      finalEntries.sort((a, b) => {
+        const nameCmp = a.empName.localeCompare(b.empName);
+        if (nameCmp !== 0) return nameCmp;
+        return a.rateTier === 'standard' ? -1 : 1;
+      });
+
+      // Assign SL.NO — same SL.NO for split entries of the same employee
+      let currentSlNo = 0;
+      let lastEmpId = '';
+      for (const entry of finalEntries) {
+        if (entry.empId !== lastEmpId) {
+          currentSlNo++;
+          lastEmpId = entry.empId;
+        }
+        if (entry.salaryRecord && typeof entry.salaryRecord === 'object') {
+          entry.salaryRecord.slNo = currentSlNo;
+        }
+      }
+
+      siteFinalEntries.set(site.id, finalEntries);
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Build per-site response objects
+    // -----------------------------------------------------------------------
+    const siteResults = sitesToProcess.map(site => {
+      const finalEntries = siteFinalEntries.get(site.id) ?? [];
+      const isActiveForMonth = activatedSiteIds.has(site.id);
+
+      // Totals — sum across ALL entries (including split ones)
+      const totalHours = finalEntries.reduce(
+        (sum, e) => sum + ((e.salaryRecord as Record<string, unknown>)?.totalHours as number ?? 0),
+        0
+      );
+      const totalSalary = finalEntries.reduce(
+        (sum, e) => sum + ((e.salaryRecord as Record<string, unknown>)?.totalSalary as number ?? 0),
+        0
+      );
+      const totalDeductions = finalEntries.reduce(
+        (sum, e) => sum + ((e.salaryRecord as Record<string, unknown>)?.deduction as number ?? 0),
+        0
+      );
+      const totalAdvances = finalEntries.reduce(
+        (sum, e) => sum + ((e.salaryRecord as Record<string, unknown>)?.advance as number ?? 0),
+        0
+      );
+      const totalBalanceSalary = finalEntries.reduce(
+        (sum, e) => sum + ((e.salaryRecord as Record<string, unknown>)?.balanceSalary as number ?? 0),
+        0
+      );
+
+      // Unique employees (not entries) for the employee count
+      const uniqueEmpIds = new Set(finalEntries.map(e => e.empId));
+
+      return {
+        site: {
+          id: site.id,
+          name: site.name,
+          clientName: site.clientName,
+          projectName: site.projectName,
+        },
+        employeeCount: uniqueEmpIds.size,
+        totalHours,
+        totalSalary,
+        totalDeductions,
+        totalAdvances,
+        totalBalanceSalary,
+        employees: finalEntries,
+        isActivated: isActiveForMonth,
+      };
+    });
+
     // Include sites that have employees OR are activated for this month
-    const sitesToShow = siteResults.filter((s) => s.employeeCount > 0 || s.isActivated);
+    const sitesToShow = siteResults.filter(s => s.employeeCount > 0 || s.isActivated);
 
     // Grand totals
     const grandTotals = {

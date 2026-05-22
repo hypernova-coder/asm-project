@@ -93,6 +93,7 @@ interface EmployeeSalaryData {
   slNo: number;
   totalWorkingHours: number;
   calculatedRtPerHour: number;
+  rateTier: 'standard' | 'premium';
 }
 
 interface WorkingHoursData {
@@ -143,6 +144,7 @@ interface SiteResult {
     trade: string;
     isTeamLeader: boolean;
     isSupervisor: boolean;
+    rateTier: 'standard' | 'premium';
     salaryRecord: {
       id: string;
       empId: string;
@@ -163,6 +165,7 @@ interface SiteResult {
       balanceSalary: number;
       isPaid: boolean;
       isDeleted: boolean;
+      rateTier: string;
       createdAt: string;
       updatedAt: string;
     } | null;
@@ -1041,10 +1044,11 @@ function SiteSalarySheet({
     setEmployees(site.employees);
   }, [site.employees]);
 
-  const handleCellChange = (empId: string, field: string, value: number | boolean) => {
+  // Use index-based identification for split entries (same empId can appear twice)
+  const handleCellChange = (index: number, field: string, value: number | boolean) => {
     setEmployees((prev) =>
-      prev.map((emp) => {
-        if (emp.empId !== empId) return emp;
+      prev.map((emp, i) => {
+        if (i !== index) return emp;
         const updated = { ...emp, [field]: value };
 
         // Auto-calculate totals
@@ -1058,11 +1062,11 @@ function SiteSalarySheet({
     );
   };
 
-  const handlePaidToggle = (empId: string, currentIsPaid: boolean) => {
+  const handlePaidToggle = (index: number, currentIsPaid: boolean) => {
     // unpaid → paid: always allowed
     // paid → unpaid: requires edit mode
     if (currentIsPaid && !editMode) return;
-    handleCellChange(empId, 'isPaid', !currentIsPaid);
+    handleCellChange(index, 'isPaid', !currentIsPaid);
   };
 
   const handleAddRow = () => {
@@ -1088,6 +1092,7 @@ function SiteSalarySheet({
         slNo: newSlNo,
         totalWorkingHours: 0,
         calculatedRtPerHour: 2.5,
+        rateTier: 'standard' as const,
       },
     ]);
   };
@@ -1124,6 +1129,7 @@ function SiteSalarySheet({
             advance: emp.advance,
             balanceSalary: emp.balanceSalary,
             isPaid: emp.isPaid,
+            rateTier: emp.rateTier,
             // Bidirectional sync: update TotalEmployeeWorkingHours
             updateWorkingHours: true,
           };
@@ -1166,9 +1172,18 @@ function SiteSalarySheet({
   const sumBalanceSalary = employees.reduce((s, e) => s + e.balanceSalary, 0);
 
   const tradeDisplay = (emp: EmployeeSalaryData) => {
-    if (emp.isSupervisor) return `${emp.trade}/SUPERVISOR`;
-    if (emp.isTeamLeader) return `${emp.trade}/TL`;
-    return emp.trade;
+    let trade = emp.trade;
+    if (emp.isSupervisor) trade = `${trade}/SUPERVISOR`;
+    if (emp.isTeamLeader) trade = `${trade}/TL`;
+    return trade;
+  };
+
+  // Check if an employee entry is a "split duplicate" (premium row of a split)
+  // A split entry is one where the same empId appears more than once in the employees array
+  const isSplitDuplicate = (emp: EmployeeSalaryData, idx: number): boolean => {
+    if (emp.rateTier !== 'premium') return false;
+    // Check if there's a standard entry with the same empId before this index
+    return employees.some((e, i) => i < idx && e.empId === emp.empId && e.rateTier === 'standard');
   };
 
   return (
@@ -1202,167 +1217,184 @@ function SiteSalarySheet({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {employees.map((emp, index) => (
-              <TableRow
-                key={emp.empId}
-                className={cn(
-                  'border-slate-700/50',
-                  editMode ? 'hover:bg-slate-700/20' : 'hover:bg-transparent',
-                  emp.isPaid && 'bg-emerald-500/5'
-                )}
-              >
-                <TableCell className="text-slate-400 text-xs text-center font-mono">{emp.slNo}</TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      value={emp.nationality}
-                      onChange={(e) =>
-                        setEmployees((prev) =>
-                          prev.map((em, i) => (i === index ? { ...em, nationality: e.target.value } : em))
-                        )
-                      }
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[70px]"
-                    />
-                  ) : (
-                    <span className="text-xs text-slate-300 px-1">{emp.nationality || '-'}</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      value={emp.empName}
-                      onChange={(e) =>
-                        setEmployees((prev) =>
-                          prev.map((em, i) => (i === index ? { ...em, empName: e.target.value } : em))
-                        )
-                      }
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[110px]"
-                    />
-                  ) : (
-                    <span className="text-xs text-white font-medium px-1">{emp.empName || '-'}</span>
-                  )}
-                </TableCell>
-                <TableCell className="text-xs text-slate-300">
-                  {tradeDisplay(emp)}
-                </TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      value={emp.employeeCode}
-                      onChange={(e) =>
-                        setEmployees((prev) =>
-                          prev.map((em, i) => (i === index ? { ...em, employeeCode: e.target.value } : em))
-                        )
-                      }
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[75px]"
-                    />
-                  ) : (
-                    <span className="text-xs text-slate-300 font-mono px-1">{emp.employeeCode || '-'}</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={emp.totalHours}
-                      onChange={(e) => handleCellChange(emp.empId, 'totalHours', parseFloat(e.target.value) || 0)}
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                    />
-                  ) : (
-                    <span className={cn('text-xs text-right block', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
-                      {emp.totalHours || '-'}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={emp.rtPerHour}
-                      onChange={(e) => handleCellChange(emp.empId, 'rtPerHour', parseFloat(e.target.value) || 0)}
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                    />
-                  ) : (
-                    <span className="text-xs text-right block text-white">{emp.rtPerHour}</span>
-                  )}
-                </TableCell>
-                <TableCell className={cn('text-xs text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
-                  {formatNumber(emp.totalSalary)}
-                </TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={emp.deduction}
-                      onChange={(e) => handleCellChange(emp.empId, 'deduction', parseFloat(e.target.value) || 0)}
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                    />
-                  ) : (
-                    <span className={cn('text-xs text-right block', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                      {emp.deduction || '-'}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {editMode ? (
-                    <Input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={emp.advance}
-                      onChange={(e) => handleCellChange(emp.empId, 'advance', parseFloat(e.target.value) || 0)}
-                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                    />
-                  ) : (
-                    <span className={cn('text-xs text-right block', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                      {emp.advance || '-'}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell
+            {employees.map((emp, index) => {
+              const isPremiumSplit = isSplitDuplicate(emp, index);
+              const dimClass = isPremiumSplit ? 'opacity-40 pointer-events-none' : '';
+              return (
+                <TableRow
+                  key={`${emp.empId}-${emp.rateTier}-${index}`}
                   className={cn(
-                    'text-xs text-right font-semibold',
-                    emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400'
+                    'border-slate-700/50',
+                    editMode ? 'hover:bg-slate-700/20' : 'hover:bg-transparent',
+                    emp.isPaid && 'bg-emerald-500/5',
+                    emp.rateTier === 'premium' && 'bg-amber-500/5'
                   )}
                 >
-                  {formatNumber(emp.balanceSalary)}
-                </TableCell>
-                <TableCell className="text-center">
-                  <button
-                    onClick={() => handlePaidToggle(emp.empId, emp.isPaid)}
+                  <TableCell className="text-slate-400 text-xs text-center font-mono">{emp.slNo}</TableCell>
+                  <TableCell className={dimClass}>
+                    {editMode && !isPremiumSplit ? (
+                      <Input
+                        value={emp.nationality}
+                        onChange={(e) =>
+                          setEmployees((prev) =>
+                            prev.map((em, i) => (i === index ? { ...em, nationality: e.target.value } : em))
+                          )
+                        }
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[70px]"
+                      />
+                    ) : (
+                      <span className="text-xs text-slate-300 px-1">{isPremiumSplit ? '—' : (emp.nationality || '-')}</span>
+                    )}
+                  </TableCell>
+                  <TableCell className={dimClass}>
+                    {editMode && !isPremiumSplit ? (
+                      <Input
+                        value={emp.empName}
+                        onChange={(e) =>
+                          setEmployees((prev) =>
+                            prev.map((em, i) => (i === index ? { ...em, empName: e.target.value } : em))
+                          )
+                        }
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[110px]"
+                      />
+                    ) : (
+                      <span className="text-xs text-white font-medium px-1">{isPremiumSplit ? '—' : (emp.empName || '-')}</span>
+                    )}
+                  </TableCell>
+                  <TableCell className={cn('text-xs text-slate-300', dimClass)}>
+                    {isPremiumSplit ? '—' : tradeDisplay(emp)}
+                  </TableCell>
+                  <TableCell className={dimClass}>
+                    {editMode && !isPremiumSplit ? (
+                      <Input
+                        value={emp.employeeCode}
+                        onChange={(e) =>
+                          setEmployees((prev) =>
+                            prev.map((em, i) => (i === index ? { ...em, employeeCode: e.target.value } : em))
+                          )
+                        }
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[75px]"
+                      />
+                    ) : (
+                      <span className="text-xs text-slate-300 font-mono px-1">{isPremiumSplit ? '—' : (emp.employeeCode || '-')}</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {editMode ? (
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={emp.totalHours}
+                        onChange={(e) => handleCellChange(index, 'totalHours', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
+                      />
+                    ) : (
+                      <span className={cn('text-xs text-right block', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
+                        {emp.totalHours || '-'}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center justify-end gap-1.5">
+                      {editMode ? (
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          value={emp.rtPerHour}
+                          onChange={(e) => handleCellChange(index, 'rtPerHour', parseFloat(e.target.value) || 0)}
+                          className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
+                        />
+                      ) : (
+                        <span className="text-xs text-right text-white">{emp.rtPerHour}</span>
+                      )}
+                      {emp.rateTier === 'standard' && (
+                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
+                          Basic
+                        </span>
+                      )}
+                      {emp.rateTier === 'premium' && (
+                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 whitespace-nowrap">
+                          Premium
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className={cn('text-xs text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
+                    {formatNumber(emp.totalSalary)}
+                  </TableCell>
+                  <TableCell>
+                    {editMode ? (
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={emp.deduction}
+                        onChange={(e) => handleCellChange(index, 'deduction', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
+                      />
+                    ) : (
+                      <span className={cn('text-xs text-right block', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                        {isPremiumSplit ? '—' : (emp.deduction || '-')}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {editMode ? (
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={emp.advance}
+                        onChange={(e) => handleCellChange(index, 'advance', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
+                      />
+                    ) : (
+                      <span className={cn('text-xs text-right block', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                        {isPremiumSplit ? '—' : (emp.advance || '-')}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell
                     className={cn(
-                      'inline-flex items-center justify-center rounded px-2 py-0.5 text-[10px] font-bold transition-colors',
-                      emp.isPaid
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                        : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
-                      !emp.isPaid && 'cursor-pointer',
-                      emp.isPaid && !editMode && 'cursor-default',
-                      emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30'
+                      'text-xs text-right font-semibold',
+                      emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400'
                     )}
                   >
-                    {emp.isPaid ? 'PAID' : 'UNPAID'}
-                  </button>
-                </TableCell>
-                {editMode && (
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
-                      onClick={() => handleDeleteRow(index)}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                    {formatNumber(emp.balanceSalary)}
                   </TableCell>
-                )}
-              </TableRow>
-            ))}
+                  <TableCell className="text-center">
+                    <button
+                      onClick={() => handlePaidToggle(index, emp.isPaid)}
+                      className={cn(
+                        'inline-flex items-center justify-center rounded px-2 py-0.5 text-[10px] font-bold transition-colors',
+                        emp.isPaid
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
+                        !emp.isPaid && 'cursor-pointer',
+                        emp.isPaid && !editMode && 'cursor-default',
+                        emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30'
+                      )}
+                    >
+                      {emp.isPaid ? 'PAID' : 'UNPAID'}
+                    </button>
+                  </TableCell>
+                  {editMode && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                        onClick={() => handleDeleteRow(index)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </TableCell>
+                  )}
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </div>
@@ -1720,6 +1752,7 @@ export function AccountsPage() {
             slNo: e.salaryRecord?.slNo || idx + 1,
             totalWorkingHours: e.workingHours.totalWorkingHours,
             calculatedRtPerHour: e.workingHours.calculatedRtPerHour,
+            rateTier: e.rateTier || 'standard',
           })),
         }));
         setSites(mappedSites);

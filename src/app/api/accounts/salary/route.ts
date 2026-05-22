@@ -55,9 +55,12 @@ export async function POST(request: NextRequest) {
       advance,
       balanceSalary,
       isPaid,
+      rateTier, // "standard" or "premium"
       totalWorkingHours, // optional: to update TotalEmployeeWorkingHours
       updateWorkingHours, // bidirectional sync flag
     } = body;
+
+    const effectiveRateTier = rateTier || 'standard';
 
     // Validate required fields
     if (!empId || !empName || !siteId || !siteName || !month || !year) {
@@ -76,21 +79,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check for unique constraint: empId + siteId + month + year
+    // Check for unique constraint: empId + siteId + month + year + rateTier
     const existing = await db.salaryRecord.findUnique({
       where: {
-        empId_siteId_month_year: {
+        empId_siteId_month_year_rateTier: {
           empId,
           siteId,
           month,
           year: parseInt(String(year), 10),
+          rateTier: effectiveRateTier,
         },
       },
     });
 
     if (existing && !existing.isDeleted) {
       return NextResponse.json(
-        { success: false, error: 'Salary record already exists for this employee, site, and month' },
+        { success: false, error: `Salary record already exists for this employee, site, month, and rate tier (${effectiveRateTier})` },
         { status: 409 }
       );
     }
@@ -113,33 +117,34 @@ export async function POST(request: NextRequest) {
           advance: typeof advance === 'number' ? advance : 0,
           balanceSalary: typeof balanceSalary === 'number' ? balanceSalary : 0,
           isPaid: typeof isPaid === 'boolean' ? isPaid : false,
+          rateTier: effectiveRateTier,
           isDeleted: false,
         },
       });
 
       // Bidirectional sync: update TotalEmployeeWorkingHours for the month
+      // Sum ALL salary records for this employee+month (both standard and premium)
       if (updateWorkingHours || typeof totalWorkingHours === 'number') {
-        const newTotalHours = typeof totalHours === 'number' ? totalHours : undefined;
-        const newRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : undefined;
+        const allSalaryRecords = await db.salaryRecord.findMany({
+          where: { empId, month, isDeleted: false },
+        });
+        const totalHoursFromSalary = allSalaryRecords.reduce((sum, sr) => sum + sr.totalHours, 0);
 
-        if (newTotalHours !== undefined || newRtPerHour !== undefined) {
-          await db.totalEmployeeWorkingHours.upsert({
-            where: { empId_month: { empId, month } },
-            update: {
-              ...(newTotalHours !== undefined ? { totalWorkingHours: newTotalHours } : {}),
-              ...(newRtPerHour !== undefined ? { rtPerHour: newRtPerHour } : {}),
-              empName,
-            },
-            create: {
-              empId,
-              empName,
-              month,
-              totalWorkingHours: newTotalHours || 0,
-              rtPerHour: newRtPerHour || 2.5,
-              isCustom: false,
-            },
-          });
-        }
+        await db.totalEmployeeWorkingHours.upsert({
+          where: { empId_month: { empId, month } },
+          update: {
+            totalWorkingHours: totalHoursFromSalary,
+            empName,
+          },
+          create: {
+            empId,
+            empName,
+            month,
+            totalWorkingHours: totalHoursFromSalary,
+            rtPerHour: 2.5,
+            isCustom: false,
+          },
+        });
       }
 
       return NextResponse.json({
@@ -174,32 +179,33 @@ export async function POST(request: NextRequest) {
         advance: typeof advance === 'number' ? advance : 0,
         balanceSalary: typeof balanceSalary === 'number' ? balanceSalary : 0,
         isPaid: typeof isPaid === 'boolean' ? isPaid : false,
+        rateTier: effectiveRateTier,
       },
     });
 
     // Bidirectional sync: update TotalEmployeeWorkingHours for the month
+    // Sum ALL salary records for this employee+month (both standard and premium)
     if (updateWorkingHours || typeof totalWorkingHours === 'number') {
-      const newTotalHours = typeof totalHours === 'number' ? totalHours : undefined;
-      const newRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : undefined;
+      const allSalaryRecords = await db.salaryRecord.findMany({
+        where: { empId, month, isDeleted: false },
+      });
+      const totalHoursFromSalary = allSalaryRecords.reduce((sum, sr) => sum + sr.totalHours, 0);
 
-      if (newTotalHours !== undefined || newRtPerHour !== undefined) {
-        await db.totalEmployeeWorkingHours.upsert({
-          where: { empId_month: { empId, month } },
-          update: {
-            ...(newTotalHours !== undefined ? { totalWorkingHours: newTotalHours } : {}),
-            ...(newRtPerHour !== undefined ? { rtPerHour: newRtPerHour } : {}),
-            empName,
-          },
-          create: {
-            empId,
-            empName,
-            month,
-            totalWorkingHours: newTotalHours || 0,
-            rtPerHour: newRtPerHour || 2.5,
-            isCustom: false,
-          },
-        });
-      }
+      await db.totalEmployeeWorkingHours.upsert({
+        where: { empId_month: { empId, month } },
+        update: {
+          totalWorkingHours: totalHoursFromSalary,
+          empName,
+        },
+        create: {
+          empId,
+          empName,
+          month,
+          totalWorkingHours: totalHoursFromSalary,
+          rtPerHour: 2.5,
+          isCustom: false,
+        },
+      });
     }
 
     return NextResponse.json(
@@ -237,6 +243,7 @@ export async function PUT(request: NextRequest) {
       advance,
       balanceSalary,
       isPaid,
+      rateTier,
       totalWorkingHours, // optional: to update TotalEmployeeWorkingHours
       updateWorkingHours, // bidirectional sync flag
     } = body;
@@ -273,6 +280,7 @@ export async function PUT(request: NextRequest) {
     if (typeof advance === 'number') updateData.advance = advance;
     if (typeof balanceSalary === 'number') updateData.balanceSalary = balanceSalary;
     if (typeof isPaid === 'boolean') updateData.isPaid = isPaid;
+    if (typeof rateTier === 'string' && rateTier) updateData.rateTier = rateTier;
 
     const updated = await db.salaryRecord.update({
       where: { id },
@@ -280,40 +288,24 @@ export async function PUT(request: NextRequest) {
     });
 
     // Bidirectional sync: update TotalEmployeeWorkingHours for the month
-    if (updateWorkingHours) {
-      const updateWH: Record<string, unknown> = {};
-      if (typeof totalHours === 'number') updateWH.totalWorkingHours = totalHours;
-      if (typeof rtPerHour === 'number') updateWH.rtPerHour = rtPerHour;
+    // Sum ALL salary records for this employee+month (both standard and premium)
+    if (updateWorkingHours || typeof totalWorkingHours === 'number') {
+      const allSalaryRecords = await db.salaryRecord.findMany({
+        where: { empId: existing.empId, month: existing.month, isDeleted: false },
+      });
+      const totalHoursFromSalary = allSalaryRecords.reduce((sum, sr) => sum + sr.totalHours, 0);
 
-      if (Object.keys(updateWH).length > 0) {
-        await db.totalEmployeeWorkingHours.upsert({
-          where: { empId_month: { empId: existing.empId, month: existing.month } },
-          update: updateWH,
-          create: {
-            empId: existing.empId,
-            empName: existing.empName,
-            month: existing.month,
-            totalWorkingHours: typeof totalHours === 'number' ? totalHours : 0,
-            rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : 2.5,
-            isCustom: false,
-          },
-        });
-      }
-    }
-
-    // Also update working hours if totalWorkingHours is explicitly provided
-    if (typeof totalWorkingHours === 'number') {
       await db.totalEmployeeWorkingHours.upsert({
         where: { empId_month: { empId: existing.empId, month: existing.month } },
         update: {
-          totalWorkingHours,
+          totalWorkingHours: totalHoursFromSalary,
         },
         create: {
           empId: existing.empId,
           empName: existing.empName,
           month: existing.month,
-          totalWorkingHours,
-          rtPerHour: existing.rtPerHour,
+          totalWorkingHours: totalHoursFromSalary,
+          rtPerHour: 2.5,
           isCustom: false,
         },
       });

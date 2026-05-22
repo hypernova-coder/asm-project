@@ -311,18 +311,20 @@ model SalaryRecord {
   balanceSalary Float   @default(0)
   isPaid       Boolean  @default(false)
   isDeleted    Boolean  @default(false) // soft delete
+  rateTier     String   @default("standard") // "standard" for basic rate, "premium" for higher rate after 1000 hours
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   employee Employee @relation(fields: [empId], references: [id], onDelete: Cascade)
 
-  @@unique([empId, siteId, month, year])
+  @@unique([empId, siteId, month, year, rateTier])
   @@index([empId])
   @@index([siteId])
   @@index([month])
   @@index([year])
   @@index([siteId, month, year])
   @@index([isPaid])
+  @@index([rateTier])
 }
 
 model EmpCountSitePerMonth {

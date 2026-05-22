@@ -434,3 +434,114 @@ Stage Summary:
 - Schema has month field, API routes handle per-month CRUD, frontend has Add New Sites
 - No code corruption found - file content is correct
 - Database is in sync, lint passes, everything pushed to GitHub
+
+---
+Task ID: 3
+Agent: Subagent (full-stack-developer)
+Task: Update POST/PUT /api/accounts/salary route to handle rateTier field
+
+Work Log:
+- Updated POST handler:
+  - Added `rateTier` to destructured request body with default "standard" via `effectiveRateTier`
+  - Changed `findUnique` to use new constraint `empId_siteId_month_year_rateTier` including rateTier
+  - Updated 409 error message to include the rate tier value
+  - Added `rateTier: effectiveRateTier` to both soft-delete restore update and new record create data
+  - Updated bidirectional sync: now sums ALL salary records for employee+month (both standard and premium) instead of using single record's totalHours
+  - TotalEmployeeWorkingHours upsert now uses aggregated totalHoursFromSalary
+- Updated PUT handler:
+  - Added `rateTier` to destructured request body
+  - Added `if (typeof rateTier === 'string' && rateTier) updateData.rateTier = rateTier` to build update data
+  - Replaced two separate bidirectional sync blocks (updateWorkingHours + totalWorkingHours) with single unified block
+  - Bidirectional sync now sums ALL salary records for employee+month (both standard and premium)
+- DELETE handler left unchanged as specified
+- calculateRtPerHour helper kept as-is (less relevant now since rates determined by split logic in GET endpoint)
+- All lint checks pass cleanly
+
+Stage Summary:
+- Salary API POST/PUT now fully supports rateTier field with new unique constraint
+- Bidirectional sync correctly aggregates hours across all rate tiers (standard + premium)
+- Backward compatible: rateTier defaults to "standard" when not provided
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Update GET /api/accounts route with basic/premium hour split calculation
+
+Work Log:
+- Completely rewrote the GET handler in /src/app/api/accounts/route.ts
+- Kept calcRtPerHour helper function (no longer used for per-employee rate; split logic replaces it)
+- Kept POST and DELETE handlers unchanged
+- Architecture: two-phase approach — parallel raw data collection, then cross-site split post-processing
+- Phase 1 (data collection):
+  - Fetched active sites and activated sites as before
+  - Used Promise.all for parallel per-site data collection
+  - Changed salary record lookup from findUnique to findMany (supports standard + premium records)
+  - Batch-fetched TotalEmployeeWorkingHours for all employees (single query with empId IN)
+  - Grouped working hours by empId for efficient lookup
+- Phase 2 (split algorithm):
+  - Grouped raw entries by employee, sorted sites alphabetically per employee
+  - For each employee: calculated aggregateTotal, previousAggregate (months before current), remainingBasic
+  - Processed sites in alphabetical order, applying split logic:
+    - aggregateTotal ≤ 1000: all hours at basic rate (rateTier = "standard")
+    - remainingBasic ≥ siteHours: all at basic, decrement remainingBasic
+    - 0 < remainingBasic < siteHours: SPLIT into standard + premium entries
+    - remainingBasic ≤ 0: all at premium rate (rateTier = "premium")
+  - Rate calculation: basicRate = 2.5 (3.0 for TL/Supervisor), premiumRate = 5.0 (5.5 for TL/Supervisor)
+  - Site-specific TL/Supervisor check: employee.isTeamLeader && employee.teamLeaderSiteId === site.id
+- Salary record handling for splits:
+  - Matching DB record found for rateTier: returned as-is
+  - Standard tier without matching record: preserved deduction/advance/isPaid from existing template
+  - Premium tier without matching record: 0 deduction/advance, isPaid=false
+  - No DB record at all: salaryRecord = null
+- SL.NO assignment:
+  - Sorted entries by empName, then standard before premium
+  - Same SL.NO for split entries of the same employee
+  - Incrementing SL.NO per unique employee within each site
+- Totals:
+  - employeeCount based on unique employees (not entries) per site
+  - Grand totals sum across all entries including split ones
+- Response format: each entry includes rateTier: "standard" | "premium" field
+- All lint checks pass cleanly
+- Database schema already in sync (rateTier field already in SalaryRecord model)
+
+Stage Summary:
+- GET /api/accounts now implements basic/premium hour split when aggregate hours > 1000
+- Cross-site alphabetical ordering ensures consistent split allocation
+- Splits create two entries (standard + premium) sharing the same SL.NO
+- Existing salary record data (deduction, advance, isPaid) preserved on standard entries
+- Premium entries default to 0 deduction/advance
+- Batch working-hours query improves performance over per-employee queries
+
+---
+Task ID: 4
+Agent: Subagent (full-stack-developer)
+Task: Update frontend accounts-page.tsx to handle basic/premium rate tier split entries
+
+Work Log:
+- Added `rateTier: 'standard' | 'premium'` field to EmployeeSalaryData interface
+- Added `rateTier` field to SiteResult interface employees entries type and salaryRecord type
+- Updated fetchAccounts mapping: added `rateTier: e.rateTier || 'standard'` to employee mapping
+- Changed handleCellChange from empId-based to index-based identification (critical for split entries where same empId appears twice)
+- Changed handlePaidToggle from empId-based to index-based identification (each split entry has independent isPaid status)
+- Updated handleAddRow: added `rateTier: 'standard' as const` to new row default
+- Updated handleSave: added `rateTier: emp.rateTier` to the save request body
+- Updated tradeDisplay function to use let-based string building (consistent style)
+- Added isSplitDuplicate helper: detects premium rows that are the second entry of a split (same empId with standard entry earlier)
+- Updated table rendering:
+  - Changed row key from `emp.empId` to `${emp.empId}-${emp.rateTier}-${index}` for unique keys
+  - Added `bg-amber-500/5` background for premium tier rows
+  - Premium split rows: Nationality, Name, Trade, EMP ID cells show "—" (em-dash) with dimmed opacity
+  - Premium split rows: Deduction and Advance columns show "—" in non-edit mode
+  - Premium split rows: Edit mode hides input fields for identity columns (pointer-events-none + opacity-40)
+  - Added "Basic" badge next to RT/HR for standard entries: emerald theme (bg-emerald-500/20 text-emerald-400 border-emerald-500/30)
+  - Added "Premium" badge next to RT/HR for premium entries: amber theme (bg-amber-500/20 text-amber-400 border-amber-500/30)
+  - Both entries share the same SL.NO (from API)
+- Total section automatically sums across ALL entries including split ones (works correctly since employees array now includes both entries)
+- All lint checks pass cleanly
+
+Stage Summary:
+- Frontend fully supports basic/premium rate tier split entries
+- Visual distinction: premium rows have amber-tinted background, identity cells dimmed with "—"
+- Rate tier badges displayed next to RT/HR column
+- Index-based change tracking ensures split entries can be edited independently
+- handleSave sends rateTier with each salary record to backend
