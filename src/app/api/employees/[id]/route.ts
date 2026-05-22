@@ -98,7 +98,7 @@ export async function PUT(
     const updatableFields = [
       'fullName', 'nationality', 'phone', 'email', 'address',
       'emergencyContact', 'position', 'trade', 'companyName', 'passportStatus',
-      'idStatus', 'currentSite', 'photo', 'status', 'employeeId',
+      'idStatus', 'currentSite', 'photo', 'status', 'employeeId', 'hoursThreshold',
     ];
 
     for (const field of updatableFields) {

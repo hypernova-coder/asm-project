@@ -18,13 +18,14 @@ async function calculateRtPerHour(
 
   const employee = await db.employee.findUnique({
     where: { id: empId },
-    select: { isTeamLeader: true, isSupervisor: true },
+    select: { isTeamLeader: true, isSupervisor: true, hoursThreshold: true },
   });
 
   // TL / Supervisor bonus applies across all sites
   const hasBonus = employee?.isTeamLeader || employee?.isSupervisor || false;
+  const threshold = employee?.hoursThreshold || 1000;
 
-  if (totalHrs >= 1000) {
+  if (totalHrs >= threshold) {
     return hasBonus ? 5.5 : 5.0;
   }
   return hasBonus ? 3.0 : 2.5;

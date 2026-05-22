@@ -112,6 +112,7 @@ interface WorkingHoursData {
     isTeamLeader: boolean;
     isSupervisor: boolean;
     currentSite: string | null;
+    hoursThreshold: number;
   };
 }
 
@@ -212,9 +213,9 @@ function isMonthAvailable(year: number, month: number): boolean {
 }
 
 // RT/HR calculation with TL and Supervisor bonus for BOTH basic and full rates
-function calculateRtPerHourAuto(totalWorkingHours: number, isTeamLeader: boolean, isSupervisor: boolean): number {
+function calculateRtPerHourAuto(totalWorkingHours: number, isTeamLeader: boolean, isSupervisor: boolean, threshold: number = 1000): number {
   const hasBonus = isTeamLeader || isSupervisor;
-  if (totalWorkingHours >= 1000) {
+  if (totalWorkingHours >= threshold) {
     return hasBonus ? 5.5 : 5.0;
   }
   return hasBonus ? 3.0 : 2.5;
@@ -629,8 +630,9 @@ function EmployeeDetailPage({
               <p className="font-medium text-slate-300">Rate Calculation Rules:</p>
               <ul className="list-disc list-inside space-y-0.5 text-slate-500">
                 <li>Basic rate: <span className="text-white font-medium">2.5 AED/hr</span></li>
-                <li>After 1000 hours: <span className="text-white font-medium">5.0 AED/hr</span></li>
-                <li>Team Leader / Supervisor bonus: <span className="text-white font-medium">+0.5 AED/hr</span> (3.0 basic, 5.5 after 1000 hrs)</li>
+                <li>After threshold hours (default 1000): <span className="text-white font-medium">5.0 AED/hr</span></li>
+                <li>Team Leader / Supervisor bonus: <span className="text-white font-medium">+0.5 AED/hr</span> (3.0 basic, 5.5 after threshold)</li>
+                <li>Each employee has a configurable hours threshold — edit in Manage Employee Hours</li>
                 <li>Editing rate here will sync to the salary table</li>
                 <li>Click <span className="text-amber-400 font-medium">Edit</span> to modify hours and rates</li>
               </ul>
@@ -857,7 +859,7 @@ function ManageWorkingHoursPage({
         if (r.empId !== empId) return r;
         const updated = { ...r, totalWorkingHours: value };
         if (!r.isCustom) {
-          updated.rtPerHour = calculateRtPerHourAuto(value, r.employee.isTeamLeader, r.employee.isSupervisor);
+          updated.rtPerHour = calculateRtPerHourAuto(value, r.employee.isTeamLeader, r.employee.isSupervisor, r.employee.hoursThreshold || 1000);
           updated.calculatedRtPerHour = updated.rtPerHour;
         }
         return updated;
@@ -880,7 +882,24 @@ function ManageWorkingHoursPage({
         if (r.empId !== empId) return r;
         const updated = { ...r, isCustom };
         if (!isCustom) {
-          updated.rtPerHour = calculateRtPerHourAuto(r.totalWorkingHours, r.employee.isTeamLeader, r.employee.isSupervisor);
+          updated.rtPerHour = calculateRtPerHourAuto(r.totalWorkingHours, r.employee.isTeamLeader, r.employee.isSupervisor, r.employee.hoursThreshold || 1000);
+          updated.calculatedRtPerHour = updated.rtPerHour;
+        }
+        return updated;
+      })
+    );
+  };
+
+  const handleThresholdChange = (empId: string, value: number) => {
+    setRecords((prev) =>
+      prev.map((r) => {
+        if (r.empId !== empId) return r;
+        const updated = {
+          ...r,
+          employee: { ...r.employee, hoursThreshold: value },
+        };
+        if (!r.isCustom) {
+          updated.rtPerHour = calculateRtPerHourAuto(r.totalWorkingHours, r.employee.isTeamLeader, r.employee.isSupervisor, value);
           updated.calculatedRtPerHour = updated.rtPerHour;
         }
         return updated;
@@ -891,6 +910,17 @@ function ManageWorkingHoursPage({
   const handleSave = async () => {
     try {
       setSaving(true);
+      // Save threshold changes to Employee table first
+      const thresholdPromises = records.map((r) =>
+        fetch(`/api/employees/${r.empId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hoursThreshold: r.employee.hoursThreshold }),
+        })
+      );
+      await Promise.allSettled(thresholdPromises);
+
+      // Then save working hours
       const results = await Promise.allSettled(
         records.map((r) =>
           fetch('/api/accounts/working-hours', {
@@ -1002,6 +1032,7 @@ function ManageWorkingHoursPage({
                     <TableHead className="text-slate-400 font-semibold">Trade</TableHead>
                     <TableHead className="text-slate-400 font-semibold">Nationality</TableHead>
                     <TableHead className="text-slate-400 font-semibold">Total Working Hours</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">Threshold (hrs)</TableHead>
                     <TableHead className="text-slate-400 font-semibold">RT/HR</TableHead>
                     <TableHead className="text-slate-400 font-semibold">Custom Rate</TableHead>
                   </TableRow>
@@ -1009,7 +1040,7 @@ function ManageWorkingHoursPage({
                 <TableBody>
                   {filteredRecords.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-slate-500 py-8">
+                      <TableCell colSpan={8} className="text-center text-slate-500 py-8">
                         No employees found. Click &quot;Add Employee&quot; to add employees.
                       </TableCell>
                     </TableRow>
@@ -1036,6 +1067,16 @@ function ManageWorkingHoursPage({
                             value={record.totalWorkingHours}
                             onChange={(e) => handleWorkingHoursChange(record.empId, parseFloat(e.target.value) || 0)}
                             className="w-24 h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
+                          />
+                        </TableCell>
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={record.employee.hoursThreshold || 1000}
+                            onChange={(e) => handleThresholdChange(record.empId, parseInt(e.target.value) || 1000)}
+                            className="w-20 h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
                           />
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
@@ -1087,8 +1128,9 @@ function ManageWorkingHoursPage({
               <p className="font-medium text-slate-300">Rate Calculation Rules:</p>
               <ul className="list-disc list-inside space-y-0.5 text-slate-500">
                 <li>Basic rate: <span className="text-white font-medium">2.5 AED/hr</span></li>
-                <li>After 1000 hours: <span className="text-white font-medium">5.0 AED/hr</span></li>
-                <li>Team Leader / Supervisor bonus: <span className="text-white font-medium">+0.5 AED/hr</span> (3.0 basic, 5.5 after 1000 hrs)</li>
+                <li>After threshold hours (default 1000): <span className="text-white font-medium">5.0 AED/hr</span></li>
+                <li>Team Leader / Supervisor bonus: <span className="text-white font-medium">+0.5 AED/hr</span> (3.0 basic, 5.5 after threshold)</li>
+                <li>Each employee has a configurable hours threshold — edit the &quot;Threshold&quot; column to change it</li>
                 <li>Enable &quot;Custom Rate&quot; to manually override the rate</li>
                 <li>Click on a row to view monthly hours breakdown</li>
               </ul>

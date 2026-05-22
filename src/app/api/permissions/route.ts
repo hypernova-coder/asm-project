@@ -13,6 +13,7 @@ const PERMISSION_SEEDS = [
   { name: 'Notifications', slug: 'notifications', group: 'general' },
   { name: 'Admin Management', slug: 'admins', group: 'admin' },
   { name: 'Accounts', slug: 'accounts', group: 'workforce' },
+  { name: 'Consolidated Salary Sheet', slug: 'consolidated_salary', group: 'workforce' },
 ];
 
 // Menus always visible to all users (including admin)

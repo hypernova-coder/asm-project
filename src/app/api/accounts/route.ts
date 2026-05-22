@@ -8,11 +8,12 @@ function calcRtPerHour(
   isTeamLeaderForSite: boolean,
   isSupervisorForSite: boolean,
   isCustom: boolean,
-  customRtPerHour: number
+  customRtPerHour: number,
+  threshold: number = 1000
 ): number {
   if (isCustom) return customRtPerHour;
   const hasBonus = isTeamLeaderForSite || isSupervisorForSite;
-  if (totalWorkingHours >= 1000) {
+  if (totalWorkingHours >= threshold) {
     return hasBonus ? 5.5 : 5.0;
   }
   return hasBonus ? 3.0 : 2.5;
@@ -32,6 +33,7 @@ interface RawEmployeeEntry {
   isSupervisor: boolean;
   teamLeaderSiteId: string | null;
   supervisorSiteId: string | null;
+  hoursThreshold: number;
   siteId: string;
   siteName: string;
   // findMany — there can be "standard" AND "premium" records for the same emp+site+month
@@ -135,6 +137,7 @@ export async function GET(request: NextRequest) {
                 teamLeaderSiteId: true,
                 isSupervisor: true,
                 supervisorSiteId: true,
+                hoursThreshold: true,
               },
             },
           },
@@ -169,6 +172,7 @@ export async function GET(request: NextRequest) {
             isSupervisor: emp.isSupervisor,
             teamLeaderSiteId: emp.teamLeaderSiteId,
             supervisorSiteId: emp.supervisorSiteId,
+            hoursThreshold: emp.hoursThreshold || 1000,
             siteId: site.id,
             siteName: site.name,
             salaryRecords,
@@ -199,6 +203,7 @@ export async function GET(request: NextRequest) {
               teamLeaderSiteId: true,
               isSupervisor: true,
               supervisorSiteId: true,
+              hoursThreshold: true,
             },
           });
 
@@ -212,6 +217,7 @@ export async function GET(request: NextRequest) {
             isSupervisor: empInfo?.isSupervisor ?? false,
             teamLeaderSiteId: empInfo?.teamLeaderSiteId ?? null,
             supervisorSiteId: empInfo?.supervisorSiteId ?? null,
+            hoursThreshold: empInfo?.hoursThreshold || 1000,
             siteId: site.id,
             siteName: site.name,
             salaryRecords: [manualRecord],
@@ -298,6 +304,8 @@ export async function GET(request: NextRequest) {
 
     // -----------------------------------------------------------------------
     // 5. Apply the basic / premium split algorithm
+    //    KEY FIX: Only apply split for entries with NO existing salary records.
+    //    When salary records exist, use them directly to preserve user edits.
     // -----------------------------------------------------------------------
     const employeeSplitDecisions = new Map<string, Map<string, SplitDecision[]>>();
 
@@ -305,31 +313,38 @@ export async function GET(request: NextRequest) {
       const hoursInfo = employeeHoursInfo.get(empId);
       if (!hoursInfo) continue;
 
+      // Get the threshold from the first entry (all entries for same emp have same threshold)
+      const threshold = entries[0]?.hoursThreshold || 1000;
+
       const { aggregateTotal, previousAggregate, currentMonthHours } = hoursInfo;
-      let remainingBasic = Math.max(0, 1000 - previousAggregate);
+      let remainingBasic = Math.max(0, threshold - previousAggregate);
 
       const empDecisions = new Map<string, SplitDecision[]>();
 
       for (const entry of entries) {
-        // Determine siteHours — hours at this site for the current month
-        let siteHours: number;
-        if (entry.salaryRecords.length > 0) {
-          siteHours = entry.salaryRecords.reduce((s, sr) => s + sr.totalHours, 0);
-        } else {
-          // No salary records yet — use current month's totalWorkingHours
-          siteHours = currentMonthHours;
-        }
-
         // TL / Supervisor bonus applies across all sites
         const hasBonus = entry.isTeamLeader || entry.isSupervisor;
-
         const basicRate = hasBonus ? 3.0 : 2.5;
         const premiumRate = hasBonus ? 5.5 : 5.0;
 
+        // KEY FIX: If salary records exist, use them directly instead of recalculating split
+        if (entry.salaryRecords.length > 0) {
+          const decisions: SplitDecision[] = entry.salaryRecords.map(sr => ({
+            rateTier: (sr.rateTier === 'premium' ? 'premium' : 'standard') as 'standard' | 'premium',
+            hours: sr.totalHours,
+            rate: sr.rtPerHour,
+          }));
+          empDecisions.set(entry.siteId, decisions);
+          continue;
+        }
+
+        // No salary records yet — apply split algorithm for new entries
+        let siteHours = currentMonthHours;
+
         const decisions: SplitDecision[] = [];
 
-        if (aggregateTotal <= 1000) {
-          // Employee has not crossed 1000 aggregate hours — all at basic rate
+        if (aggregateTotal <= threshold) {
+          // Employee has not crossed threshold aggregate hours — all at basic rate
           decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
         } else if (remainingBasic >= siteHours) {
           // All hours at this site fit within the remaining basic bucket
@@ -361,6 +376,7 @@ export async function GET(request: NextRequest) {
 
     // -----------------------------------------------------------------------
     // 6. Build final per-site employee entries using the split decisions
+    //    KEY FIX: When salary records exist, use saved data directly.
     // -----------------------------------------------------------------------
     const siteFinalEntries = new Map<string, FinalEmployeeEntry[]>();
 
@@ -382,10 +398,11 @@ export async function GET(request: NextRequest) {
         } = hoursInfo;
 
         const hasBonus = entry.isTeamLeader || entry.isSupervisor;
+        const threshold = entry.hoursThreshold || 1000;
 
         for (const decision of decisions) {
           // Skip entries with zero hours (can happen at boundary)
-          if (decision.hours <= 0) continue;
+          if (decision.hours <= 0 && entry.salaryRecords.length === 0) continue;
 
           // Find a matching salary record for this rateTier
           const matchingRecord = entry.salaryRecords.find(
@@ -395,15 +412,11 @@ export async function GET(request: NextRequest) {
           let salaryRecordData: Record<string, unknown> | null = null;
 
           if (matchingRecord) {
-            // Existing DB record for this tier — override hours/rate/salary with split decision values
-            const computedTotalSalary = decision.hours * decision.rate;
+            // KEY FIX: Use saved salary record data directly — do NOT override with split decisions.
+            // The user may have manually edited hours/rate, and we must preserve those edits.
             salaryRecordData = {
               ...matchingRecord,
-              totalHours: decision.hours,
-              rtPerHour: decision.rate,
-              totalSalary: computedTotalSalary,
-              balanceSalary: computedTotalSalary - matchingRecord.deduction - matchingRecord.advance,
-              rateTier: decision.rateTier,
+              // Keep all saved values: totalHours, rtPerHour, totalSalary, etc.
               createdAt: matchingRecord.createdAt.toISOString(),
               updatedAt: matchingRecord.updatedAt.toISOString(),
             };

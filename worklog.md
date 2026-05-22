@@ -612,3 +612,52 @@ Stage Summary:
 - Cumulative hours column added with amber highlight at 1000+
 - Rate refreshes automatically when navigating back
 - Split rows show full identity data instead of dashes
+
+---
+Task ID: 1-a
+Agent: Subagent (general-purpose)
+Task: Add hoursThreshold to Employee schema + Consolidated Salary Sheet permission
+
+Work Log:
+- Added `hoursThreshold Int @default(1000)` field to Employee model in prisma/schema.prisma
+- Placed after `supervisorSiteId` and before `createdAt` as specified
+- Field represents hours threshold for rate switching (basic vs premium rate), default 1000 hours
+- Pushed schema change with `bun run db:push` — database now in sync, Prisma Client regenerated
+- Added `{ name: 'Consolidated Salary Sheet', slug: 'consolidated_salary', group: 'workforce' }` to PERMISSION_SEEDS array in /src/app/api/permissions/route.ts
+- Placed after the Accounts entry as specified
+
+Stage Summary:
+- Employee model now has hoursThreshold field (Int, default 1000) for configurable rate-switching threshold
+- New "Consolidated Salary Sheet" permission seeded in workforce group
+- Database schema pushed and Prisma Client regenerated successfully
+
+---
+Task ID: 2-a
+Agent: Subagent (general-purpose)
+Task: Update working-hours route to use hoursThreshold from Employee model
+
+Work Log:
+- Added `hoursThreshold: true` to all 7 employee select objects in /src/app/api/accounts/working-hours/route.ts:
+  1. GET handler (available=true) - db.employee.findMany select
+  2. GET handler (empId) - employee select in include
+  3. GET handler (all records) - employee select in include
+  4. POST handler (batch) - db.employee.findUnique select
+  5. POST handler (single) - db.employee.findUnique select
+  6. PUT handler (empId without month) - employee select in include
+  7. PUT handler (empId with month) - employee select in include
+- Note: 4 places use `include: { employee: true }` (no select) which already fetch hoursThreshold
+- Updated all 8 `calculateRtPerHour` calls to pass threshold as 6th argument:
+  1. GET (empId): `emp.hoursThreshold || 1000`
+  2. GET (all records): `record.employee.hoursThreshold || 1000`
+  3. POST (batch): `employee.hoursThreshold || 1000`
+  4. POST (single): `employee.hoursThreshold || 1000`
+  5. PUT (create current month): `emp.hoursThreshold || 1000`
+  6. PUT (update current month): `emp.hoursThreshold || 1000`
+  7. PUT (aggregate): `emp.hoursThreshold || 1000`
+  8. PUT (update by id): `existing.employee?.hoursThreshold || 1000`
+- All response objects automatically include hoursThreshold since the employee objects are passed through with the field now selected
+
+Stage Summary:
+- All employee selects now include hoursThreshold field
+- All calculateRtPerHour calls now pass per-employee threshold (fallback 1000)
+- Rate calculation uses employee-specific threshold instead of hardcoded 1000

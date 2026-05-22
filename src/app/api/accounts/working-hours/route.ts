@@ -7,11 +7,12 @@ function calculateRtPerHour(
   isTeamLeader: boolean,
   isSupervisor: boolean,
   isCustom: boolean,
-  customRtPerHour: number
+  customRtPerHour: number,
+  threshold: number = 1000
 ): number {
   if (isCustom) return customRtPerHour;
   const hasBonus = isTeamLeader || isSupervisor;
-  if (totalWorkingHours >= 1000) {
+  if (totalWorkingHours >= threshold) {
     return hasBonus ? 5.5 : 5.0;
   }
   return hasBonus ? 3.0 : 2.5;
@@ -49,6 +50,7 @@ export async function GET(request: NextRequest) {
           isTeamLeader: true,
           isSupervisor: true,
           currentSite: true,
+          hoursThreshold: true,
         },
         orderBy: { fullName: 'asc' },
       });
@@ -75,6 +77,7 @@ export async function GET(request: NextRequest) {
               isSupervisor: true,
               teamLeaderSiteId: true,
               currentSite: true,
+              hoursThreshold: true,
             },
           },
         },
@@ -98,7 +101,8 @@ export async function GET(request: NextRequest) {
         emp.isTeamLeader,
         emp.isSupervisor,
         hasCustom,
-        latestRt
+        latestRt,
+        emp.hoursThreshold || 1000
       );
 
       return NextResponse.json({
@@ -162,6 +166,7 @@ export async function GET(request: NextRequest) {
             isSupervisor: true,
             teamLeaderSiteId: true,
             currentSite: true,
+            hoursThreshold: true,
           },
         },
       },
@@ -202,7 +207,8 @@ export async function GET(request: NextRequest) {
         record.employee.isTeamLeader,
         record.employee.isSupervisor,
         record.isCustom,
-        record.rtPerHour
+        record.rtPerHour,
+        record.employee.hoursThreshold || 1000
       );
 
       return {
@@ -254,6 +260,7 @@ export async function POST(request: NextRequest) {
             nationality: true,
             isTeamLeader: true,
             isSupervisor: true,
+            hoursThreshold: true,
           },
         });
 
@@ -265,7 +272,7 @@ export async function POST(request: NextRequest) {
         });
         if (existing) continue;
 
-        const calculatedRt = calculateRtPerHour(0, employee.isTeamLeader, employee.isSupervisor, false, 2.5);
+        const calculatedRt = calculateRtPerHour(0, employee.isTeamLeader, employee.isSupervisor, false, 2.5, employee.hoursThreshold || 1000);
 
         // Create an initial record for current month
         const now = new Date();
@@ -316,7 +323,7 @@ export async function POST(request: NextRequest) {
       select: {
         id: true, fullName: true, employeeId: true, trade: true,
         nationality: true, isTeamLeader: true, isSupervisor: true,
-        teamLeaderSiteId: true, currentSite: true,
+        teamLeaderSiteId: true, currentSite: true, hoursThreshold: true,
       },
     });
 
@@ -332,7 +339,7 @@ export async function POST(request: NextRequest) {
     const parsedRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : 2.5;
 
     const calculatedRtPerHour = calculateRtPerHour(
-      parsedTotalHours, employee.isTeamLeader, employee.isSupervisor, parsedIsCustom, parsedRtPerHour
+      parsedTotalHours, employee.isTeamLeader, employee.isSupervisor, parsedIsCustom, parsedRtPerHour, employee.hoursThreshold || 1000
     );
 
     // Create for current month
@@ -405,7 +412,7 @@ export async function PUT(request: NextRequest) {
             select: {
               id: true, fullName: true, employeeId: true, trade: true,
               nationality: true, isTeamLeader: true, isSupervisor: true,
-              teamLeaderSiteId: true, currentSite: true,
+              teamLeaderSiteId: true, currentSite: true, hoursThreshold: true,
             },
           },
         },
@@ -432,7 +439,8 @@ export async function PUT(request: NextRequest) {
         const calculatedRt = calculateRtPerHour(
           typeof totalWorkingHours === 'number' ? totalWorkingHours : 0,
           emp.isTeamLeader, emp.isSupervisor, finalIsCustom,
-          typeof rtPerHour === 'number' ? rtPerHour : 2.5
+          typeof rtPerHour === 'number' ? rtPerHour : 2.5,
+          emp.hoursThreshold || 1000
         );
 
         currentMonthRecord = await db.totalEmployeeWorkingHours.create({
@@ -451,7 +459,8 @@ export async function PUT(request: NextRequest) {
         const finalTotalHours = typeof totalWorkingHours === 'number' ? totalWorkingHours : currentMonthRecord.totalWorkingHours;
         const calculatedRt = calculateRtPerHour(
           finalTotalHours, emp.isTeamLeader, emp.isSupervisor, finalIsCustom,
-          typeof rtPerHour === 'number' ? rtPerHour : currentMonthRecord.rtPerHour
+          typeof rtPerHour === 'number' ? rtPerHour : currentMonthRecord.rtPerHour,
+          emp.hoursThreshold || 1000
         );
 
         currentMonthRecord = await db.totalEmployeeWorkingHours.update({
@@ -476,7 +485,8 @@ export async function PUT(request: NextRequest) {
       const latestRate = allRecords[allRecords.length - 1]?.rtPerHour || 2.5;
 
       const aggregateRt = calculateRtPerHour(
-        aggregateTotal, emp.isTeamLeader, emp.isSupervisor, anyCustom, latestRate
+        aggregateTotal, emp.isTeamLeader, emp.isSupervisor, anyCustom, latestRate,
+        emp.hoursThreshold || 1000
       );
 
       // Bidirectional sync: update salary records
@@ -535,7 +545,7 @@ export async function PUT(request: NextRequest) {
             select: {
               id: true, fullName: true, employeeId: true, trade: true,
               nationality: true, isTeamLeader: true, isSupervisor: true,
-              teamLeaderSiteId: true, currentSite: true,
+              teamLeaderSiteId: true, currentSite: true, hoursThreshold: true,
             },
           },
         },
@@ -586,7 +596,8 @@ export async function PUT(request: NextRequest) {
     } else {
       const calculatedRt = calculateRtPerHour(
         finalTotalHours, existing.employee?.isTeamLeader || false,
-        existing.employee?.isSupervisor || false, false, finalCustomRtPerHour
+        existing.employee?.isSupervisor || false, false, finalCustomRtPerHour,
+        existing.employee?.hoursThreshold || 1000
       );
       updateData.rtPerHour = calculatedRt;
     }

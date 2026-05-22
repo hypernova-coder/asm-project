@@ -631,21 +631,21 @@ export function ConsolidatedSalarySheet() {
 
                   {/* Salary Table */}
                   <div className="overflow-x-auto border border-t-0 border-slate-700/50 rounded-b-lg">
-                    <table className="w-full border-collapse text-xs">
+                    <table className="w-full border-collapse min-w-[900px]">
                       <thead>
                         <tr className="bg-slate-800/90 border-b border-slate-700/50">
                           <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-10 text-center">SL</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 min-w-[70px]">NATIONALITY</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 min-w-[100px]">NAME</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 min-w-[80px]">TRADE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 min-w-[70px]">EMP ID</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-16 text-right">HOURS</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-16 text-right">RT/HR</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-20 text-right">TOTAL SALARY</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-16 text-right">DEDUCT</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-16 text-right">ADVANCE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-20 text-right">BALANCE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-14 text-center">PAID</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[90px] text-left">NATIONALITY</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[130px] text-left">NAME</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[100px] text-left">TRADE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-left">EMP ID</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">HOURS</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">RT/HR</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[100px] text-right">TOTAL SALARY</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">DEDUCT</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">ADVANCE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[100px] text-right">BALANCE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[60px] text-center">PAID</th>
                           {editMode && <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-8"></th>}
                         </tr>
                       </thead>
@@ -676,7 +676,7 @@ export function ConsolidatedSalarySheet() {
                                     <Input
                                       value={emp.nationality}
                                       onChange={(e) => handleCellChange(site.id, index, 'nationality', e.target.value)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white min-w-[60px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
                                     />
                                   ) : (
                                     <span className="text-[11px] text-slate-300">{emp.nationality || '-'}</span>
@@ -687,7 +687,7 @@ export function ConsolidatedSalarySheet() {
                                     <Input
                                       value={emp.empName}
                                       onChange={(e) => handleCellChange(site.id, index, 'empName', e.target.value)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white min-w-[90px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
                                     />
                                   ) : (
                                     <span className={cn('text-[11px] font-medium', highlighted ? 'text-yellow-300' : 'text-white')}>{emp.empName || '-'}</span>
@@ -698,7 +698,7 @@ export function ConsolidatedSalarySheet() {
                                     <Input
                                       value={emp.trade}
                                       onChange={(e) => handleCellChange(site.id, index, 'trade', e.target.value)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white min-w-[70px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
                                     />
                                   ) : (
                                     <span className="text-[11px] text-slate-300">{tradeDisplay(emp)}</span>
@@ -709,13 +709,13 @@ export function ConsolidatedSalarySheet() {
                                     <Input
                                       value={emp.employeeCode}
                                       onChange={(e) => handleCellChange(site.id, index, 'employeeCode', e.target.value)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[65px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono w-full py-0"
                                     />
                                   ) : (
                                     <span className={cn('text-[11px] font-mono', highlighted ? 'text-yellow-300' : 'text-slate-300')}>{emp.employeeCode || '-'}</span>
                                   )}
                                 </td>
-                                <td className="py-1.5 px-2 text-right">
+                                <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
@@ -723,15 +723,15 @@ export function ConsolidatedSalarySheet() {
                                       step={1}
                                       value={emp.totalHours}
                                       onChange={(e) => handleCellChange(site.id, index, 'totalHours', parseFloat(e.target.value) || 0)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[60px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px]', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
+                                    <span className={cn('text-[11px] block text-right', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
                                       {emp.totalHours || '-'}
                                     </span>
                                   )}
                                 </td>
-                                <td className="py-1.5 px-2 text-right">
+                                <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
@@ -739,16 +739,16 @@ export function ConsolidatedSalarySheet() {
                                       step={0.5}
                                       value={emp.rtPerHour}
                                       onChange={(e) => handleCellChange(site.id, index, 'rtPerHour', parseFloat(e.target.value) || 0)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[60px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
                                     />
                                   ) : (
-                                    <span className="text-[11px] text-white">{emp.rtPerHour}</span>
+                                    <span className="text-[11px] text-white block text-right">{emp.rtPerHour}</span>
                                   )}
                                 </td>
-                                <td className={cn('text-[11px] text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
+                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
                                   {formatNumber(emp.totalSalary)}
                                 </td>
-                                <td className="py-1.5 px-2 text-right">
+                                <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
@@ -756,15 +756,15 @@ export function ConsolidatedSalarySheet() {
                                       step={1}
                                       value={emp.deduction}
                                       onChange={(e) => handleCellChange(site.id, index, 'deduction', parseFloat(e.target.value) || 0)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[60px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px]', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                                    <span className={cn('text-[11px] block text-right', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
                                       {emp.deduction || '-'}
                                     </span>
                                   )}
                                 </td>
-                                <td className="py-1.5 px-2 text-right">
+                                <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
@@ -772,16 +772,16 @@ export function ConsolidatedSalarySheet() {
                                       step={1}
                                       value={emp.advance}
                                       onChange={(e) => handleCellChange(site.id, index, 'advance', parseFloat(e.target.value) || 0)}
-                                      className="h-6 text-[11px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[60px] py-0"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px]', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                                    <span className={cn('text-[11px] block text-right', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
                                       {emp.advance || '-'}
                                     </span>
                                   )}
                                 </td>
                                 <td className={cn(
-                                  'text-[11px] text-right font-semibold',
+                                  'text-[11px] text-right font-semibold py-1.5 px-2',
                                   emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400'
                                 )}>
                                   {formatNumber(emp.balanceSalary)}

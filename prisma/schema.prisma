@@ -68,6 +68,7 @@ model Employee {
   teamLeaderSiteId String?
   isSupervisor     Boolean   @default(false)
   supervisorSiteId String?
+  hoursThreshold   Int       @default(1000) // Hours threshold for rate switching (basic vs premium)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
