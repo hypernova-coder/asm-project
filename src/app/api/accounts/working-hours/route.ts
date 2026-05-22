@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
-// Helper: Calculate RT/HR based on working hours and team leader/supervisor status
+// Helper: Calculate RT/HR based on aggregate working hours and team leader/supervisor status
 function calculateRtPerHour(
   totalWorkingHours: number,
   isTeamLeader: boolean,
@@ -9,14 +9,7 @@ function calculateRtPerHour(
   isCustom: boolean,
   customRtPerHour: number
 ): number {
-  // If custom, use the custom rate
-  if (isCustom) {
-    return customRtPerHour;
-  }
-
-  // Basic rate: 2.5 for everyone
-  // If totalWorkingHours >= 1000: rate becomes 5.0
-  // If employee is Team Leader OR Supervisor: add 0.5 to both (3.0 basic, 5.5 after 1000hrs)
+  if (isCustom) return customRtPerHour;
   const hasBonus = isTeamLeader || isSupervisor;
   if (totalWorkingHours >= 1000) {
     return hasBonus ? 5.5 : 5.0;
@@ -24,7 +17,7 @@ function calculateRtPerHour(
   return hasBonus ? 3.0 : 2.5;
 }
 
-// GET: Get all working hours records (with optional search)
+// GET: Get all working hours records (aggregated from monthly records)
 // Or get available employees not yet in the table (available=true)
 export async function GET(request: NextRequest) {
   try {
@@ -36,9 +29,10 @@ export async function GET(request: NextRequest) {
     // If available=true, return employees NOT in TotalEmployeeWorkingHours
     if (available === 'true') {
       const existingRecords = await db.totalEmployeeWorkingHours.findMany({
+        distinct: ['empId'],
         select: { empId: true },
       });
-      const existingEmpIds = existingRecords.map((r) => r.empId);
+      const existingEmpIds = [...new Set(existingRecords.map((r) => r.empId))];
 
       const employees = await db.employee.findMany({
         where: {
@@ -64,9 +58,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // If a specific empId is requested, return that single record
+    // If a specific empId is requested, return that single record (aggregated)
     if (empId) {
-      const record = await db.totalEmployeeWorkingHours.findUnique({
+      const monthlyRecords = await db.totalEmployeeWorkingHours.findMany({
         where: { empId },
         include: {
           employee: {
@@ -83,39 +77,48 @@ export async function GET(request: NextRequest) {
             },
           },
         },
+        orderBy: { month: 'asc' },
       });
 
-      if (!record) {
+      if (monthlyRecords.length === 0) {
         return NextResponse.json(
           { success: false, error: 'Working hours record not found for this employee' },
           { status: 404 }
         );
       }
 
+      const totalWorkingHours = monthlyRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
+      const hasCustom = monthlyRecords.some(r => r.isCustom);
+      const latestRt = monthlyRecords[monthlyRecords.length - 1].rtPerHour;
+      const emp = monthlyRecords[0].employee;
+
       const calculatedRtPerHour = calculateRtPerHour(
-        record.totalWorkingHours,
-        record.employee.isTeamLeader,
-        record.employee.isSupervisor,
-        record.isCustom,
-        record.rtPerHour
+        totalWorkingHours,
+        emp.isTeamLeader,
+        emp.isSupervisor,
+        hasCustom,
+        latestRt
       );
 
       return NextResponse.json({
         success: true,
         data: {
           record: {
-            id: record.id,
-            empId: record.empId,
-            empName: record.empName,
-            totalWorkingHours: record.totalWorkingHours,
-            rtPerHour: record.rtPerHour,
-            isCustom: record.isCustom,
+            id: monthlyRecords[0].id,
+            empId,
+            empName: monthlyRecords[0].empName,
+            totalWorkingHours,
+            rtPerHour: hasCustom ? latestRt : calculatedRtPerHour,
+            isCustom: hasCustom,
             calculatedRtPerHour,
-            createdAt: record.createdAt.toISOString(),
-            updatedAt: record.updatedAt.toISOString(),
-            employee: {
-              ...record.employee,
-            },
+            monthlyRecords: monthlyRecords.map(r => ({
+              id: r.id,
+              month: r.month,
+              totalWorkingHours: r.totalWorkingHours,
+              rtPerHour: r.rtPerHour,
+              isCustom: r.isCustom,
+            })),
+            employee: emp,
           },
         },
       });
@@ -123,7 +126,6 @@ export async function GET(request: NextRequest) {
 
     // Build where clause for search
     const whereClause: Record<string, unknown> = {};
-
     if (search) {
       whereClause.OR = [
         { empName: { contains: search } },
@@ -141,7 +143,8 @@ export async function GET(request: NextRequest) {
       ];
     }
 
-    const records = await db.totalEmployeeWorkingHours.findMany({
+    // Get all monthly records, then aggregate by empId
+    const allRecords = await db.totalEmployeeWorkingHours.findMany({
       where: whereClause,
       include: {
         employee: {
@@ -158,10 +161,38 @@ export async function GET(request: NextRequest) {
           },
         },
       },
-      orderBy: { empName: 'asc' },
+      orderBy: [{ empName: 'asc' }, { month: 'asc' }],
     });
 
-    const formattedRecords = records.map((record) => {
+    // Group by empId and aggregate
+    const empMap = new Map<string, {
+      empId: string;
+      empName: string;
+      totalWorkingHours: number;
+      rtPerHour: number;
+      isCustom: boolean;
+      employee: (typeof allRecords)[0]['employee'];
+    }>();
+
+    for (const record of allRecords) {
+      const existing = empMap.get(record.empId);
+      if (existing) {
+        existing.totalWorkingHours += record.totalWorkingHours;
+        existing.isCustom = existing.isCustom || record.isCustom;
+        existing.rtPerHour = record.rtPerHour; // Use latest month's rate
+      } else {
+        empMap.set(record.empId, {
+          empId: record.empId,
+          empName: record.empName,
+          totalWorkingHours: record.totalWorkingHours,
+          rtPerHour: record.rtPerHour,
+          isCustom: record.isCustom,
+          employee: record.employee,
+        });
+      }
+    }
+
+    const formattedRecords = Array.from(empMap.values()).map((record) => {
       const calculatedRtPerHour = calculateRtPerHour(
         record.totalWorkingHours,
         record.employee.isTeamLeader,
@@ -171,18 +202,14 @@ export async function GET(request: NextRequest) {
       );
 
       return {
-        id: record.id,
+        id: '', // No single ID since this is aggregated
         empId: record.empId,
         empName: record.empName,
         totalWorkingHours: record.totalWorkingHours,
-        rtPerHour: record.rtPerHour,
+        rtPerHour: record.isCustom ? record.rtPerHour : calculatedRtPerHour,
         isCustom: record.isCustom,
         calculatedRtPerHour,
-        createdAt: record.createdAt.toISOString(),
-        updatedAt: record.updatedAt.toISOString(),
-        employee: {
-          ...record.employee,
-        },
+        employee: record.employee,
       };
     });
 
@@ -203,7 +230,7 @@ export async function GET(request: NextRequest) {
 }
 
 // POST: Create new working hours records
-// Supports: single record (empId, empName) or batch (employeeIds array)
+// Supports: single record or batch (employeeIds array) - creates initial monthly records
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -228,19 +255,23 @@ export async function POST(request: NextRequest) {
 
         if (!employee) continue;
 
-        // Check if already exists
-        const existing = await db.totalEmployeeWorkingHours.findUnique({
+        // Check if any records already exist for this employee
+        const existing = await db.totalEmployeeWorkingHours.findFirst({
           where: { empId: eid },
         });
-
         if (existing) continue;
 
         const calculatedRt = calculateRtPerHour(0, employee.isTeamLeader, employee.isSupervisor, false, 2.5);
+
+        // Create an initial record for current month
+        const now = new Date();
+        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
         const record = await db.totalEmployeeWorkingHours.create({
           data: {
             empId: eid,
             empName: employee.fullName,
+            month: currentMonth,
             totalWorkingHours: 0,
             rtPerHour: calculatedRt,
             isCustom: false,
@@ -276,19 +307,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if employee exists
     const employee = await db.employee.findUnique({
       where: { id: empId },
       select: {
-        id: true,
-        fullName: true,
-        employeeId: true,
-        trade: true,
-        nationality: true,
-        isTeamLeader: true,
-        isSupervisor: true,
-        teamLeaderSiteId: true,
-        currentSite: true,
+        id: true, fullName: true, employeeId: true, trade: true,
+        nationality: true, isTeamLeader: true, isSupervisor: true,
+        teamLeaderSiteId: true, currentSite: true,
       },
     });
 
@@ -299,22 +323,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate RT/HR
     const parsedTotalHours = typeof totalWorkingHours === 'number' ? totalWorkingHours : 0;
     const parsedIsCustom = typeof isCustom === 'boolean' ? isCustom : false;
     const parsedRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : 2.5;
 
     const calculatedRtPerHour = calculateRtPerHour(
-      parsedTotalHours,
-      employee.isTeamLeader,
-      employee.isSupervisor,
-      parsedIsCustom,
-      parsedRtPerHour
+      parsedTotalHours, employee.isTeamLeader, employee.isSupervisor, parsedIsCustom, parsedRtPerHour
     );
 
-    // Upsert: create or update if empId already exists
+    // Create for current month
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
     const record = await db.totalEmployeeWorkingHours.upsert({
-      where: { empId },
+      where: { empId_month: { empId, month: currentMonth } },
       update: {
         empName,
         totalWorkingHours: parsedTotalHours,
@@ -324,6 +346,7 @@ export async function POST(request: NextRequest) {
       create: {
         empId,
         empName,
+        month: currentMonth,
         totalWorkingHours: parsedTotalHours,
         rtPerHour: parsedIsCustom ? parsedRtPerHour : calculatedRtPerHour,
         isCustom: parsedIsCustom,
@@ -341,8 +364,6 @@ export async function POST(request: NextRequest) {
           rtPerHour: record.rtPerHour,
           isCustom: record.isCustom,
           calculatedRtPerHour,
-          createdAt: record.createdAt.toISOString(),
-          updatedAt: record.updatedAt.toISOString(),
           employee,
         },
       },
@@ -356,11 +377,11 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PUT: Update a working hours record by empId or id
+// PUT: Update a working hours record - update aggregate by setting specific month's hours
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, empId, totalWorkingHours, rtPerHour, isCustom, empName } = body;
+    const { id, empId, totalWorkingHours, rtPerHour, isCustom, empName, month } = body;
 
     if (!id && !empId) {
       return NextResponse.json(
@@ -369,47 +390,173 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // Find existing record
-    let existing;
-    if (empId) {
-      existing = await db.totalEmployeeWorkingHours.findUnique({
+    // If empId is provided without specific month, this is an aggregate update from Manage Working Hours
+    // We need to find or create a record for the current month
+    if (empId && !month) {
+      const existingRecords = await db.totalEmployeeWorkingHours.findMany({
         where: { empId },
         include: {
           employee: {
             select: {
-              id: true,
-              fullName: true,
-              employeeId: true,
-              trade: true,
-              nationality: true,
-              isTeamLeader: true,
-              isSupervisor: true,
-              teamLeaderSiteId: true,
-              currentSite: true,
+              id: true, fullName: true, employeeId: true, trade: true,
+              nationality: true, isTeamLeader: true, isSupervisor: true,
+              teamLeaderSiteId: true, currentSite: true,
             },
           },
         },
+        orderBy: { month: 'desc' },
       });
-    } else {
-      existing = await db.totalEmployeeWorkingHours.findUnique({
-        where: { id },
-        include: {
-          employee: {
-            select: {
-              id: true,
-              fullName: true,
-              employeeId: true,
-              trade: true,
-              nationality: true,
-              isTeamLeader: true,
-              isSupervisor: true,
-              teamLeaderSiteId: true,
-              currentSite: true,
-            },
+
+      if (existingRecords.length === 0) {
+        return NextResponse.json(
+          { success: false, error: 'Working hours record not found' },
+          { status: 404 }
+        );
+      }
+
+      const emp = existingRecords[0].employee;
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+      // Find or create current month record
+      let currentMonthRecord = existingRecords.find(r => r.month === currentMonth);
+      const finalIsCustom = typeof isCustom === 'boolean' ? isCustom : existingRecords.some(r => r.isCustom);
+
+      if (!currentMonthRecord) {
+        // Create for current month
+        const calculatedRt = calculateRtPerHour(
+          typeof totalWorkingHours === 'number' ? totalWorkingHours : 0,
+          emp.isTeamLeader, emp.isSupervisor, finalIsCustom,
+          typeof rtPerHour === 'number' ? rtPerHour : 2.5
+        );
+
+        currentMonthRecord = await db.totalEmployeeWorkingHours.create({
+          data: {
+            empId,
+            empName: emp.fullName,
+            month: currentMonth,
+            totalWorkingHours: typeof totalWorkingHours === 'number' ? totalWorkingHours : 0,
+            rtPerHour: finalIsCustom ? (typeof rtPerHour === 'number' ? rtPerHour : calculatedRt) : calculatedRt,
+            isCustom: finalIsCustom,
+          },
+          include: { employee: true },
+        });
+      } else {
+        // Update current month record
+        const finalTotalHours = typeof totalWorkingHours === 'number' ? totalWorkingHours : currentMonthRecord.totalWorkingHours;
+        const calculatedRt = calculateRtPerHour(
+          finalTotalHours, emp.isTeamLeader, emp.isSupervisor, finalIsCustom,
+          typeof rtPerHour === 'number' ? rtPerHour : currentMonthRecord.rtPerHour
+        );
+
+        currentMonthRecord = await db.totalEmployeeWorkingHours.update({
+          where: { id: currentMonthRecord.id },
+          data: {
+            totalWorkingHours: finalTotalHours,
+            rtPerHour: finalIsCustom ? (typeof rtPerHour === 'number' ? rtPerHour : calculatedRt) : calculatedRt,
+            isCustom: finalIsCustom,
+            empName: typeof empName === 'string' ? empName : emp.fullName,
+          },
+          include: { employee: true },
+        });
+      }
+
+      // Calculate aggregate total
+      const allRecords = await db.totalEmployeeWorkingHours.findMany({
+        where: { empId },
+        select: { totalWorkingHours: true, rtPerHour: true, isCustom: true },
+      });
+      const aggregateTotal = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
+      const anyCustom = allRecords.some(r => r.isCustom);
+      const latestRate = allRecords[allRecords.length - 1]?.rtPerHour || 2.5;
+
+      const aggregateRt = calculateRtPerHour(
+        aggregateTotal, emp.isTeamLeader, emp.isSupervisor, anyCustom, latestRate
+      );
+
+      // Bidirectional sync: update salary records
+      if (typeof rtPerHour === 'number' || typeof totalWorkingHours === 'number') {
+        const salaryRecords = await db.salaryRecord.findMany({
+          where: { empId, isDeleted: false },
+        });
+        for (const sr of salaryRecords) {
+          const newTotalSalary = sr.totalHours * (anyCustom ? latestRate : aggregateRt);
+          const newBalanceSalary = newTotalSalary - sr.deduction - sr.advance;
+          await db.salaryRecord.update({
+            where: { id: sr.id },
+            data: { rtPerHour: anyCustom ? latestRate : aggregateRt, totalSalary: newTotalSalary, balanceSalary: newBalanceSalary },
+          });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          record: {
+            id: currentMonthRecord.id,
+            empId,
+            empName: currentMonthRecord.empName,
+            totalWorkingHours: aggregateTotal,
+            rtPerHour: anyCustom ? latestRate : aggregateRt,
+            isCustom: anyCustom,
+            calculatedRtPerHour: aggregateRt,
+            employee: emp,
           },
         },
       });
     }
+
+    // If specific month provided, update that specific month's record
+    if (empId && month) {
+      const upserted = await db.totalEmployeeWorkingHours.upsert({
+        where: { empId_month: { empId, month } },
+        update: {
+          totalWorkingHours: typeof totalWorkingHours === 'number' ? totalWorkingHours : undefined,
+          rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : undefined,
+          isCustom: typeof isCustom === 'boolean' ? isCustom : undefined,
+          empName: typeof empName === 'string' ? empName : undefined,
+        },
+        create: {
+          empId,
+          empName: empName || '',
+          month,
+          totalWorkingHours: typeof totalWorkingHours === 'number' ? totalWorkingHours : 0,
+          rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : 2.5,
+          isCustom: typeof isCustom === 'boolean' ? isCustom : false,
+        },
+        include: {
+          employee: {
+            select: {
+              id: true, fullName: true, employeeId: true, trade: true,
+              nationality: true, isTeamLeader: true, isSupervisor: true,
+              teamLeaderSiteId: true, currentSite: true,
+            },
+          },
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          record: {
+            id: upserted.id,
+            empId: upserted.empId,
+            empName: upserted.empName,
+            totalWorkingHours: upserted.totalWorkingHours,
+            rtPerHour: upserted.rtPerHour,
+            isCustom: upserted.isCustom,
+            month: upserted.month,
+            employee: upserted.employee,
+          },
+        },
+      });
+    }
+
+    // Update by id (single record)
+    const existing = await db.totalEmployeeWorkingHours.findUnique({
+      where: { id },
+      include: { employee: true },
+    });
 
     if (!existing) {
       return NextResponse.json(
@@ -418,7 +565,6 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // Build update data
     const updateData: Record<string, unknown> = {};
     if (typeof empName === 'string') updateData.empName = empName;
     if (typeof totalWorkingHours === 'number') updateData.totalWorkingHours = totalWorkingHours;
@@ -426,75 +572,24 @@ export async function PUT(request: NextRequest) {
     const finalIsCustom = typeof isCustom === 'boolean' ? isCustom : existing.isCustom;
     updateData.isCustom = finalIsCustom;
 
-    // Calculate or set RT/HR
-    const finalTotalHours =
-      typeof totalWorkingHours === 'number' ? totalWorkingHours : existing.totalWorkingHours;
-    const finalCustomRtPerHour =
-      typeof rtPerHour === 'number' ? rtPerHour : existing.rtPerHour;
+    const finalTotalHours = typeof totalWorkingHours === 'number' ? totalWorkingHours : existing.totalWorkingHours;
+    const finalCustomRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : existing.rtPerHour;
 
     if (finalIsCustom) {
-      // Use the custom rtPerHour value
       updateData.rtPerHour = typeof rtPerHour === 'number' ? rtPerHour : existing.rtPerHour;
     } else {
-      // Auto-calculate based on total hours and team leader/supervisor status
-      const isTeamLeader = existing.employee?.isTeamLeader || false;
-      const isSupervisor = existing.employee?.isSupervisor || false;
-      const calculatedRt = calculateRtPerHour(finalTotalHours, isTeamLeader, isSupervisor, false, finalCustomRtPerHour);
+      const calculatedRt = calculateRtPerHour(
+        finalTotalHours, existing.employee?.isTeamLeader || false,
+        existing.employee?.isSupervisor || false, false, finalCustomRtPerHour
+      );
       updateData.rtPerHour = calculatedRt;
     }
 
     const updated = await db.totalEmployeeWorkingHours.update({
       where: { id: existing.id },
       data: updateData,
-      include: {
-        employee: {
-          select: {
-            id: true,
-            fullName: true,
-            employeeId: true,
-            trade: true,
-            nationality: true,
-            isTeamLeader: true,
-            isSupervisor: true,
-            teamLeaderSiteId: true,
-            currentSite: true,
-          },
-        },
-      },
+      include: { employee: true },
     });
-
-    const calculatedRtPerHour = calculateRtPerHour(
-      updated.totalWorkingHours,
-      updated.employee.isTeamLeader,
-      updated.employee.isSupervisor,
-      updated.isCustom,
-      updated.rtPerHour
-    );
-
-    // Bidirectional sync: if rtPerHour changed, update all salary records for this employee
-    if (typeof rtPerHour === 'number' || typeof totalWorkingHours === 'number') {
-      const newRtPerHour = updated.rtPerHour;
-      // Get all active salary records for this employee and update their rtPerHour
-      const salaryRecords = await db.salaryRecord.findMany({
-        where: {
-          empId: existing.empId,
-          isDeleted: false,
-        },
-      });
-
-      for (const sr of salaryRecords) {
-        const newTotalSalary = sr.totalHours * newRtPerHour;
-        const newBalanceSalary = newTotalSalary - sr.deduction - sr.advance;
-        await db.salaryRecord.update({
-          where: { id: sr.id },
-          data: {
-            rtPerHour: newRtPerHour,
-            totalSalary: newTotalSalary,
-            balanceSalary: newBalanceSalary,
-          },
-        });
-      }
-    }
 
     return NextResponse.json({
       success: true,
@@ -506,9 +601,7 @@ export async function PUT(request: NextRequest) {
           totalWorkingHours: updated.totalWorkingHours,
           rtPerHour: updated.rtPerHour,
           isCustom: updated.isCustom,
-          calculatedRtPerHour,
-          createdAt: updated.createdAt.toISOString(),
-          updatedAt: updated.updatedAt.toISOString(),
+          month: updated.month,
           employee: updated.employee,
         },
       },

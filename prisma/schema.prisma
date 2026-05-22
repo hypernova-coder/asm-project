@@ -79,7 +79,7 @@ model Employee {
   uniformRegistry      UniformRegistry[]
   siteHistory          EmpCountSitePerMonth[]
   salaryRecords        SalaryRecord[]
-  workingHours         TotalEmployeeWorkingHours?
+  workingHours         TotalEmployeeWorkingHours[]
 
   @@index([trade])
   @@index([isTeamLeader])
@@ -274,17 +274,20 @@ model AdminPermission {
 
 model TotalEmployeeWorkingHours {
   id               String   @id @default(cuid())
-  empId            String   @unique // FK to Employee
+  empId            String   // FK to Employee
   empName          String
-  totalWorkingHours Float  @default(0) // total accumulated hours
-  rtPerHour        Float    @default(2.5) // rate per hour (auto-calculated or custom)
+  month            String   // YYYY-MM format - which month these hours belong to
+  totalWorkingHours Float  @default(0) // hours for this specific month
+  rtPerHour        Float    @default(2.5) // rate per hour for this month (auto-calculated or custom)
   isCustom         Boolean  @default(false) // if true, rtPerHour is manually set
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   employee Employee @relation(fields: [empId], references: [id], onDelete: Cascade)
 
+  @@unique([empId, month])
   @@index([empId])
+  @@index([month])
 }
 
 model SalaryRecord {

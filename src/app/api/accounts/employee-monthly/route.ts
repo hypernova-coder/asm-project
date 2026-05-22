@@ -42,32 +42,44 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get working hours record
-    const workingHours = await db.totalEmployeeWorkingHours.findUnique({
-      where: { empId },
-    });
-
-    // Get all salary records for this employee for the given year
-    const salaryRecords = await db.salaryRecord.findMany({
+    // Get all monthly working hours records for this employee for the given year
+    const yearPrefix = `${year}-`;
+    const monthlyRecords = await db.totalEmployeeWorkingHours.findMany({
       where: {
         empId,
-        year,
-        isDeleted: false,
+        month: { startsWith: yearPrefix },
       },
       orderBy: { month: 'asc' },
     });
+
+    // Get aggregate total across all years for RT/HR calculation
+    const allRecords = await db.totalEmployeeWorkingHours.findMany({
+      where: { empId },
+      select: { totalWorkingHours: true, rtPerHour: true, isCustom: true, month: true },
+    });
+    const aggregateTotalHours = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
+
+    // Get the latest custom status and rate
+    const hasCustom = allRecords.some(r => r.isCustom);
+    const latestRate = allRecords.length > 0
+      ? allRecords[allRecords.length - 1].rtPerHour
+      : 2.5;
+
+    // Auto-calculate the aggregate rate
+    const hasBonus = employee.isTeamLeader || employee.isSupervisor;
+    const autoRate = aggregateTotalHours >= 1000 ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
 
     // Build monthly data for all 12 months
     const monthlyData = [];
     for (let m = 0; m < 12; m++) {
       const monthStr = `${year}-${String(m + 1).padStart(2, '0')}`;
-      const record = salaryRecords.find((sr) => sr.month === monthStr);
+      const record = monthlyRecords.find((r) => r.month === monthStr);
 
       monthlyData.push({
         month: monthStr,
-        totalHours: record?.totalHours || 0,
-        rtPerHour: record?.rtPerHour || workingHours?.rtPerHour || 2.5,
-        salaryRecordId: record?.id || null,
+        totalHours: record?.totalWorkingHours || 0,
+        rtPerHour: record?.rtPerHour || (hasCustom ? latestRate : autoRate),
+        recordId: record?.id || null,
       });
     }
 
@@ -78,9 +90,9 @@ export async function GET(request: NextRequest) {
         employeeInfo: {
           isTeamLeader: employee.isTeamLeader,
           isSupervisor: employee.isSupervisor,
-          totalWorkingHours: workingHours?.totalWorkingHours || 0,
-          rtPerHour: workingHours?.rtPerHour || 2.5,
-          isCustom: workingHours?.isCustom || false,
+          totalWorkingHours: aggregateTotalHours,
+          rtPerHour: hasCustom ? latestRate : autoRate,
+          isCustom: hasCustom,
         },
       },
     });
@@ -131,193 +143,102 @@ export async function PUT(request: NextRequest) {
     for (const monthEntry of monthlyData) {
       const { month, totalHours, rtPerHour } = monthEntry;
 
-      // Skip months with no data change needed
       if (typeof totalHours !== 'number' || typeof rtPerHour !== 'number') continue;
 
-      // Find existing salary records for this employee+month+year
-      const existingSalaryRecords = await db.salaryRecord.findMany({
+      // Upsert into TotalEmployeeWorkingHours (per employee per month)
+      const upserted = await db.totalEmployeeWorkingHours.upsert({
         where: {
+          empId_month: { empId, month },
+        },
+        update: {
+          totalWorkingHours: totalHours,
+          rtPerHour,
+          empName: employee.fullName,
+        },
+        create: {
           empId,
+          empName: employee.fullName,
           month,
-          year,
-          isDeleted: false,
+          totalWorkingHours: totalHours,
+          rtPerHour,
+          isCustom: false,
         },
       });
+      results.push({ month, action: 'upserted', id: upserted.id });
 
-      // Calculate total salary and balance
+      // Also sync to SalaryRecord if records exist
+      const existingSalaryRecords = await db.salaryRecord.findMany({
+        where: { empId, month, year, isDeleted: false },
+      });
+
       const totalSalary = totalHours * rtPerHour;
 
       if (existingSalaryRecords.length > 0) {
-        // Update all existing salary records for this month
-        for (const existingSalary of existingSalaryRecords) {
-          const updated = await db.salaryRecord.update({
-            where: { id: existingSalary.id },
+        for (const sr of existingSalaryRecords) {
+          await db.salaryRecord.update({
+            where: { id: sr.id },
             data: {
               totalHours,
               rtPerHour,
               totalSalary,
-              balanceSalary: totalSalary - existingSalary.deduction - existingSalary.advance,
+              balanceSalary: totalSalary - sr.deduction - sr.advance,
             },
           });
-          results.push({ month, siteId: existingSalary.siteId, action: 'updated', id: updated.id });
         }
       } else if (totalHours > 0) {
-        // No existing salary records for this month, but hours were entered
-        // Find site assignments for this employee+month
+        // Try to create salary record if we can find a site
         const siteRecords = await db.empCountSitePerMonth.findMany({
-          where: {
-            empId,
-            month,
-            deletedDate: null,
-          },
-          include: {
-            site: { select: { id: true, name: true } },
-          },
+          where: { empId, month, deletedDate: null },
+          include: { site: { select: { id: true, name: true } } },
         });
 
+        let siteId: string | null = null;
+        let siteName = '';
+
         if (siteRecords.length > 0) {
-          // Create salary records for each site
-          for (const siteRecord of siteRecords) {
-            const created = await db.salaryRecord.create({
-              data: {
-                empId,
-                empName: employee.fullName,
-                siteId: siteRecord.siteId,
-                siteName: siteRecord.site.name,
-                month,
-                year,
-                nationality: '',
-                trade: '',
-                employeeCode: employee.employeeId,
-                slNo: 0,
-                totalHours,
-                rtPerHour,
-                totalSalary,
-                deduction: 0,
-                advance: 0,
-                balanceSalary: totalSalary,
-                isPaid: false,
-              },
-            });
-            results.push({ month, siteId: siteRecord.siteId, action: 'created', id: created.id });
-          }
-        } else {
-          // No site assignment found - try to use the employee's current site
-          if (employee.currentSite) {
-            const site = await db.site.findUnique({
-              where: { id: employee.currentSite },
-              select: { id: true, name: true },
-            });
-            if (site) {
-              const created = await db.salaryRecord.create({
-                data: {
-                  empId,
-                  empName: employee.fullName,
-                  siteId: site.id,
-                  siteName: site.name,
-                  month,
-                  year,
-                  nationality: '',
-                  trade: '',
-                  employeeCode: employee.employeeId,
-                  slNo: 0,
-                  totalHours,
-                  rtPerHour,
-                  totalSalary,
-                  deduction: 0,
-                  advance: 0,
-                  balanceSalary: totalSalary,
-                  isPaid: false,
-                },
-              });
-              results.push({ month, siteId: site.id, action: 'created', id: created.id });
-            }
-          } else {
-            // Fallback: find any site the employee has ever been assigned to
-            const anySiteRecord = await db.empCountSitePerMonth.findFirst({
-              where: { empId },
-              include: { site: { select: { id: true, name: true } } },
-              orderBy: { createdDate: 'desc' },
-            });
-            if (anySiteRecord) {
-              const created = await db.salaryRecord.create({
-                data: {
-                  empId,
-                  empName: employee.fullName,
-                  siteId: anySiteRecord.siteId,
-                  siteName: anySiteRecord.site.name,
-                  month,
-                  year,
-                  nationality: '',
-                  trade: '',
-                  employeeCode: employee.employeeId,
-                  slNo: 0,
-                  totalHours,
-                  rtPerHour,
-                  totalSalary,
-                  deduction: 0,
-                  advance: 0,
-                  balanceSalary: totalSalary,
-                  isPaid: false,
-                },
-              });
-              results.push({ month, siteId: anySiteRecord.siteId, action: 'created', id: created.id });
-            }
-          }
+          siteId = siteRecords[0].siteId;
+          siteName = siteRecords[0].site.name;
+        } else if (employee.currentSite) {
+          const site = await db.site.findUnique({ where: { id: employee.currentSite } });
+          if (site) { siteId = site.id; siteName = site.name; }
+        }
+
+        if (!siteId) {
+          const anySiteRecord = await db.empCountSitePerMonth.findFirst({
+            where: { empId },
+            include: { site: { select: { id: true, name: true } } },
+            orderBy: { createdDate: 'desc' },
+          });
+          if (anySiteRecord) { siteId = anySiteRecord.siteId; siteName = anySiteRecord.site.name; }
+        }
+
+        if (siteId) {
+          const salaryYear = parseInt(month.split('-')[0], 10);
+          await db.salaryRecord.create({
+            data: {
+              empId, empName: employee.fullName, siteId, siteName, month, year: salaryYear,
+              nationality: '', trade: '', employeeCode: employee.employeeId, slNo: 0,
+              totalHours, rtPerHour, totalSalary, deduction: 0, advance: 0,
+              balanceSalary: totalSalary, isPaid: false,
+            },
+          });
         }
       }
     }
 
-    // Update TotalEmployeeWorkingHours - recalculate total from ALL salary records
-    const allSalaryHours = await db.salaryRecord.findMany({
-      where: {
-        empId,
-        isDeleted: false,
-      },
-      select: { totalHours: true, rtPerHour: true },
-    });
-    const totalWorkingHours = allSalaryHours.reduce((sum, sr) => sum + sr.totalHours, 0);
-
-    // Use the latest non-zero rtPerHour from salary records, or the one from monthlyData
-    const latestRtPerHour = monthlyData
-      .filter((m: { rtPerHour: number }) => m.rtPerHour > 0)
-      .pop()?.rtPerHour || allSalaryHours
-      .filter((sr) => sr.rtPerHour > 0)
-      .pop()?.rtPerHour || 2.5;
-
-    // Calculate auto rate based on total hours and TL/Supervisor status
-    const hasBonus = employee.isTeamLeader || employee.isSupervisor;
-    const autoRate = totalWorkingHours >= 1000 ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
-
-    // Get current working hours record to check if custom
-    const currentWH = await db.totalEmployeeWorkingHours.findUnique({
+    // Calculate aggregate total working hours across all months
+    const allRecords = await db.totalEmployeeWorkingHours.findMany({
       where: { empId },
+      select: { totalWorkingHours: true },
     });
-
-    const finalRtPerHour = currentWH?.isCustom ? latestRtPerHour : autoRate;
-
-    await db.totalEmployeeWorkingHours.upsert({
-      where: { empId },
-      update: {
-        totalWorkingHours,
-        rtPerHour: finalRtPerHour,
-        empName: employee.fullName,
-      },
-      create: {
-        empId,
-        empName: employee.fullName,
-        totalWorkingHours,
-        rtPerHour: finalRtPerHour,
-        isCustom: false,
-      },
-    });
+    const aggregateTotalHours = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
 
     return NextResponse.json({
       success: true,
       data: {
         updated: results.length,
         results,
-        totalWorkingHours,
+        totalWorkingHours: aggregateTotalHours,
       },
     });
   } catch (error: unknown) {

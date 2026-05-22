@@ -6,19 +6,21 @@ async function calculateRtPerHour(
   empId: string,
   siteId: string
 ): Promise<number> {
-  const workingHours = await db.totalEmployeeWorkingHours.findUnique({
+  // Get all monthly working hours records for aggregate total
+  const workingHoursRecords = await db.totalEmployeeWorkingHours.findMany({
     where: { empId },
   });
+  const totalHrs = workingHoursRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
+  const hasCustom = workingHoursRecords.some(r => r.isCustom);
+  const latestRt = workingHoursRecords.length > 0 ? workingHoursRecords[workingHoursRecords.length - 1].rtPerHour : 2.5;
+
+  if (hasCustom) return latestRt;
+
   const employee = await db.employee.findUnique({
     where: { id: empId },
     select: { isTeamLeader: true, teamLeaderSiteId: true, isSupervisor: true, supervisorSiteId: true },
   });
 
-  if (workingHours && workingHours.isCustom) {
-    return workingHours.rtPerHour;
-  }
-
-  const totalHrs = workingHours?.totalWorkingHours || 0;
   const isTeamLeaderForSite =
     employee?.isTeamLeader && employee?.teamLeaderSiteId === siteId;
   const isSupervisorForSite =
@@ -115,18 +117,14 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Bidirectional sync: update TotalEmployeeWorkingHours
+      // Bidirectional sync: update TotalEmployeeWorkingHours for the month
       if (updateWorkingHours || typeof totalWorkingHours === 'number') {
-        const newTotalHours = typeof totalWorkingHours === 'number'
-          ? totalWorkingHours
-          : typeof totalHours === 'number'
-            ? totalHours
-            : undefined;
+        const newTotalHours = typeof totalHours === 'number' ? totalHours : undefined;
         const newRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : undefined;
 
         if (newTotalHours !== undefined || newRtPerHour !== undefined) {
           await db.totalEmployeeWorkingHours.upsert({
-            where: { empId },
+            where: { empId_month: { empId, month } },
             update: {
               ...(newTotalHours !== undefined ? { totalWorkingHours: newTotalHours } : {}),
               ...(newRtPerHour !== undefined ? { rtPerHour: newRtPerHour } : {}),
@@ -135,6 +133,7 @@ export async function POST(request: NextRequest) {
             create: {
               empId,
               empName,
+              month,
               totalWorkingHours: newTotalHours || 0,
               rtPerHour: newRtPerHour || 2.5,
               isCustom: false,
@@ -178,18 +177,14 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Bidirectional sync: update TotalEmployeeWorkingHours
+    // Bidirectional sync: update TotalEmployeeWorkingHours for the month
     if (updateWorkingHours || typeof totalWorkingHours === 'number') {
-      const newTotalHours = typeof totalWorkingHours === 'number'
-        ? totalWorkingHours
-        : typeof totalHours === 'number'
-          ? totalHours
-          : undefined;
+      const newTotalHours = typeof totalHours === 'number' ? totalHours : undefined;
       const newRtPerHour = typeof rtPerHour === 'number' ? rtPerHour : undefined;
 
       if (newTotalHours !== undefined || newRtPerHour !== undefined) {
         await db.totalEmployeeWorkingHours.upsert({
-          where: { empId },
+          where: { empId_month: { empId, month } },
           update: {
             ...(newTotalHours !== undefined ? { totalWorkingHours: newTotalHours } : {}),
             ...(newRtPerHour !== undefined ? { rtPerHour: newRtPerHour } : {}),
@@ -198,6 +193,7 @@ export async function POST(request: NextRequest) {
           create: {
             empId,
             empName,
+            month,
             totalWorkingHours: newTotalHours || 0,
             rtPerHour: newRtPerHour || 2.5,
             isCustom: false,
@@ -283,7 +279,7 @@ export async function PUT(request: NextRequest) {
       data: updateData,
     });
 
-    // Bidirectional sync: update TotalEmployeeWorkingHours
+    // Bidirectional sync: update TotalEmployeeWorkingHours for the month
     if (updateWorkingHours) {
       const updateWH: Record<string, unknown> = {};
       if (typeof totalHours === 'number') updateWH.totalWorkingHours = totalHours;
@@ -291,11 +287,12 @@ export async function PUT(request: NextRequest) {
 
       if (Object.keys(updateWH).length > 0) {
         await db.totalEmployeeWorkingHours.upsert({
-          where: { empId: existing.empId },
+          where: { empId_month: { empId: existing.empId, month: existing.month } },
           update: updateWH,
           create: {
             empId: existing.empId,
             empName: existing.empName,
+            month: existing.month,
             totalWorkingHours: typeof totalHours === 'number' ? totalHours : 0,
             rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : 2.5,
             isCustom: false,
@@ -307,13 +304,14 @@ export async function PUT(request: NextRequest) {
     // Also update working hours if totalWorkingHours is explicitly provided
     if (typeof totalWorkingHours === 'number') {
       await db.totalEmployeeWorkingHours.upsert({
-        where: { empId: existing.empId },
+        where: { empId_month: { empId: existing.empId, month: existing.month } },
         update: {
           totalWorkingHours,
         },
         create: {
           empId: existing.empId,
           empName: existing.empName,
+          month: existing.month,
           totalWorkingHours,
           rtPerHour: existing.rtPerHour,
           isCustom: false,

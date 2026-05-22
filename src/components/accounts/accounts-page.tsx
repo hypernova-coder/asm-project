@@ -1417,6 +1417,7 @@ export function AccountsPage() {
   const [grandTotal, setGrandTotal] = useState(0);
   const [editMode, setEditMode] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<{ empId: string; empName: string } | null>(null);
+  const [addSiteDialogOpen, setAddSiteDialogOpen] = useState(false);
 
   // Year options: current year and 5 years back
   const yearOptions = useMemo(() => {
@@ -1574,6 +1575,13 @@ export function AccountsPage() {
             >
               <Clock className="h-4 w-4" />
               Manage Employee Hours
+            </Button>
+            <Button
+              onClick={() => setAddSiteDialogOpen(true)}
+              className="bg-slate-700 hover:bg-slate-600 text-slate-200 gap-2"
+            >
+              <Building2 className="h-4 w-4" />
+              Add New Sites
             </Button>
           </div>
         </div>

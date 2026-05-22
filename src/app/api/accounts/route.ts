@@ -111,23 +111,28 @@ export async function GET(request: NextRequest) {
               },
             });
 
-            // Get working hours for RT/HR calculation
-            const workingHours = await db.totalEmployeeWorkingHours.findUnique({
+            // Get working hours for RT/HR calculation (aggregate from all monthly records)
+            const workingHoursRecords = await db.totalEmployeeWorkingHours.findMany({
               where: { empId: empRecord.empId },
             });
+            const aggregateTotalHours = workingHoursRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
+            const hasCustomRate = workingHoursRecords.some(r => r.isCustom);
+            const latestRtPerHour = workingHoursRecords.length > 0
+              ? workingHoursRecords[workingHoursRecords.length - 1].rtPerHour
+              : 2.5;
 
             // Calculate RT/HR with supervisor support
             const isTeamLeaderForSite = emp.isTeamLeader && emp.teamLeaderSiteId === site.id;
             const isSupervisorForSite = emp.isSupervisor && emp.supervisorSiteId === site.id;
 
             let rtPerHour = 2.5;
-            if (workingHours) {
+            if (workingHoursRecords.length > 0) {
               rtPerHour = calcRtPerHour(
-                workingHours.totalWorkingHours,
+                aggregateTotalHours,
                 isTeamLeaderForSite,
                 isSupervisorForSite,
-                workingHours.isCustom,
-                workingHours.rtPerHour
+                hasCustomRate,
+                latestRtPerHour
               );
             } else {
               // No working hours record yet, use basic calculation
@@ -150,14 +155,14 @@ export async function GET(request: NextRequest) {
                     updatedAt: salaryRecord.updatedAt.toISOString(),
                   }
                 : null,
-              workingHours: workingHours
+              workingHours: workingHoursRecords.length > 0
                 ? {
-                    id: workingHours.id,
-                    empId: workingHours.empId,
-                    empName: workingHours.empName,
-                    totalWorkingHours: workingHours.totalWorkingHours,
-                    rtPerHour: workingHours.rtPerHour,
-                    isCustom: workingHours.isCustom,
+                    id: workingHoursRecords[0].id,
+                    empId: empRecord.empId,
+                    empName: empRecord.empName,
+                    totalWorkingHours: aggregateTotalHours,
+                    rtPerHour: hasCustomRate ? latestRtPerHour : rtPerHour,
+                    isCustom: hasCustomRate,
                     calculatedRtPerHour: rtPerHour,
                   }
                 : {
@@ -185,10 +190,13 @@ export async function GET(request: NextRequest) {
         });
 
         for (const manualRecord of manualSalaryRecords) {
-          // Get working hours for this employee too
-          const workingHours = await db.totalEmployeeWorkingHours.findUnique({
+          // Get working hours for this employee too (aggregate from monthly records)
+          const whRecords = await db.totalEmployeeWorkingHours.findMany({
             where: { empId: manualRecord.empId },
           });
+          const whTotal = whRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
+          const whHasCustom = whRecords.some(r => r.isCustom);
+          const whLatestRt = whRecords.length > 0 ? whRecords[whRecords.length - 1].rtPerHour : 2.5;
 
           // Get employee info
           const empInfo = await db.employee.findUnique({
@@ -208,13 +216,13 @@ export async function GET(request: NextRequest) {
           const isSupervisorForSite = empInfo?.isSupervisor && empInfo?.supervisorSiteId === site.id;
 
           let rtPerHour = 2.5;
-          if (workingHours) {
+          if (whRecords.length > 0) {
             rtPerHour = calcRtPerHour(
-              workingHours.totalWorkingHours,
+              whTotal,
               isTeamLeaderForSite,
               isSupervisorForSite,
-              workingHours.isCustom,
-              workingHours.rtPerHour
+              whHasCustom,
+              whLatestRt
             );
           }
 
@@ -231,14 +239,14 @@ export async function GET(request: NextRequest) {
               createdAt: manualRecord.createdAt.toISOString(),
               updatedAt: manualRecord.updatedAt.toISOString(),
             },
-            workingHours: workingHours
+            workingHours: whRecords.length > 0
               ? {
-                  id: workingHours.id,
-                  empId: workingHours.empId,
-                  empName: workingHours.empName,
-                  totalWorkingHours: workingHours.totalWorkingHours,
-                  rtPerHour: workingHours.rtPerHour,
-                  isCustom: workingHours.isCustom,
+                  id: whRecords[0].id,
+                  empId: manualRecord.empId,
+                  empName: manualRecord.empName,
+                  totalWorkingHours: whTotal,
+                  rtPerHour: whHasCustom ? whLatestRt : rtPerHour,
+                  isCustom: whHasCustom,
                   calculatedRtPerHour: rtPerHour,
                 }
               : {
