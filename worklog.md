@@ -585,3 +585,30 @@ Stage Summary:
 - TotalEmployeeWorkingHours now has isDeleted field with proper query filtering
 - No data is permanently removed - all soft-deleted records can be recovered
 - Code pushed to GitHub: https://github.com/hypernova-coder/asm-project.git (main branch)
+
+---
+Task ID: 16
+Agent: Main Agent
+Task: Fix multiple issues - split salary calculation, employee ID saving, detail page split rows, rate refresh, fill split row data
+
+Work Log:
+- Fixed split calculation bug in GET /api/accounts: when a matching salary record exists for a rateTier, it was returned as-is from DB instead of being overridden with split decision values. This caused standard tier to show 250 hours at 2.5 rate instead of 170 hours at 2.5 rate (the correct split). Now all matching records are overridden with decision.hours, decision.rate, computed totalSalary, and computed balanceSalary.
+- Fixed employee ID not saving when editing: added 'employeeId' to updatableFields array in PUT /api/employees/[id]/route.ts. Also added uniqueness check before updating employeeId to prevent duplicates.
+- Employee detail page now splits months into 2 rows when cumulative hours cross 1000:
+  - Built splitRows array by iterating months and tracking cumulative hours
+  - When a month crosses 1000, it splits into 2 rows: basic portion (up to 1000) and premium portion (above 1000)
+  - Added cumulative hours column to monthly table
+  - Added Basic/Premium badges for split months
+  - Premium split row's hours input is disabled in edit mode (editing the basic row updates the total)
+- Rate always refreshes when navigating back to accounts page: added subView dependency to fetchAccounts useEffect
+- Split premium rows now show same identity data (nationality, name, trade, employee code) as the standard row instead of dashes (—). Added getStandardEntryForSplit helper to find matching standard entry data.
+- All lint checks pass
+- Pushed to GitHub (commit ece57e1)
+
+Stage Summary:
+- Core split calculation bug fixed: 170*2.5 + 80*5 instead of 250*2.5 + 80*5
+- Employee ID now saveable with uniqueness check
+- Employee detail page shows split rows for months crossing 1000 hours
+- Cumulative hours column added with amber highlight at 1000+
+- Rate refreshes automatically when navigating back
+- Split rows show full identity data instead of dashes
