@@ -78,6 +78,8 @@ model Employee {
   cancellationRequests CancellationRequest[]
   uniformRegistry      UniformRegistry[]
   siteHistory          EmpCountSitePerMonth[]
+  salaryRecords        SalaryRecord[]
+  workingHours         TotalEmployeeWorkingHours?
 
   @@index([trade])
   @@index([isTeamLeader])
@@ -268,6 +270,55 @@ model AdminPermission {
   @@unique([adminId, permissionId])
   @@index([adminId])
   @@index([permissionId])
+}
+
+model TotalEmployeeWorkingHours {
+  id               String   @id @default(cuid())
+  empId            String   @unique // FK to Employee
+  empName          String
+  totalWorkingHours Float  @default(0) // total accumulated hours
+  rtPerHour        Float    @default(2.5) // rate per hour (auto-calculated or custom)
+  isCustom         Boolean  @default(false) // if true, rtPerHour is manually set
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  employee Employee @relation(fields: [empId], references: [id], onDelete: Cascade)
+
+  @@index([empId])
+}
+
+model SalaryRecord {
+  id           String   @id @default(cuid())
+  empId        String   // FK to Employee
+  empName      String
+  siteId       String   // FK to Site
+  siteName     String
+  month        String   // YYYY-MM format
+  year         Int
+  nationality  String   @default("")
+  trade        String   @default("")
+  employeeCode String   @default("") // employeeId (e.g. ASM-001)
+  slNo         Int      @default(0)
+  totalHours   Float    @default(0)
+  rtPerHour    Float    @default(2.5)
+  totalSalary  Float    @default(0)
+  deduction    Float    @default(0)
+  advance      Float    @default(0)
+  balanceSalary Float   @default(0)
+  isPaid       Boolean  @default(false)
+  isDeleted    Boolean  @default(false) // soft delete
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  employee Employee @relation(fields: [empId], references: [id], onDelete: Cascade)
+
+  @@unique([empId, siteId, month, year])
+  @@index([empId])
+  @@index([siteId])
+  @@index([month])
+  @@index([year])
+  @@index([siteId, month, year])
+  @@index([isPaid])
 }
 
 model EmpCountSitePerMonth {

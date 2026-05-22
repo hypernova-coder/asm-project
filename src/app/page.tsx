@@ -17,6 +17,7 @@ import { SitesPage } from '@/components/sites/sites-page';
 import { LeaveRequestPage } from '@/components/leave-requests/leave-request-page';
 import { CancellationRequestPage } from '@/components/cancellation-requests/cancellation-request-page';
 import { UniformRegistryPage } from '@/components/uniform-registry/uniform-registry-page';
+import { AccountsPage } from '@/components/accounts/accounts-page';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -53,7 +54,7 @@ function LoadingScreen() {
 const ALWAYS_VISIBLE_VIEWS: AppView[] = ['dashboard', 'uniform_registry', 'profile'];
 
 // Views that only super_admin can access by default (admin needs explicit permission)
-const RESTRICTED_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'leave_requests', 'cancellation_requests', 'notifications', 'admins'];
+const RESTRICTED_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'leave_requests', 'cancellation_requests', 'notifications', 'admins', 'accounts'];
 
 function MainLayout() {
   const { currentView, setCurrentView } = useAppStore();
@@ -144,6 +145,8 @@ function MainLayout() {
         return <NotificationPage />;
       case 'admins':
         return <AdminPage />;
+      case 'accounts':
+        return <AccountsPage />;
       case 'profile':
         return <ProfilePage />;
       default:

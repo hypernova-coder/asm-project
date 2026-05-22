@@ -15,6 +15,7 @@ import {
   FileText,
   Ban,
   Shirt,
+  Calculator,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -59,6 +60,7 @@ const navItems: NavItem[] = [
   { id: 'cancellation_requests', label: 'Cancellations', icon: Ban, permissionSlug: 'cancellation_requests', roles: ['super_admin'] },
   { id: 'notifications', label: 'Notifications', icon: Bell, permissionSlug: 'notifications', roles: ['super_admin'] },
   { id: 'admins', label: 'Admin Management', icon: Shield, permissionSlug: 'admins', roles: ['super_admin'] },
+  { id: 'accounts', label: 'Accounts', icon: Calculator, permissionSlug: 'accounts', roles: ['super_admin'] },
 ];
 
 // Menus always visible to all users (including admin)
