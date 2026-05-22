@@ -10,6 +10,7 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1', 10);
     const limit = parseInt(searchParams.get('limit') || '20', 10);
     const skip = (page - 1) * limit;
+    const latestOnly = searchParams.get('latestOnly') === 'true';
 
     // Build where clause - always exclude deleted records
     const where: Record<string, unknown> = { isDeleted: false };
@@ -30,6 +31,60 @@ export async function GET(request: NextRequest) {
       where.siteName = siteName;
     }
 
+    if (latestOnly) {
+      // Fetch all matching entries, then deduplicate by keeping only the latest per employeeId
+      const allEntries = await db.uniformRegistry.findMany({
+        where,
+        include: {
+          employee: {
+            select: {
+              id: true,
+              fullName: true,
+              employeeId: true,
+              isTeamLeader: true,
+              currentSite: true,
+              photo: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      // Deduplicate: keep only the latest entry per employeeId
+      // Also count how many entries each employee has
+      const latestMap = new Map<string, typeof allEntries[number]>();
+      const countMap = new Map<string, number>();
+      for (const entry of allEntries) {
+        countMap.set(entry.employeeId, (countMap.get(entry.employeeId) || 0) + 1);
+        if (!latestMap.has(entry.employeeId)) {
+          latestMap.set(entry.employeeId, entry);
+        }
+      }
+
+      const dedupedEntries = Array.from(latestMap.values());
+      const total = dedupedEntries.length;
+      const pagedEntries = dedupedEntries.slice(skip, skip + limit);
+
+      const serialized = pagedEntries.map((entry) => ({
+        ...entry,
+        createdAt: entry.createdAt.toISOString(),
+        renewalDate: entry.renewalDate.toISOString(),
+        employeeEntryCount: countMap.get(entry.employeeId) || 1,
+      }));
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          entries: serialized,
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    }
+
+    // Default: show all entries (no deduplication)
     const [entries, total] = await Promise.all([
       db.uniformRegistry.findMany({
         where,
