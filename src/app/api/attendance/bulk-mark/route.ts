@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
-// POST /api/attendance/bulk-mark - Mark all employees as present for a specific date
+// POST /api/attendance/bulk-mark - Mark employees as present for a specific date
+// If employeeIds array is provided, only mark those employees.
+// Otherwise, mark all active employees.
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { date, status = 'present' } = body;
+    const { date, status = 'present', employeeIds } = body;
 
     if (!date) {
       return NextResponse.json(
@@ -22,20 +24,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get all active employees (not deleted)
+    // Build the where clause: either specific employeeIds or all active employees
+    const whereClause: Record<string, unknown> = { status: 'active' };
+    if (employeeIds && Array.isArray(employeeIds) && employeeIds.length > 0) {
+      whereClause.id = { in: employeeIds };
+    }
+
     const employees = await db.employee.findMany({
-      where: { status: 'active' },
+      where: whereClause,
       select: { id: true, fullName: true, employeeId: true, rating: true },
     });
 
     if (employees.length === 0) {
       return NextResponse.json(
-        { success: false, error: 'No active employees found' },
+        { success: false, error: 'No employees found' },
         { status: 404 }
       );
     }
 
-    // Bulk upsert attendance records for all employees
+    // Bulk upsert attendance records for the target employees
     const results = [];
     const errors: string[] = [];
 

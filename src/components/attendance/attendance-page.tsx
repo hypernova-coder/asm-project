@@ -1149,15 +1149,22 @@ export function AttendancePage() {
   // Handle bulk mark all present for a specific date
   const handleBulkMarkPresent = useCallback(
     async (date: string) => {
+      // Only mark the currently displayed (filtered) employees
+      const employeeIds = employees.map((emp) => emp.id);
+
       // Count how many already present/overtime
       const alreadyPresent = employees.filter((emp) => {
         const rec = attendanceMap.get(`${emp.id}-${date}`);
         return rec?.status === 'present' || rec?.status === 'overtime';
       }).length;
 
+      const filterLabel = searchDebounce || selectedSite
+        ? ` (${employees.length} filtered employees${selectedSite ? ` in ${selectedSite}` : ''}${searchDebounce ? ` matching "${searchDebounce}"` : ''})`
+        : ` (${employees.length} employees)`;
+
       const result = await Swal.fire({
         title: 'Mark All Present',
-        html: `Mark <strong>all ${employees.length} employees</strong> as <span class="text-green-400 font-bold">Present</span> for <strong>${date}</strong>?<br/><br/><span class="text-sm text-slate-400">${alreadyPresent} employee${alreadyPresent !== 1 ? 's' : ''} already marked present. Employees with overtime will be kept as-is.</span>`,
+        html: `Mark <strong>${employees.length} displayed employees</strong> as <span class="text-green-400 font-bold">Present</span> for <strong>${date}</strong>?${filterLabel}<br/><br/><span class="text-sm text-slate-400">${alreadyPresent} employee${alreadyPresent !== 1 ? 's' : ''} already marked present. Employees with overtime will be kept as-is.</span>`,
         icon: 'question',
         showCancelButton: true,
         confirmButtonColor: '#22c55e',
@@ -1174,13 +1181,14 @@ export function AttendancePage() {
         const res = await fetch('/api/attendance/bulk-mark', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date, status: 'present' }),
+          body: JSON.stringify({ date, status: 'present', employeeIds }),
         });
         const data = await res.json();
 
         if (data.success) {
           // Refresh attendance records from server
-          const attRes = await fetch(`/api/attendance?month=${monthStr}&year=${yearStr}`);
+          const monthParam = `${yearStr}-${monthStr}`;
+          const attRes = await fetch(`/api/attendance?month=${monthParam}&year=${yearStr}`);
           const attData = await attRes.json();
           if (attData.success) {
             setAttendanceRecords(attData.data.records || []);
@@ -1214,7 +1222,7 @@ export function AttendancePage() {
         });
       }
     },
-    [employees, attendanceMap, monthStr, yearStr],
+    [employees, attendanceMap, monthStr, yearStr, searchDebounce, selectedSite],
   );
 
   // Navigation handlers
