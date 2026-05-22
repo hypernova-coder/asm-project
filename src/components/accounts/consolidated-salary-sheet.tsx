@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Plus,
   Trash2,
@@ -10,7 +10,6 @@ import {
   Pencil,
   X,
   FileSpreadsheet,
-  Download,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -31,8 +30,7 @@ import { cn } from '@/lib/utils';
 
 /* ───────── Types ───────── */
 
-interface EmployeeSalaryData {
-  salaryRecordId: string | null;
+interface MergedEmployeeRow {
   empId: string;
   empName: string;
   nationality: string;
@@ -40,17 +38,34 @@ interface EmployeeSalaryData {
   employeeCode: string;
   isTeamLeader: boolean;
   isSupervisor: boolean;
-  totalHours: number;
-  rtPerHour: number;
-  totalSalary: number;
-  deduction: number;
-  advance: number;
-  balanceSalary: number;
-  isPaid: boolean;
   slNo: number;
-  totalWorkingHours: number;
-  calculatedRtPerHour: number;
-  rateTier: 'standard' | 'premium';
+
+  // Hours
+  totalHours: number; // Sum of standard + premium hours (editable)
+  lowRateHours: number; // From standard record (read-only, from allocation engine)
+  highRateHours: number; // From premium record (read-only, from allocation engine)
+
+  // Rates
+  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor
+  highRate: number; // 5.0 or 5.5 based on TL/Supervisor
+
+  // Salary
+  totalSalary: number; // Sum of standard + premium salary
+  deduction: number; // From standard record
+  advance: number; // From standard record
+  balanceSalary: number; // totalSalary - deduction - advance
+  isPaid: boolean; // From standard record
+
+  // Record IDs for save
+  standardRecordId: string | null;
+  premiumRecordId: string | null;
+
+  // Rate tier info
+  rateTier: 'standard' | 'premium' | 'split';
+
+  // Site info for save
+  siteId: string;
+  siteName: string;
 }
 
 interface SiteData {
@@ -65,10 +80,54 @@ interface SiteData {
   totalDeductions: number;
   totalAdvances: number;
   totalBalanceSalary: number;
-  employees: EmployeeSalaryData[];
 }
 
-interface SiteResult {
+/** Raw employee entry from the API (one per rateTier per employee per site) */
+interface ApiEmployeeEntry {
+  empId: string;
+  empName: string;
+  employeeCode: string;
+  nationality: string;
+  trade: string;
+  isTeamLeader: boolean;
+  isSupervisor: boolean;
+  rateTier: 'standard' | 'premium';
+  salaryRecord: {
+    id: string;
+    empId: string;
+    empName: string;
+    siteId: string;
+    siteName: string;
+    month: string;
+    year: number;
+    nationality: string;
+    trade: string;
+    employeeCode: string;
+    slNo: number;
+    totalHours: number;
+    rtPerHour: number;
+    totalSalary: number;
+    deduction: number;
+    advance: number;
+    balanceSalary: number;
+    isPaid: boolean;
+    isDeleted: boolean;
+    rateTier: string;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+  workingHours: {
+    id?: string;
+    empId: string;
+    empName: string;
+    totalWorkingHours: number;
+    rtPerHour: number;
+    isCustom: boolean;
+    calculatedRtPerHour: number;
+  };
+}
+
+interface ApiSiteResult {
   site: {
     id: string;
     name: string;
@@ -81,49 +140,7 @@ interface SiteResult {
   totalDeductions: number;
   totalAdvances: number;
   totalBalanceSalary: number;
-  employees: {
-    empId: string;
-    empName: string;
-    employeeCode: string;
-    nationality: string;
-    trade: string;
-    isTeamLeader: boolean;
-    isSupervisor: boolean;
-    rateTier: 'standard' | 'premium';
-    salaryRecord: {
-      id: string;
-      empId: string;
-      empName: string;
-      siteId: string;
-      siteName: string;
-      month: string;
-      year: number;
-      nationality: string;
-      trade: string;
-      employeeCode: string;
-      slNo: number;
-      totalHours: number;
-      rtPerHour: number;
-      totalSalary: number;
-      deduction: number;
-      advance: number;
-      balanceSalary: number;
-      isPaid: boolean;
-      isDeleted: boolean;
-      rateTier: string;
-      createdAt: string;
-      updatedAt: string;
-    } | null;
-    workingHours: {
-      id?: string;
-      empId: string;
-      empName: string;
-      totalWorkingHours: number;
-      rtPerHour: number;
-      isCustom: boolean;
-      calculatedRtPerHour: number;
-    };
-  }[];
+  employees: ApiEmployeeEntry[];
 }
 
 /* ───────── Constants ───────── */
@@ -153,6 +170,92 @@ function isMonthAvailable(year: number, month: number): boolean {
   return false;
 }
 
+/** Merge split API entries into a single MergedEmployeeRow per (empId, siteId) */
+function mergeApiEntries(
+  entries: ApiEmployeeEntry[],
+  siteId: string,
+  siteName: string,
+): MergedEmployeeRow[] {
+  // Group by empId (all entries here are already for the same site)
+  const grouped = new Map<string, ApiEmployeeEntry[]>();
+  for (const entry of entries) {
+    if (!grouped.has(entry.empId)) {
+      grouped.set(entry.empId, []);
+    }
+    grouped.get(entry.empId)!.push(entry);
+  }
+
+  const merged: MergedEmployeeRow[] = [];
+  let slNo = 0;
+  const seenEmpIds = new Set<string>();
+
+  // Sort entries by name for consistent ordering
+  const sortedGroups = [...grouped.entries()].sort((a, b) =>
+    a[1][0].empName.localeCompare(b[1][0].empName),
+  );
+
+  for (const [empId, empEntries] of sortedGroups) {
+    slNo++;
+    const standardEntry = empEntries.find((e) => e.rateTier === 'standard');
+    const premiumEntry = empEntries.find((e) => e.rateTier === 'premium');
+
+    // Use the first entry for base info (prefer standard)
+    const baseEntry = standardEntry || premiumEntry || empEntries[0];
+    const hasBonus = baseEntry.isTeamLeader || baseEntry.isSupervisor;
+    const lowRate = hasBonus ? 3.0 : 2.5;
+    const highRate = hasBonus ? 5.5 : 5.0;
+
+    const lowRateHours = standardEntry?.salaryRecord?.totalHours ?? 0;
+    const highRateHours = premiumEntry?.salaryRecord?.totalHours ?? 0;
+    const totalHours = lowRateHours + highRateHours;
+
+    const standardSalary = standardEntry?.salaryRecord?.totalSalary ?? lowRateHours * lowRate;
+    const premiumSalary = premiumEntry?.salaryRecord?.totalSalary ?? highRateHours * highRate;
+    const totalSalary = standardSalary + premiumSalary;
+
+    const deduction = standardEntry?.salaryRecord?.deduction ?? 0;
+    const advance = standardEntry?.salaryRecord?.advance ?? 0;
+    const isPaid = standardEntry?.salaryRecord?.isPaid ?? false;
+
+    let rateTier: 'standard' | 'premium' | 'split' = 'standard';
+    if (standardEntry && premiumEntry) {
+      rateTier = 'split';
+    } else if (premiumEntry && !standardEntry) {
+      rateTier = 'premium';
+    }
+
+    merged.push({
+      empId,
+      empName: baseEntry.empName,
+      nationality: baseEntry.salaryRecord?.nationality || baseEntry.nationality,
+      trade: baseEntry.salaryRecord?.trade || baseEntry.trade,
+      employeeCode: baseEntry.salaryRecord?.employeeCode || baseEntry.employeeCode,
+      isTeamLeader: baseEntry.isTeamLeader,
+      isSupervisor: baseEntry.isSupervisor,
+      slNo,
+      totalHours,
+      lowRateHours,
+      highRateHours,
+      lowRate: standardEntry?.salaryRecord?.rtPerHour ?? lowRate,
+      highRate: premiumEntry?.salaryRecord?.rtPerHour ?? highRate,
+      totalSalary,
+      deduction,
+      advance,
+      balanceSalary: totalSalary - deduction - advance,
+      isPaid,
+      standardRecordId: standardEntry?.salaryRecord?.id ?? null,
+      premiumRecordId: premiumEntry?.salaryRecord?.id ?? null,
+      rateTier,
+      siteId,
+      siteName,
+    });
+
+    seenEmpIds.add(empId);
+  }
+
+  return merged;
+}
+
 /* ───────── Main Component ───────── */
 
 export function ConsolidatedSalarySheet() {
@@ -164,8 +267,11 @@ export function ConsolidatedSalarySheet() {
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Mutable employee data per site (keyed by siteId)
-  const [siteEmployees, setSiteEmployees] = useState<Record<string, EmployeeSalaryData[]>>({});
+  // Mutable merged employee rows per site (keyed by siteId)
+  const [siteEmployees, setSiteEmployees] = useState<Record<string, MergedEmployeeRow[]>>({});
+
+  // Original data for reverting
+  const [originalSiteEmployees, setOriginalSiteEmployees] = useState<Record<string, MergedEmployeeRow[]>>({});
 
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -180,7 +286,7 @@ export function ConsolidatedSalarySheet() {
       const res = await fetch(`/api/accounts?month=${monthStr}&year=${selectedYear}`);
       const json = await res.json();
       if (json.success) {
-        const siteResults: SiteResult[] = json.data.sites || [];
+        const siteResults: ApiSiteResult[] = json.data.sites || [];
         const mappedSites: SiteData[] = siteResults.map((s) => ({
           id: s.site.id,
           name: s.site.name,
@@ -193,36 +299,16 @@ export function ConsolidatedSalarySheet() {
           totalDeductions: s.totalDeductions,
           totalAdvances: s.totalAdvances,
           totalBalanceSalary: s.totalBalanceSalary,
-          employees: s.employees.map((e, idx) => ({
-            salaryRecordId: e.salaryRecord?.id || null,
-            empId: e.empId,
-            empName: e.empName,
-            nationality: e.salaryRecord?.nationality || e.nationality,
-            trade: e.salaryRecord?.trade || e.trade,
-            employeeCode: e.salaryRecord?.employeeCode || e.employeeCode,
-            isTeamLeader: e.isTeamLeader,
-            isSupervisor: e.isSupervisor || false,
-            totalHours: e.salaryRecord?.totalHours || 0,
-            rtPerHour: e.salaryRecord?.rtPerHour || e.workingHours.calculatedRtPerHour || 2.5,
-            totalSalary: e.salaryRecord?.totalSalary || 0,
-            deduction: e.salaryRecord?.deduction || 0,
-            advance: e.salaryRecord?.advance || 0,
-            balanceSalary: e.salaryRecord?.balanceSalary || 0,
-            isPaid: e.salaryRecord?.isPaid || false,
-            slNo: e.salaryRecord?.slNo || idx + 1,
-            totalWorkingHours: e.workingHours.totalWorkingHours,
-            calculatedRtPerHour: e.workingHours.calculatedRtPerHour,
-            rateTier: e.rateTier || 'standard',
-          })),
         }));
         setSites(mappedSites);
 
-        // Initialize mutable employee data
-        const empMap: Record<string, EmployeeSalaryData[]> = {};
-        for (const site of mappedSites) {
-          empMap[site.id] = [...site.employees];
+        // Merge split entries into single rows per employee per site
+        const empMap: Record<string, MergedEmployeeRow[]> = {};
+        for (const s of siteResults) {
+          empMap[s.site.id] = mergeApiEntries(s.employees, s.site.id, s.site.name);
         }
         setSiteEmployees(empMap);
+        setOriginalSiteEmployees(JSON.parse(JSON.stringify(empMap)));
       } else {
         toast({ title: 'Error', description: json.error || 'Failed to load data', variant: 'destructive' });
       }
@@ -242,36 +328,34 @@ export function ConsolidatedSalarySheet() {
     setEditMode(false);
   }, [selectedMonth, selectedYear]);
 
-  // ── Cell change handler with sync for split rows ──
-  const handleCellChange = (siteId: string, index: number, field: string, value: number | boolean | string) => {
+  // ── Cell change handler ──
+  const handleCellChange = (
+    siteId: string,
+    index: number,
+    field: keyof MergedEmployeeRow | string,
+    value: number | boolean | string,
+  ) => {
     setSiteEmployees((prev) => {
       const employees = prev[siteId] || [];
-      const currentEmp = employees[index];
-      if (!currentEmp) return prev;
-
-      const skipSyncFields = new Set(['totalHours', 'rtPerHour', 'totalSalary', 'balanceSalary', 'rateTier', 'salaryRecordId']);
-
       const updated = employees.map((emp, i) => {
-        if (i === index) {
-          const u = { ...emp, [field]: value };
-          if (field === 'totalHours' || field === 'rtPerHour' || field === 'deduction' || field === 'advance') {
-            u.totalSalary = u.totalHours * u.rtPerHour;
-            u.balanceSalary = u.totalSalary - u.deduction - u.advance;
-          }
-          return u;
+        if (i !== index) return emp;
+        const u = { ...emp, [field]: value };
+
+        // Recalculate salary fields when relevant fields change
+        if (field === 'totalHours' || field === 'deduction' || field === 'advance') {
+          // When total hours changes, proportionally distribute to low/high rate hours
+          // But we don't change lowRateHours/highRateHours since they come from allocation engine
+          // Only recalculate totalSalary and balanceSalary
+          const standardSalary = u.lowRateHours * u.lowRate;
+          const premiumSalary = u.highRateHours * u.highRate;
+          // If totalHours was edited, we need to recalculate the split proportionally
+          // But since split is from allocation engine, we just use the existing rates
+          // The allocation engine will recalculate after save
+          u.totalSalary = standardSalary + premiumSalary;
+          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
         }
 
-        // Sync shared fields to sibling split row
-        if (!skipSyncFields.has(field) && emp.empId === currentEmp.empId && emp.rateTier !== currentEmp.rateTier) {
-          const u = { ...emp, [field]: value };
-          if (field === 'deduction' || field === 'advance') {
-            u.totalSalary = u.totalHours * u.rtPerHour;
-            u.balanceSalary = u.totalSalary - u.deduction - u.advance;
-          }
-          return u;
-        }
-
-        return emp;
+        return u;
       });
 
       return { ...prev, [siteId]: updated };
@@ -284,6 +368,7 @@ export function ConsolidatedSalarySheet() {
   };
 
   const handleAddRow = (siteId: string) => {
+    const site = sites.find((s) => s.id === siteId);
     setSiteEmployees((prev) => {
       const employees = prev[siteId] || [];
       const newSlNo = employees.length + 1;
@@ -292,7 +377,6 @@ export function ConsolidatedSalarySheet() {
         [siteId]: [
           ...employees,
           {
-            salaryRecordId: null,
             empId: `new-${Date.now()}-${newSlNo}`,
             empName: '',
             nationality: '',
@@ -300,17 +384,22 @@ export function ConsolidatedSalarySheet() {
             employeeCode: '',
             isTeamLeader: false,
             isSupervisor: false,
+            slNo: newSlNo,
             totalHours: 0,
-            rtPerHour: 2.5,
+            lowRateHours: 0,
+            highRateHours: 0,
+            lowRate: 2.5,
+            highRate: 5.0,
             totalSalary: 0,
             deduction: 0,
             advance: 0,
             balanceSalary: 0,
             isPaid: false,
-            slNo: newSlNo,
-            totalWorkingHours: 0,
-            calculatedRtPerHour: 2.5,
+            standardRecordId: null,
+            premiumRecordId: null,
             rateTier: 'standard' as const,
+            siteId,
+            siteName: site?.name || '',
           },
         ],
       };
@@ -325,70 +414,128 @@ export function ConsolidatedSalarySheet() {
     });
   };
 
-  // ── Save all changes ──
+  // ── Save all changes using bulk-save API ──
   const handleSave = async () => {
     try {
       setSaving(true);
-      let totalSaved = 0;
-      let totalFailed = 0;
+
+      // Collect all records across all sites
+      const allRecords: Array<{
+        salaryRecordId?: string;
+        empId: string;
+        empName: string;
+        siteId: string;
+        siteName: string;
+        month: string;
+        year: number;
+        nationality: string;
+        trade: string;
+        employeeCode: string;
+        slNo: number;
+        totalHours: number;
+        rtPerHour: number;
+        totalSalary: number;
+        deduction: number;
+        advance: number;
+        balanceSalary: number;
+        isPaid: boolean;
+        rateTier: string;
+      }> = [];
+
+      // Track which record IDs are in the submitted payload for soft-delete handling
+      const submittedRecordIds = new Set<string>();
 
       for (const site of sites) {
         const employees = siteEmployees[site.id] || [];
         for (const emp of employees) {
-          try {
-            const body = {
+          // Standard record
+          if (emp.lowRateHours > 0 || emp.standardRecordId || emp.rateTier === 'standard') {
+            const standardRecord = {
+              salaryRecordId: emp.standardRecordId || undefined,
               empId: emp.empId,
               empName: emp.empName,
-              siteId: site.id,
-              siteName: site.name,
+              siteId: emp.siteId || site.id,
+              siteName: emp.siteName || site.name,
               month: monthStr,
               year: selectedYear,
               nationality: emp.nationality,
               trade: emp.trade,
               employeeCode: emp.employeeCode,
               slNo: emp.slNo,
-              totalHours: emp.totalHours,
-              rtPerHour: emp.rtPerHour,
-              totalSalary: emp.totalSalary,
+              totalHours: emp.lowRateHours,
+              rtPerHour: emp.lowRate,
+              totalSalary: emp.lowRateHours * emp.lowRate,
               deduction: emp.deduction,
               advance: emp.advance,
-              balanceSalary: emp.balanceSalary,
+              balanceSalary: emp.lowRateHours * emp.lowRate - emp.deduction - emp.advance,
               isPaid: emp.isPaid,
-              rateTier: emp.rateTier,
-              updateWorkingHours: true,
+              rateTier: 'standard',
             };
-
-            const res = emp.salaryRecordId
-              ? await fetch('/api/accounts/salary', {
-                  method: 'PUT',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ id: emp.salaryRecordId, ...body }),
-                })
-              : await fetch('/api/accounts/salary', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(body),
-                });
-
-            const json = await res.json();
-            if (json.success) {
-              totalSaved++;
-            } else {
-              totalFailed++;
+            allRecords.push(standardRecord);
+            if (emp.standardRecordId) {
+              submittedRecordIds.add(emp.standardRecordId);
             }
-          } catch {
-            totalFailed++;
+          }
+
+          // Premium record (only if there are premium hours or existing premium record)
+          if (emp.highRateHours > 0 || emp.premiumRecordId) {
+            const premiumRecord = {
+              salaryRecordId: emp.premiumRecordId || undefined,
+              empId: emp.empId,
+              empName: emp.empName,
+              siteId: emp.siteId || site.id,
+              siteName: emp.siteName || site.name,
+              month: monthStr,
+              year: selectedYear,
+              nationality: emp.nationality,
+              trade: emp.trade,
+              employeeCode: emp.employeeCode,
+              slNo: emp.slNo,
+              totalHours: emp.highRateHours,
+              rtPerHour: emp.highRate,
+              totalSalary: emp.highRateHours * emp.highRate,
+              deduction: 0,
+              advance: 0,
+              balanceSalary: emp.highRateHours * emp.highRate,
+              isPaid: false,
+              rateTier: 'premium',
+            };
+            allRecords.push(premiumRecord);
+            if (emp.premiumRecordId) {
+              submittedRecordIds.add(emp.premiumRecordId);
+            }
           }
         }
       }
 
-      if (totalFailed > 0) {
-        toast({ title: 'Partial Save', description: `${totalSaved} saved, ${totalFailed} failed.`, variant: 'destructive' });
-      } else {
-        toast({ title: 'Saved', description: `All ${totalSaved} salary records saved successfully.` });
+      if (allRecords.length === 0) {
+        toast({ title: 'No Data', description: 'No records to save.' });
+        setSaving(false);
+        return;
       }
-      setEditMode(false);
-      fetchData();
+
+      const res = await fetch('/api/accounts/salary/bulk-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          records: allRecords,
+          runAllocation: true,
+        }),
+      });
+
+      const json = await res.json();
+      if (json.success) {
+        const savedCount = json.data?.savedCount ?? allRecords.length;
+        const softDeleted = json.data?.softDeletedCount ?? 0;
+        toast({
+          title: 'Saved',
+          description: `${savedCount} record(s) saved successfully.${softDeleted > 0 ? ` ${softDeleted} removed.` : ''}`,
+        });
+        setEditMode(false);
+        fetchData();
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to save records', variant: 'destructive' });
+      }
     } catch {
       toast({ title: 'Error', description: 'Failed to save salary records', variant: 'destructive' });
     } finally {
@@ -399,7 +546,7 @@ export function ConsolidatedSalarySheet() {
   // ── Search highlight logic ──
   const searchLower = searchQuery.toLowerCase().trim();
 
-  const isRowHighlighted = (emp: EmployeeSalaryData): boolean => {
+  const isRowHighlighted = (emp: MergedEmployeeRow): boolean => {
     if (!searchLower) return false;
     return (
       emp.empName.toLowerCase().includes(searchLower) ||
@@ -407,7 +554,7 @@ export function ConsolidatedSalarySheet() {
     );
   };
 
-  const tradeDisplay = (emp: EmployeeSalaryData) => {
+  const tradeDisplay = (emp: MergedEmployeeRow) => {
     let trade = emp.trade;
     if (emp.isSupervisor) trade = `${trade}/SUPERVISOR`;
     if (emp.isTeamLeader) trade = `${trade}/TL`;
@@ -424,19 +571,21 @@ export function ConsolidatedSalarySheet() {
     let totalEmployees = 0;
 
     for (const site of sites) {
-      const employees = siteEmployees[site.id] || site.employees;
+      const employees = siteEmployees[site.id] || [];
       totalHours += employees.reduce((s, e) => s + e.totalHours, 0);
       totalSalary += employees.reduce((s, e) => s + e.totalSalary, 0);
       totalDeductions += employees.reduce((s, e) => s + e.deduction, 0);
       totalAdvances += employees.reduce((s, e) => s + e.advance, 0);
       totalBalance += employees.reduce((s, e) => s + e.balanceSalary, 0);
-      // Count unique empIds
-      const uniqueIds = new Set(employees.map(e => e.empId));
-      totalEmployees += uniqueIds.size;
+      totalEmployees += employees.length;
     }
 
     return { totalHours, totalSalary, totalDeductions, totalAdvances, totalBalance, totalEmployees };
   }, [sites, siteEmployees]);
+
+  // ── Column header for low-rate (shows 2.5/3) ──
+  const lowRateHeader = '2.5/3 HRS';
+  const highRateHeader = '5/5.5 HRS';
 
   return (
     <div className="min-h-screen bg-slate-900 p-4 sm:p-6">
@@ -456,7 +605,7 @@ export function ConsolidatedSalarySheet() {
                   )}
                 </h1>
                 <p className="text-slate-500 text-sm mt-0.5">
-                  All sites salary data in one view • {MONTH_FULL[selectedMonth]} {selectedYear}
+                  All sites salary data in one view &bull; {MONTH_FULL[selectedMonth]} {selectedYear}
                 </p>
               </div>
             </div>
@@ -478,12 +627,8 @@ export function ConsolidatedSalarySheet() {
             <Button
               onClick={() => {
                 if (editMode) {
-                  // Revert changes
-                  const empMap: Record<string, EmployeeSalaryData[]> = {};
-                  for (const site of sites) {
-                    empMap[site.id] = [...site.employees];
-                  }
-                  setSiteEmployees(empMap);
+                  // Revert changes to original data
+                  setSiteEmployees(JSON.parse(JSON.stringify(originalSiteEmployees)));
                 }
                 setEditMode(!editMode);
               }}
@@ -491,7 +636,7 @@ export function ConsolidatedSalarySheet() {
                 'gap-2',
                 editMode
                   ? 'bg-amber-600 hover:bg-amber-700 text-white'
-                  : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                  : 'bg-slate-700 hover:bg-slate-600 text-slate-200',
               )}
             >
               {editMode ? <X className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
@@ -544,7 +689,7 @@ export function ConsolidatedSalarySheet() {
                             ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-500/20'
                             : available
                               ? 'bg-slate-700/30 text-slate-400 hover:bg-slate-700/50 hover:text-white'
-                              : 'bg-slate-800/20 text-slate-600 cursor-not-allowed opacity-50'
+                              : 'bg-slate-800/20 text-slate-600 cursor-not-allowed opacity-50',
                         )}
                       >
                         {m}
@@ -599,12 +744,17 @@ export function ConsolidatedSalarySheet() {
             </p>
           </div>
         ) : (
-          /* ── Consolidated Table (Google Sheets style) ── */
+          /* ── Consolidated Table ── */
           <div className="space-y-0">
             {sites.map((site) => {
-              const employees = siteEmployees[site.id] || site.employees;
+              const employees = siteEmployees[site.id] || [];
               const siteTotalHours = employees.reduce((s, e) => s + e.totalHours, 0);
               const siteTotalSalary = employees.reduce((s, e) => s + e.totalSalary, 0);
+              const siteTotalLowRateHours = employees.reduce((s, e) => s + e.lowRateHours, 0);
+              const siteTotalHighRateHours = employees.reduce((s, e) => s + e.highRateHours, 0);
+              const siteTotalDeduction = employees.reduce((s, e) => s + e.deduction, 0);
+              const siteTotalAdvance = employees.reduce((s, e) => s + e.advance, 0);
+              const siteTotalBalance = employees.reduce((s, e) => s + e.balanceSalary, 0);
 
               return (
                 <div key={site.id} className="mb-1">
@@ -618,7 +768,7 @@ export function ConsolidatedSalarySheet() {
                     </div>
                     <div className="flex items-center gap-4 text-xs">
                       <span className="text-slate-400">
-                        Employees: <span className="text-white font-semibold">{new Set(employees.map(e => e.empId)).size}</span>
+                        Employees: <span className="text-white font-semibold">{employees.length}</span>
                       </span>
                       <span className="text-slate-400">
                         Hours: <span className="text-white font-semibold">{formatNumber(siteTotalHours)}</span>
@@ -631,99 +781,118 @@ export function ConsolidatedSalarySheet() {
 
                   {/* Salary Table */}
                   <div className="overflow-x-auto border border-t-0 border-slate-700/50 rounded-b-lg">
-                    <table className="w-full border-collapse min-w-[900px]">
+                    <table className="w-full border-collapse table-fixed min-w-[1100px]">
                       <thead>
                         <tr className="bg-slate-800/90 border-b border-slate-700/50">
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-10 text-center">SL</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[90px] text-left">NATIONALITY</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[130px] text-left">NAME</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[100px] text-left">TRADE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-left">EMP ID</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">HOURS</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">RT/HR</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[100px] text-right">TOTAL SALARY</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">DEDUCT</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[85px] text-right">ADVANCE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[100px] text-right">BALANCE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-[60px] text-center">PAID</th>
-                          {editMode && <th className="text-slate-400 font-semibold text-[11px] py-2 px-2 w-8"></th>}
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[40px] text-center">SL</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[85px] text-left">NATIONALITY</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[130px] text-left">NAME</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[100px] text-left">TRADE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[80px] text-left">EMP ID</th>
+                          <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 w-[80px] text-right">TOTAL HRS</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[80px] text-right bg-slate-800/50">{lowRateHeader}</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[80px] text-right bg-amber-900/20">{highRateHeader}</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[100px] text-right">TOTAL SALARY</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[80px] text-right">DEDUCT</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[80px] text-right">ADVANCE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[100px] text-right">BALANCE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[55px] text-center">PAID</th>
+                          {editMode && <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 w-[32px]"></th>}
                         </tr>
                       </thead>
                       <tbody>
                         {employees.length === 0 ? (
                           <tr>
-                            <td colSpan={editMode ? 13 : 12} className="text-center text-slate-500 py-6 text-xs">
+                            <td colSpan={editMode ? 14 : 13} className="text-center text-slate-500 py-6 text-xs">
                               No employees for this site.
                             </td>
                           </tr>
                         ) : (
                           employees.map((emp, index) => {
                             const highlighted = isRowHighlighted(emp);
+                            const hasSplit = emp.rateTier === 'split';
                             return (
                               <tr
-                                key={`${emp.empId}-${emp.rateTier}-${index}`}
+                                key={`${emp.empId}-${index}`}
                                 className={cn(
                                   'border-b border-slate-700/30 transition-colors',
                                   highlighted && 'bg-yellow-500/15 ring-1 ring-yellow-500/30',
                                   !highlighted && emp.isPaid && 'bg-emerald-500/5',
-                                  !highlighted && !emp.isPaid && emp.rateTier === 'premium' && 'bg-amber-500/5',
+                                  !highlighted && !emp.isPaid && hasSplit && 'bg-amber-500/5',
                                   editMode && !highlighted && 'hover:bg-slate-700/20',
                                 )}
                               >
-                                <td className="text-slate-500 text-[11px] text-center font-mono py-1.5 px-2">{emp.slNo}</td>
+                                {/* SL */}
+                                <td className="text-slate-500 text-[11px] text-center font-mono py-1.5 px-2">
+                                  {emp.slNo}
+                                </td>
+
+                                {/* NATIONALITY */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       value={emp.nationality}
                                       onChange={(e) => handleCellChange(site.id, index, 'nationality', e.target.value)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
                                     />
                                   ) : (
                                     <span className="text-[11px] text-slate-300">{emp.nationality || '-'}</span>
                                   )}
                                 </td>
+
+                                {/* NAME */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       value={emp.empName}
                                       onChange={(e) => handleCellChange(site.id, index, 'empName', e.target.value)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px] font-medium', highlighted ? 'text-yellow-300' : 'text-white')}>{emp.empName || '-'}</span>
+                                    <span className={cn('text-[11px] font-medium', highlighted ? 'text-yellow-300' : 'text-white')}>
+                                      {emp.empName || '-'}
+                                    </span>
                                   )}
                                 </td>
+
+                                {/* TRADE */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       value={emp.trade}
                                       onChange={(e) => handleCellChange(site.id, index, 'trade', e.target.value)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white w-full py-0"
                                     />
                                   ) : (
                                     <span className="text-[11px] text-slate-300">{tradeDisplay(emp)}</span>
                                   )}
                                 </td>
+
+                                {/* EMP ID */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       value={emp.employeeCode}
                                       onChange={(e) => handleCellChange(site.id, index, 'employeeCode', e.target.value)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white font-mono w-full py-0"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px] font-mono', highlighted ? 'text-yellow-300' : 'text-slate-300')}>{emp.employeeCode || '-'}</span>
+                                    <span className={cn('text-[11px] font-mono', highlighted ? 'text-yellow-300' : 'text-slate-300')}>
+                                      {emp.employeeCode || '-'}
+                                    </span>
                                   )}
                                 </td>
+
+                                {/* TOTAL HRS - Editable */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
                                       min={0}
                                       step={1}
-                                      value={emp.totalHours}
+                                      value={emp.totalHours || ''}
                                       onChange={(e) => handleCellChange(site.id, index, 'totalHours', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white text-right w-full min-w-[80px] py-0"
                                     />
                                   ) : (
                                     <span className={cn('text-[11px] block text-right', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
@@ -731,32 +900,36 @@ export function ConsolidatedSalarySheet() {
                                     </span>
                                   )}
                                 </td>
-                                <td className="py-1.5 px-2">
-                                  {editMode ? (
-                                    <Input
-                                      type="number"
-                                      min={0}
-                                      step={0.5}
-                                      value={emp.rtPerHour}
-                                      onChange={(e) => handleCellChange(site.id, index, 'rtPerHour', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
-                                    />
-                                  ) : (
-                                    <span className="text-[11px] text-white block text-right">{emp.rtPerHour}</span>
-                                  )}
+
+                                {/* 2.5/3 HRS - Read-only (from allocation engine) */}
+                                <td className="py-1.5 px-2 bg-slate-800/30">
+                                  <span className={cn('text-[11px] block text-right', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                                    {emp.lowRateHours || '0'}
+                                  </span>
                                 </td>
+
+                                {/* 5/5.5 HRS - Read-only (from allocation engine) */}
+                                <td className="py-1.5 px-2 bg-amber-900/10">
+                                  <span className={cn('text-[11px] block text-right', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
+                                    {emp.highRateHours || '0'}
+                                  </span>
+                                </td>
+
+                                {/* TOTAL SALARY - Calculated */}
                                 <td className={cn('text-[11px] text-right font-medium py-1.5 px-2', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
                                   {formatNumber(emp.totalSalary)}
                                 </td>
+
+                                {/* DEDUCT - Editable */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
                                       min={0}
                                       step={1}
-                                      value={emp.deduction}
+                                      value={emp.deduction || ''}
                                       onChange={(e) => handleCellChange(site.id, index, 'deduction', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white text-right w-full min-w-[80px] py-0"
                                     />
                                   ) : (
                                     <span className={cn('text-[11px] block text-right', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
@@ -764,15 +937,17 @@ export function ConsolidatedSalarySheet() {
                                     </span>
                                   )}
                                 </td>
+
+                                {/* ADVANCE - Editable */}
                                 <td className="py-1.5 px-2">
                                   {editMode ? (
                                     <Input
                                       type="number"
                                       min={0}
                                       step={1}
-                                      value={emp.advance}
+                                      value={emp.advance || ''}
                                       onChange={(e) => handleCellChange(site.id, index, 'advance', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0"
+                                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white text-right w-full min-w-[80px] py-0"
                                     />
                                   ) : (
                                     <span className={cn('text-[11px] block text-right', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
@@ -780,12 +955,16 @@ export function ConsolidatedSalarySheet() {
                                     </span>
                                   )}
                                 </td>
+
+                                {/* BALANCE - Calculated */}
                                 <td className={cn(
                                   'text-[11px] text-right font-semibold py-1.5 px-2',
-                                  emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400'
+                                  emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400',
                                 )}>
                                   {formatNumber(emp.balanceSalary)}
                                 </td>
+
+                                {/* PAID - Toggle */}
                                 <td className="text-center py-1.5 px-2">
                                   <button
                                     onClick={() => handlePaidToggle(site.id, index, emp.isPaid)}
@@ -796,18 +975,20 @@ export function ConsolidatedSalarySheet() {
                                         : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
                                       !emp.isPaid && 'cursor-pointer',
                                       emp.isPaid && !editMode && 'cursor-default',
-                                      emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30'
+                                      emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30',
                                     )}
                                   >
                                     {emp.isPaid ? 'PAID' : 'UNPAID'}
                                   </button>
                                 </td>
+
+                                {/* Delete button (edit mode only) */}
                                 {editMode && (
                                   <td className="py-1.5 px-1">
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      className="h-5 w-5 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                                      className="h-6 w-6 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
                                       onClick={() => handleDeleteRow(site.id, index)}
                                     >
                                       <Trash2 className="h-3 w-3" />
@@ -819,6 +1000,7 @@ export function ConsolidatedSalarySheet() {
                           })
                         )}
                       </tbody>
+
                       {/* Site Total Footer */}
                       <tfoot>
                         <tr className="bg-slate-900/60 border-t border-slate-700/50">
@@ -826,20 +1008,25 @@ export function ConsolidatedSalarySheet() {
                             Site Total
                           </td>
                           <td className="text-[11px] text-white font-bold py-2 px-2 text-right">
-                            {formatNumber(employees.reduce((s, e) => s + e.totalHours, 0))}
+                            {formatNumber(siteTotalHours)}
                           </td>
-                          <td className="py-2 px-2"></td>
+                          <td className="text-[11px] text-slate-300 font-bold py-2 px-2 text-right bg-slate-800/30">
+                            {formatNumber(siteTotalLowRateHours)}
+                          </td>
+                          <td className="text-[11px] text-amber-300 font-bold py-2 px-2 text-right bg-amber-900/10">
+                            {formatNumber(siteTotalHighRateHours)}
+                          </td>
                           <td className="text-[11px] text-emerald-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(employees.reduce((s, e) => s + e.totalSalary, 0))} AED
+                            {formatNumber(siteTotalSalary)} AED
                           </td>
                           <td className="text-[11px] text-slate-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(employees.reduce((s, e) => s + e.deduction, 0))}
+                            {formatNumber(siteTotalDeduction)}
                           </td>
                           <td className="text-[11px] text-slate-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(employees.reduce((s, e) => s + e.advance, 0))}
+                            {formatNumber(siteTotalAdvance)}
                           </td>
                           <td className="text-[11px] text-amber-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(employees.reduce((s, e) => s + e.balanceSalary, 0))}
+                            {formatNumber(siteTotalBalance)}
                           </td>
                           <td className="py-2 px-2"></td>
                           {editMode && <td className="py-2 px-2"></td>}
@@ -855,7 +1042,7 @@ export function ConsolidatedSalarySheet() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleAddRow(site.id)}
-                        className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white gap-1 h-7 text-xs"
+                        className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white gap-1 h-8 text-xs"
                       >
                         <Plus className="h-3 w-3" />
                         Add Row to {site.name}

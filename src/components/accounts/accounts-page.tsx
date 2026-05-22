@@ -184,6 +184,30 @@ interface SiteResult {
 
 type SubView = 'accounts' | 'working-hours' | 'employee-detail';
 
+interface MergedEmployeeRow {
+  empId: string;
+  empName: string;
+  nationality: string;
+  trade: string;
+  employeeCode: string;
+  isTeamLeader: boolean;
+  isSupervisor: boolean;
+  slNo: number;
+  totalHours: number;        // Sum of standard + premium hours (editable)
+  lowRateHours: number;      // From standard record (read-only)
+  highRateHours: number;     // From premium record (read-only)
+  lowRate: number;           // 2.5 or 3.0
+  highRate: number;          // 5.0 or 5.5
+  totalSalary: number;       // Sum of standard + premium salary
+  deduction: number;
+  advance: number;
+  balanceSalary: number;
+  isPaid: boolean;
+  standardRecordId: string | null;
+  premiumRecordId: string | null;
+  rateTier: 'standard' | 'premium' | 'split';
+}
+
 /* ───────── Constants ───────── */
 
 const MONTH_SHORT = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -219,6 +243,66 @@ function calculateRtPerHourAuto(totalWorkingHours: number, isTeamLeader: boolean
     return hasBonus ? 5.5 : 5.0;
   }
   return hasBonus ? 3.0 : 2.5;
+}
+
+function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
+  const grouped = new Map<string, EmployeeSalaryData[]>();
+  for (const entry of entries) {
+    if (!grouped.has(entry.empId)) grouped.set(entry.empId, []);
+    grouped.get(entry.empId)!.push(entry);
+  }
+
+  const result: MergedEmployeeRow[] = [];
+  let slNo = 0;
+
+  for (const [, empEntries] of grouped) {
+    slNo++;
+    const standard = empEntries.find(e => e.rateTier === 'standard');
+    const premium = empEntries.find(e => e.rateTier === 'premium');
+    const any = empEntries[0];
+
+    const hasBonus = any.isTeamLeader || any.isSupervisor;
+    const lowRate = hasBonus ? 3.0 : 2.5;
+    const highRate = hasBonus ? 5.5 : 5.0;
+
+    const lowRateHours = standard?.totalHours || 0;
+    const highRateHours = premium?.totalHours || 0;
+    const totalHours = lowRateHours + highRateHours;
+
+    const lowSalary = lowRateHours * lowRate;
+    const highSalary = highRateHours * highRate;
+    const totalSalary = lowSalary + highSalary;
+
+    const deduction = standard?.deduction || 0;
+    const advance = standard?.advance || 0;
+    const balanceSalary = totalSalary - deduction - advance;
+
+    result.push({
+      empId: any.empId,
+      empName: any.empName,
+      nationality: any.nationality,
+      trade: any.trade,
+      employeeCode: any.employeeCode,
+      isTeamLeader: any.isTeamLeader,
+      isSupervisor: any.isSupervisor,
+      slNo,
+      totalHours,
+      lowRateHours,
+      highRateHours,
+      lowRate,
+      highRate,
+      totalSalary,
+      deduction,
+      advance,
+      balanceSalary,
+      isPaid: standard?.isPaid || premium?.isPaid || false,
+      standardRecordId: standard?.salaryRecordId || null,
+      premiumRecordId: premium?.salaryRecordId || null,
+      rateTier: standard && premium ? 'split' : standard ? 'standard' : 'premium',
+    });
+  }
+
+  return result;
 }
 
 /* ───────── Employee Detail Page (Monthly Hours) ───────── */
@@ -1164,146 +1248,158 @@ function SiteSalarySheet({
   onRefresh: () => void;
   editMode: boolean;
 }) {
-  const [employees, setEmployees] = useState<EmployeeSalaryData[]>(site.employees);
+  const [mergedEmployees, setMergedEmployees] = useState<MergedEmployeeRow[]>(() => mergeSplitEntries(site.employees));
   const [saving, setSaving] = useState(false);
 
-  // Sync employees when site prop changes
+  // Sync merged employees when site.employees changes
   useEffect(() => {
-    setEmployees(site.employees);
+    setMergedEmployees(mergeSplitEntries(site.employees));
   }, [site.employees]);
 
-  // Use index-based identification for split entries (same empId can appear twice)
   const handleCellChange = (index: number, field: string, value: number | boolean | string) => {
-    setEmployees((prev) => {
-      const currentEmp = prev[index];
-      if (!currentEmp) return prev;
+    setMergedEmployees((prev) =>
+      prev.map((emp, i) => {
+        if (i !== index) return emp;
+        const updated = { ...emp, [field]: value };
 
-      // Fields that should sync to the sibling split row (same empId, different rateTier)
-      // All fields except rate and hour fields should sync between split rows
-      const skipSyncFields = new Set(['totalHours', 'rtPerHour', 'totalSalary', 'balanceSalary', 'rateTier', 'salaryRecordId']);
+        // Recalculate totalSalary and balanceSalary when relevant fields change
+        if (field === 'totalHours' || field === 'deduction' || field === 'advance') {
+          // Recalculate split allocation based on totalHours
+          const hasBonus = updated.isTeamLeader || updated.isSupervisor;
+          const lowRate = hasBonus ? 3.0 : 2.5;
+          const highRate = hasBonus ? 5.5 : 5.0;
 
-      return prev.map((emp, i) => {
-        if (i === index) {
-          const updated = { ...emp, [field]: value };
-          // Auto-calculate totals
-          if (field === 'totalHours' || field === 'rtPerHour' || field === 'deduction' || field === 'advance') {
-            updated.totalSalary = updated.totalHours * updated.rtPerHour;
-            updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+          // Recalculate hours split: assume threshold of 1000
+          const totalHrs = updated.totalHours;
+          let lowHrs = totalHrs;
+          let highHrs = 0;
+          if (totalHrs > 1000) {
+            lowHrs = 1000;
+            highHrs = totalHrs - 1000;
           }
-          return updated;
+
+          updated.lowRateHours = lowHrs;
+          updated.highRateHours = highHrs;
+          updated.lowRate = lowRate;
+          updated.highRate = highRate;
+          updated.totalSalary = lowHrs * lowRate + highHrs * highRate;
+          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+          updated.rateTier = highHrs > 0 ? 'split' : 'standard';
         }
 
-        // Sync shared fields to the sibling split row
-        if (!skipSyncFields.has(field) && emp.empId === currentEmp.empId && emp.rateTier !== currentEmp.rateTier) {
-          const updated = { ...emp, [field]: value };
-          // Recalculate balance if deduction/advance changed
-          if (field === 'deduction' || field === 'advance') {
-            updated.totalSalary = updated.totalHours * updated.rtPerHour;
-            updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
-          }
-          return updated;
-        }
-
-        return emp;
-      });
-    });
+        return updated;
+      })
+    );
   };
 
   const handlePaidToggle = (index: number, currentIsPaid: boolean) => {
-    // unpaid → paid: always allowed
-    // paid → unpaid: requires edit mode
     if (currentIsPaid && !editMode) return;
     handleCellChange(index, 'isPaid', !currentIsPaid);
   };
 
   const handleAddRow = () => {
-    const newSlNo = employees.length + 1;
-    setEmployees((prev) => [
-      ...prev,
-      {
-        salaryRecordId: null,
-        empId: `new-${Date.now()}-${newSlNo}`,
-        empName: '',
-        nationality: '',
-        trade: '',
-        employeeCode: '',
-        isTeamLeader: false,
-        isSupervisor: false,
-        totalHours: 0,
-        rtPerHour: 2.5,
-        totalSalary: 0,
-        deduction: 0,
-        advance: 0,
-        balanceSalary: 0,
-        isPaid: false,
-        slNo: newSlNo,
-        totalWorkingHours: 0,
-        calculatedRtPerHour: 2.5,
-        rateTier: 'standard' as const,
-      },
-    ]);
+    const newSlNo = mergedEmployees.length + 1;
+    const newRow: MergedEmployeeRow = {
+      empId: `new-${Date.now()}-${newSlNo}`,
+      empName: '',
+      nationality: '',
+      trade: '',
+      employeeCode: '',
+      isTeamLeader: false,
+      isSupervisor: false,
+      slNo: newSlNo,
+      totalHours: 0,
+      lowRateHours: 0,
+      highRateHours: 0,
+      lowRate: 2.5,
+      highRate: 5.0,
+      totalSalary: 0,
+      deduction: 0,
+      advance: 0,
+      balanceSalary: 0,
+      isPaid: false,
+      standardRecordId: null,
+      premiumRecordId: null,
+      rateTier: 'standard',
+    };
+    setMergedEmployees((prev) => [...prev, newRow]);
   };
 
   const handleDeleteRow = (index: number) => {
-    setEmployees((prev) => {
+    setMergedEmployees((prev) => {
       const updated = prev.filter((_, i) => i !== index);
       return updated.map((emp, i) => ({ ...emp, slNo: i + 1 }));
     });
   };
 
   const handleSave = async () => {
-    try {
-      setSaving(true);
-      const monthStr = getMonthString(year, month);
+    setSaving(true);
+    const monthStr = getMonthString(year, month);
 
-      const results = await Promise.allSettled(
-        employees.map((emp) => {
-          const body = {
-            empId: emp.empId,
-            empName: emp.empName,
-            siteId: site.id,
-            siteName: site.name,
-            month: monthStr,
-            year,
-            nationality: emp.nationality,
-            trade: emp.trade,
-            employeeCode: emp.employeeCode,
-            slNo: emp.slNo,
-            totalHours: emp.totalHours,
-            rtPerHour: emp.rtPerHour,
-            totalSalary: emp.totalSalary,
-            deduction: emp.deduction,
-            advance: emp.advance,
-            balanceSalary: emp.balanceSalary,
-            isPaid: emp.isPaid,
-            rateTier: emp.rateTier,
-            // Bidirectional sync: update TotalEmployeeWorkingHours
-            updateWorkingHours: true,
-          };
+    const records: Record<string, unknown>[] = [];
+    for (const emp of mergedEmployees) {
+      // Always include standard record
+      records.push({
+        salaryRecordId: emp.standardRecordId,
+        empId: emp.empId,
+        empName: emp.empName,
+        siteId: site.id,
+        siteName: site.name,
+        month: monthStr,
+        year,
+        nationality: emp.nationality,
+        trade: emp.trade,
+        employeeCode: emp.employeeCode,
+        slNo: emp.slNo,
+        totalHours: emp.totalHours,  // TOTAL hours, allocation engine will split
+        rtPerHour: emp.lowRate,
+        totalSalary: emp.lowRateHours * emp.lowRate,
+        deduction: emp.deduction,
+        advance: emp.advance,
+        balanceSalary: (emp.lowRateHours * emp.lowRate) - emp.deduction - emp.advance,
+        isPaid: emp.isPaid,
+        rateTier: 'standard',
+      });
 
-          if (emp.salaryRecordId) {
-            return fetch('/api/accounts/salary', {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: emp.salaryRecordId, ...body }),
-            });
-          } else {
-            return fetch('/api/accounts/salary', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-          }
-        })
-      );
-
-      const failed = results.filter((r) => r.status === 'rejected').length;
-      if (failed > 0) {
-        toast({ title: 'Partial Save', description: `${failed} record(s) failed to save.`, variant: 'destructive' });
-      } else {
-        toast({ title: 'Saved', description: `Salary records for ${site.name} saved successfully.` });
+      // Include premium record if it exists
+      if (emp.premiumRecordId || emp.highRateHours > 0) {
+        records.push({
+          salaryRecordId: emp.premiumRecordId,
+          empId: emp.empId,
+          empName: emp.empName,
+          siteId: site.id,
+          siteName: site.name,
+          month: monthStr,
+          year,
+          nationality: emp.nationality,
+          trade: emp.trade,
+          employeeCode: emp.employeeCode,
+          slNo: emp.slNo,
+          totalHours: emp.highRateHours,
+          rtPerHour: emp.highRate,
+          totalSalary: emp.highRateHours * emp.highRate,
+          deduction: 0,
+          advance: 0,
+          balanceSalary: emp.highRateHours * emp.highRate,
+          isPaid: false,
+          rateTier: 'premium',
+        });
       }
-      onRefresh();
+    }
+
+    try {
+      const res = await fetch('/api/accounts/salary/bulk-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records, runAllocation: true }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        toast({ title: 'Saved', description: `Salary records for ${site.name} saved. Allocation engine recalculated.` });
+        onRefresh();
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to save', variant: 'destructive' });
+      }
     } catch {
       toast({ title: 'Error', description: 'Failed to save salary records', variant: 'destructive' });
     } finally {
@@ -1312,13 +1408,13 @@ function SiteSalarySheet({
   };
 
   // Totals
-  const sumTotalHours = employees.reduce((s, e) => s + e.totalHours, 0);
-  const sumTotalSalary = employees.reduce((s, e) => s + e.totalSalary, 0);
-  const sumDeduction = employees.reduce((s, e) => s + e.deduction, 0);
-  const sumAdvance = employees.reduce((s, e) => s + e.advance, 0);
-  const sumBalanceSalary = employees.reduce((s, e) => s + e.balanceSalary, 0);
+  const sumTotalHours = mergedEmployees.reduce((s, e) => s + e.totalHours, 0);
+  const sumTotalSalary = mergedEmployees.reduce((s, e) => s + e.totalSalary, 0);
+  const sumDeduction = mergedEmployees.reduce((s, e) => s + e.deduction, 0);
+  const sumAdvance = mergedEmployees.reduce((s, e) => s + e.advance, 0);
+  const sumBalanceSalary = mergedEmployees.reduce((s, e) => s + e.balanceSalary, 0);
 
-  const tradeDisplay = (emp: EmployeeSalaryData) => {
+  const tradeDisplay = (emp: MergedEmployeeRow) => {
     let trade = emp.trade;
     if (emp.isSupervisor) trade = `${trade}/SUPERVISOR`;
     if (emp.isTeamLeader) trade = `${trade}/TL`;
@@ -1346,7 +1442,8 @@ function SiteSalarySheet({
               <TableHead className="text-slate-300 font-semibold text-xs min-w-[90px]">TRADE</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs min-w-[80px]">EMP ID</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">TOTAL HOUR</TableHead>
-              <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">RT/HR</TableHead>
+              <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">2.5/3 HRS</TableHead>
+              <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">5/5.5 HRS</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-24 text-right">TOTAL SALARY</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">DEDUCTION</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">ADVANCE</TableHead>
@@ -1356,169 +1453,160 @@ function SiteSalarySheet({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {employees.map((emp, index) => {
-              return (
-                <TableRow
-                  key={`${emp.empId}-${emp.rateTier}-${index}`}
+            {mergedEmployees.map((emp, index) => (
+              <TableRow
+                key={`${emp.empId}-${index}`}
+                className={cn(
+                  'border-slate-700/50',
+                  editMode ? 'hover:bg-slate-700/20' : 'hover:bg-transparent',
+                  emp.isPaid && 'bg-emerald-500/5',
+                  emp.rateTier === 'split' && 'bg-amber-500/5'
+                )}
+              >
+                <TableCell className="text-slate-400 text-sm text-center font-mono">{emp.slNo}</TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      value={emp.nationality}
+                      onChange={(e) => handleCellChange(index, 'nationality', e.target.value)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white min-w-[80px]"
+                    />
+                  ) : (
+                    <span className="text-sm text-slate-300 px-1">{emp.nationality || '-'}</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      value={emp.empName}
+                      onChange={(e) => handleCellChange(index, 'empName', e.target.value)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white min-w-[120px]"
+                    />
+                  ) : (
+                    <span className="text-sm text-white font-medium px-1">{emp.empName || '-'}</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      value={emp.trade}
+                      onChange={(e) => handleCellChange(index, 'trade', e.target.value)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white min-w-[90px]"
+                    />
+                  ) : (
+                    <span className="text-sm text-slate-300 px-1">{tradeDisplay(emp)}</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      value={emp.employeeCode}
+                      onChange={(e) => handleCellChange(index, 'employeeCode', e.target.value)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[80px]"
+                    />
+                  ) : (
+                    <span className="text-sm text-slate-300 font-mono px-1">{emp.employeeCode || '-'}</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={emp.totalHours}
+                      onChange={(e) => handleCellChange(index, 'totalHours', parseFloat(e.target.value) || 0)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white text-right min-w-[80px]"
+                    />
+                  ) : (
+                    <span className={cn('text-sm text-right block', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
+                      {emp.totalHours || '-'}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="bg-slate-800/40">
+                  <span className={cn('text-sm text-right block', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                    {emp.lowRateHours > 0 ? `${emp.lowRateHours} @ ${emp.lowRate}` : '-'}
+                  </span>
+                </TableCell>
+                <TableCell className="bg-slate-800/40">
+                  <span className={cn('text-sm text-right block', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
+                    {emp.highRateHours > 0 ? `${emp.highRateHours} @ ${emp.highRate}` : '-'}
+                  </span>
+                </TableCell>
+                <TableCell className={cn('text-sm text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
+                  {formatNumber(emp.totalSalary)}
+                </TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={emp.deduction}
+                      onChange={(e) => handleCellChange(index, 'deduction', parseFloat(e.target.value) || 0)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white text-right min-w-[80px]"
+                    />
+                  ) : (
+                    <span className={cn('text-sm text-right block', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                      {emp.deduction || '-'}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {editMode ? (
+                    <Input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={emp.advance}
+                      onChange={(e) => handleCellChange(index, 'advance', parseFloat(e.target.value) || 0)}
+                      className="h-8 text-sm bg-slate-900/80 border-slate-600/50 text-white text-right min-w-[80px]"
+                    />
+                  ) : (
+                    <span className={cn('text-sm text-right block', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                      {emp.advance || '-'}
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell
                   className={cn(
-                    'border-slate-700/50',
-                    editMode ? 'hover:bg-slate-700/20' : 'hover:bg-transparent',
-                    emp.isPaid && 'bg-emerald-500/5',
-                    emp.rateTier === 'premium' && 'bg-amber-500/5'
+                    'text-sm text-right font-semibold',
+                    emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400'
                   )}
                 >
-                  <TableCell className="text-slate-400 text-xs text-center font-mono">{emp.slNo}</TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        value={emp.nationality}
-                        onChange={(e) => handleCellChange(index, 'nationality', e.target.value)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[70px]"
-                      />
-                    ) : (
-                      <span className="text-xs text-slate-300 px-1">{emp.nationality || '-'}</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        value={emp.empName}
-                        onChange={(e) => handleCellChange(index, 'empName', e.target.value)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[110px]"
-                      />
-                    ) : (
-                      <span className="text-xs text-white font-medium px-1">{emp.empName || '-'}</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        value={emp.trade}
-                        onChange={(e) => handleCellChange(index, 'trade', e.target.value)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[80px]"
-                      />
-                    ) : (
-                      <span className="text-xs text-slate-300 px-1">{tradeDisplay(emp)}</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        value={emp.employeeCode}
-                        onChange={(e) => handleCellChange(index, 'employeeCode', e.target.value)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[75px]"
-                      />
-                    ) : (
-                      <span className="text-xs text-slate-300 font-mono px-1">{emp.employeeCode || '-'}</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={emp.totalHours}
-                        onChange={(e) => handleCellChange(index, 'totalHours', parseFloat(e.target.value) || 0)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                      />
-                    ) : (
-                      <span className={cn('text-xs text-right block', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
-                        {emp.totalHours || '-'}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center justify-end gap-1.5">
-                      {editMode ? (
-                        <Input
-                          type="number"
-                          min={0}
-                          step={0.5}
-                          value={emp.rtPerHour}
-                          onChange={(e) => handleCellChange(index, 'rtPerHour', parseFloat(e.target.value) || 0)}
-                          className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                        />
-                      ) : (
-                        <span className="text-xs text-right text-white">{emp.rtPerHour}</span>
-                      )}
-
-                    </div>
-                  </TableCell>
-                  <TableCell className={cn('text-xs text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
-                    {formatNumber(emp.totalSalary)}
-                  </TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={emp.deduction}
-                        onChange={(e) => handleCellChange(index, 'deduction', parseFloat(e.target.value) || 0)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                      />
-                    ) : (
-                      <span className={cn('text-xs text-right block', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                        {emp.deduction || '-'}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {editMode ? (
-                      <Input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={emp.advance}
-                        onChange={(e) => handleCellChange(index, 'advance', parseFloat(e.target.value) || 0)}
-                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[70px]"
-                      />
-                    ) : (
-                      <span className={cn('text-xs text-right block', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                        {emp.advance || '-'}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell
+                  {formatNumber(emp.balanceSalary)}
+                </TableCell>
+                <TableCell className="text-center">
+                  <button
+                    onClick={() => handlePaidToggle(index, emp.isPaid)}
                     className={cn(
-                      'text-xs text-right font-semibold',
-                      emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400'
+                      'inline-flex items-center justify-center rounded px-2 py-0.5 text-[10px] font-bold transition-colors',
+                      emp.isPaid
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
+                      !emp.isPaid && 'cursor-pointer',
+                      emp.isPaid && !editMode && 'cursor-default',
+                      emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30'
                     )}
                   >
-                    {formatNumber(emp.balanceSalary)}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <button
-                      onClick={() => handlePaidToggle(index, emp.isPaid)}
-                      className={cn(
-                        'inline-flex items-center justify-center rounded px-2 py-0.5 text-[10px] font-bold transition-colors',
-                        emp.isPaid
-                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
-                        !emp.isPaid && 'cursor-pointer',
-                        emp.isPaid && !editMode && 'cursor-default',
-                        emp.isPaid && editMode && 'cursor-pointer hover:bg-emerald-500/30'
-                      )}
+                    {emp.isPaid ? 'PAID' : 'UNPAID'}
+                  </button>
+                </TableCell>
+                {editMode && (
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                      onClick={() => handleDeleteRow(index)}
                     >
-                      {emp.isPaid ? 'PAID' : 'UNPAID'}
-                    </button>
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
                   </TableCell>
-                  {editMode && (
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
-                        onClick={() => handleDeleteRow(index)}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </TableCell>
-                  )}
-                </TableRow>
-              );
-            })}
+                )}
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
       </div>
@@ -1565,9 +1653,9 @@ function SiteSalarySheet({
             variant="outline"
             size="sm"
             onClick={() => {
-              if (employees.length > 0) handleDeleteRow(employees.length - 1);
+              if (mergedEmployees.length > 0) handleDeleteRow(mergedEmployees.length - 1);
             }}
-            disabled={employees.length === 0}
+            disabled={mergedEmployees.length === 0}
             className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-red-600 hover:text-white hover:border-red-600 gap-1.5"
           >
             <Trash2 className="h-3.5 w-3.5" />

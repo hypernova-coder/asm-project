@@ -1,0 +1,370 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db';
+import { allocateEmployeeHours } from '@/lib/allocation-engine';
+
+// ---------------------------------------------------------------------------
+// POST /api/accounts/salary/bulk-save
+// ---------------------------------------------------------------------------
+// Accepts an array of salary records to save atomically. For each record:
+//   - If salaryRecordId is provided → update by id
+//   - If not → check unique key (empId+siteId+month+year+rateTier):
+//       - exists & soft-deleted → restore and update
+//       - exists & not deleted → update
+//       - not exists → create new
+//
+// After saving ALL records:
+//   1. Soft-delete salary records for the same employee+site+month+year
+//      that are NOT in the submitted list (handles removed split rows)
+//   2. If runAllocation is true (default), call the allocation engine to
+//      recalculate splits and update TotalEmployeeWorkingHours
+//   3. If runAllocation is false, manually update TotalEmployeeWorkingHours
+//      for all affected employees
+// ---------------------------------------------------------------------------
+
+interface BulkSaveRecord {
+  salaryRecordId?: string; // if exists, update; otherwise create
+  empId: string;
+  empName: string;
+  siteId: string;
+  siteName: string;
+  month: string;
+  year: number;
+  nationality?: string;
+  trade?: string;
+  employeeCode?: string;
+  slNo?: number;
+  totalHours: number;
+  rtPerHour: number;
+  totalSalary: number;
+  deduction: number;
+  advance: number;
+  balanceSalary: number;
+  isPaid: boolean;
+  rateTier: string;
+}
+
+interface BulkSaveRequest {
+  records: BulkSaveRecord[];
+  runAllocation?: boolean; // default true
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body: BulkSaveRequest = await request.json();
+    const { records, runAllocation = true } = body;
+
+    // ------------------------------------------------------------------
+    // 1. Validate inputs
+    // ------------------------------------------------------------------
+    if (!Array.isArray(records) || records.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'records must be a non-empty array' },
+        { status: 400 },
+      );
+    }
+
+    const monthRegex = /^\d{4}-\d{2}$/;
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      if (!r.empId || !r.empName || !r.siteId || !r.siteName || !r.month || !r.year) {
+        return NextResponse.json(
+          { success: false, error: `Record at index ${i}: empId, empName, siteId, siteName, month, and year are required` },
+          { status: 400 },
+        );
+      }
+      if (!monthRegex.test(r.month)) {
+        return NextResponse.json(
+          { success: false, error: `Record at index ${i}: month must be in YYYY-MM format` },
+          { status: 400 },
+        );
+      }
+      if (r.rateTier && r.rateTier !== 'standard' && r.rateTier !== 'premium') {
+        return NextResponse.json(
+          { success: false, error: `Record at index ${i}: rateTier must be "standard" or "premium"` },
+          { status: 400 },
+        );
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 2. Save each record
+    // ------------------------------------------------------------------
+    const savedRecords: Array<{
+      id: string;
+      empId: string;
+      siteId: string;
+      month: string;
+      year: number;
+      rateTier: string;
+      action: 'created' | 'updated' | 'restored';
+    }> = [];
+
+    for (const record of records) {
+      const effectiveRateTier = record.rateTier || 'standard';
+      const yearNum = typeof record.year === 'number' ? record.year : parseInt(String(record.year), 10);
+
+      if (record.salaryRecordId) {
+        // ── Update by id ──
+        const existing = await db.salaryRecord.findUnique({
+          where: { id: record.salaryRecordId },
+        });
+
+        if (!existing) {
+          return NextResponse.json(
+            { success: false, error: `Salary record with id "${record.salaryRecordId}" not found` },
+            { status: 404 },
+          );
+        }
+
+        const updated = await db.salaryRecord.update({
+          where: { id: record.salaryRecordId },
+          data: {
+            empName: record.empName,
+            siteName: record.siteName,
+            nationality: record.nationality ?? existing.nationality,
+            trade: record.trade ?? existing.trade,
+            employeeCode: record.employeeCode ?? existing.employeeCode,
+            slNo: typeof record.slNo === 'number' ? record.slNo : existing.slNo,
+            totalHours: typeof record.totalHours === 'number' ? record.totalHours : existing.totalHours,
+            rtPerHour: typeof record.rtPerHour === 'number' ? record.rtPerHour : existing.rtPerHour,
+            totalSalary: typeof record.totalSalary === 'number' ? record.totalSalary : existing.totalSalary,
+            deduction: typeof record.deduction === 'number' ? record.deduction : existing.deduction,
+            advance: typeof record.advance === 'number' ? record.advance : existing.advance,
+            balanceSalary: typeof record.balanceSalary === 'number' ? record.balanceSalary : existing.balanceSalary,
+            isPaid: typeof record.isPaid === 'boolean' ? record.isPaid : existing.isPaid,
+            rateTier: effectiveRateTier,
+            isDeleted: false, // restore if soft-deleted
+          },
+        });
+
+        savedRecords.push({
+          id: updated.id,
+          empId: updated.empId,
+          siteId: updated.siteId,
+          month: updated.month,
+          year: updated.year,
+          rateTier: updated.rateTier,
+          action: existing.isDeleted ? 'restored' : 'updated',
+        });
+      } else {
+        // ── No id provided: check unique key ──
+        const existingByKey = await db.salaryRecord.findUnique({
+          where: {
+            empId_siteId_month_year_rateTier: {
+              empId: record.empId,
+              siteId: record.siteId,
+              month: record.month,
+              year: yearNum,
+              rateTier: effectiveRateTier,
+            },
+          },
+        });
+
+        if (existingByKey) {
+          // Update (whether soft-deleted or not)
+          const updated = await db.salaryRecord.update({
+            where: { id: existingByKey.id },
+            data: {
+              empName: record.empName,
+              siteName: record.siteName,
+              nationality: record.nationality ?? existingByKey.nationality,
+              trade: record.trade ?? existingByKey.trade,
+              employeeCode: record.employeeCode ?? existingByKey.employeeCode,
+              slNo: typeof record.slNo === 'number' ? record.slNo : existingByKey.slNo,
+              totalHours: typeof record.totalHours === 'number' ? record.totalHours : existingByKey.totalHours,
+              rtPerHour: typeof record.rtPerHour === 'number' ? record.rtPerHour : existingByKey.rtPerHour,
+              totalSalary: typeof record.totalSalary === 'number' ? record.totalSalary : existingByKey.totalSalary,
+              deduction: typeof record.deduction === 'number' ? record.deduction : existingByKey.deduction,
+              advance: typeof record.advance === 'number' ? record.advance : existingByKey.advance,
+              balanceSalary: typeof record.balanceSalary === 'number' ? record.balanceSalary : existingByKey.balanceSalary,
+              isPaid: typeof record.isPaid === 'boolean' ? record.isPaid : existingByKey.isPaid,
+              rateTier: effectiveRateTier,
+              isDeleted: false, // restore if soft-deleted
+            },
+          });
+
+          savedRecords.push({
+            id: updated.id,
+            empId: updated.empId,
+            siteId: updated.siteId,
+            month: updated.month,
+            year: updated.year,
+            rateTier: updated.rateTier,
+            action: existingByKey.isDeleted ? 'restored' : 'updated',
+          });
+        } else {
+          // Create new
+          const created = await db.salaryRecord.create({
+            data: {
+              empId: record.empId,
+              empName: record.empName,
+              siteId: record.siteId,
+              siteName: record.siteName,
+              month: record.month,
+              year: yearNum,
+              nationality: record.nationality || '',
+              trade: record.trade || '',
+              employeeCode: record.employeeCode || '',
+              slNo: typeof record.slNo === 'number' ? record.slNo : 0,
+              totalHours: typeof record.totalHours === 'number' ? record.totalHours : 0,
+              rtPerHour: typeof record.rtPerHour === 'number' ? record.rtPerHour : 2.5,
+              totalSalary: typeof record.totalSalary === 'number' ? record.totalSalary : 0,
+              deduction: typeof record.deduction === 'number' ? record.deduction : 0,
+              advance: typeof record.advance === 'number' ? record.advance : 0,
+              balanceSalary: typeof record.balanceSalary === 'number' ? record.balanceSalary : 0,
+              isPaid: typeof record.isPaid === 'boolean' ? record.isPaid : false,
+              rateTier: effectiveRateTier,
+            },
+          });
+
+          savedRecords.push({
+            id: created.id,
+            empId: created.empId,
+            siteId: created.siteId,
+            month: created.month,
+            year: created.year,
+            rateTier: created.rateTier,
+            action: 'created',
+          });
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Soft-delete records NOT in the submitted list
+    // ------------------------------------------------------------------
+    // Group submitted records by (empId, siteId, month, year, rateTier) to
+    // identify which rate tiers should be kept.
+    const submittedKeys = new Set(
+      savedRecords.map((r) => `${r.empId}|${r.siteId}|${r.month}|${r.year}|${r.rateTier}`),
+    );
+
+    // Unique (empId, siteId, month, year) combos from submitted records
+    const empSiteMonthYearCombos = new Set(
+      savedRecords.map((r) => `${r.empId}|${r.siteId}|${r.month}|${r.year}`),
+    );
+
+    let softDeletedCount = 0;
+    for (const combo of empSiteMonthYearCombos) {
+      const [empId, siteId, month, yearStr] = combo.split('|');
+      const yearNum = parseInt(yearStr, 10);
+
+      // Find all non-deleted salary records for this employee+site+month+year
+      const existingRecords = await db.salaryRecord.findMany({
+        where: {
+          empId,
+          siteId,
+          month,
+          year: yearNum,
+          isDeleted: false,
+        },
+      });
+
+      for (const existing of existingRecords) {
+        const key = `${empId}|${siteId}|${month}|${yearNum}|${existing.rateTier}`;
+        if (!submittedKeys.has(key)) {
+          // This record is NOT in the submitted list — soft-delete it
+          await db.salaryRecord.update({
+            where: { id: existing.id },
+            data: { isDeleted: true },
+          });
+          softDeletedCount++;
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 4. Run allocation engine or update working hours manually
+    // ------------------------------------------------------------------
+    let allocationResult = null;
+
+    if (runAllocation) {
+      // Get unique (month, year) combinations from saved records
+      const monthYearCombos = new Map<string, number>();
+      for (const r of savedRecords) {
+        if (!monthYearCombos.has(r.month)) {
+          monthYearCombos.set(r.month, r.year);
+        }
+      }
+
+      // Run allocation for each unique month+year
+      const allocationResults = [];
+      for (const [month, year] of monthYearCombos) {
+        const result = await allocateEmployeeHours(month, year);
+        allocationResults.push(result);
+      }
+
+      allocationResult = allocationResults.length === 1 ? allocationResults[0] : allocationResults;
+    } else {
+      // Manually update TotalEmployeeWorkingHours for all affected employees
+      const affectedEmpMonthCombos = new Set(
+        savedRecords.map((r) => `${r.empId}|${r.month}`),
+      );
+
+      for (const combo of affectedEmpMonthCombos) {
+        const [empId, month] = combo.split('|');
+
+        // Sum all non-deleted salary records for this employee+month
+        const allSalaryRecords = await db.salaryRecord.findMany({
+          where: { empId, month, isDeleted: false },
+        });
+        const totalHoursFromSalary = allSalaryRecords.reduce(
+          (sum, sr) => sum + sr.totalHours,
+          0,
+        );
+
+        // Get employee name from the first record
+        const empName = allSalaryRecords[0]?.empName || '';
+
+        await db.totalEmployeeWorkingHours.upsert({
+          where: { empId_month: { empId, month } },
+          update: {
+            totalWorkingHours: totalHoursFromSalary,
+            empName,
+            isDeleted: false,
+          },
+          create: {
+            empId,
+            empName,
+            month,
+            totalWorkingHours: totalHoursFromSalary,
+            rtPerHour: 2.5,
+            isCustom: false,
+          },
+        });
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 5. Return results
+    // ------------------------------------------------------------------
+    // Fetch the final state of all saved records (after allocation may have
+    // modified them) to return to the caller.
+    const finalRecordIds = savedRecords.map((r) => r.id);
+    const finalRecords = await db.salaryRecord.findMany({
+      where: { id: { in: finalRecordIds } },
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        savedCount: savedRecords.length,
+        softDeletedCount,
+        records: finalRecords.map((r) => ({
+          ...r,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+        allocation: allocationResult,
+      },
+    });
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : 'Internal server error';
+    console.error('[salary bulk-save POST] Error:', message);
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 500 },
+    );
+  }
+}
