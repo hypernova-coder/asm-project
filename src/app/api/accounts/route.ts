@@ -401,9 +401,15 @@ export async function GET(request: NextRequest) {
           let salaryRecordData: Record<string, unknown> | null = null;
 
           if (matchingRecord) {
-            // Existing DB record for this tier — return as-is
+            // Existing DB record for this tier — override hours/rate/salary with split decision values
+            const computedTotalSalary = decision.hours * decision.rate;
             salaryRecordData = {
               ...matchingRecord,
+              totalHours: decision.hours,
+              rtPerHour: decision.rate,
+              totalSalary: computedTotalSalary,
+              balanceSalary: computedTotalSalary - matchingRecord.deduction - matchingRecord.advance,
+              rateTier: decision.rateTier,
               createdAt: matchingRecord.createdAt.toISOString(),
               updatedAt: matchingRecord.updatedAt.toISOString(),
             };

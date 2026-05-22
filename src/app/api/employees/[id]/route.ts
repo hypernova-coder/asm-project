@@ -98,12 +98,25 @@ export async function PUT(
     const updatableFields = [
       'fullName', 'nationality', 'phone', 'email', 'address',
       'emergencyContact', 'position', 'trade', 'companyName', 'passportStatus',
-      'idStatus', 'currentSite', 'photo', 'status',
+      'idStatus', 'currentSite', 'photo', 'status', 'employeeId',
     ];
 
     for (const field of updatableFields) {
       if (body[field] !== undefined) {
         data[field] = body[field];
+      }
+    }
+
+    // Check employeeId uniqueness if it's being changed
+    if (body.employeeId !== undefined && body.employeeId !== existing.employeeId) {
+      const duplicate = await db.employee.findUnique({
+        where: { employeeId: body.employeeId },
+      });
+      if (duplicate) {
+        return NextResponse.json(
+          { success: false, error: 'Employee ID already exists' },
+          { status: 409 }
+        );
       }
     }
 

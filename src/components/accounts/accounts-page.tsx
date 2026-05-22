@@ -374,6 +374,91 @@ function EmployeeDetailPage({
     })
     .reduce((s, m) => s + m.totalHours, 0);
 
+  // Build split rows: when cumulative hours cross 1000, split that month into 2 rows
+  const splitRows: Array<{
+    monthStr: string;
+    monthName: string;
+    hours: number;
+    rate: number;
+    rateTier: 'standard' | 'premium';
+    cumulativeHours: number;
+  }> = [];
+
+  let cumulative = 0;
+  for (let i = 0; i < 12; i++) {
+    const available = isMonthAvailable(selectedYear, i);
+    if (!available) continue;
+    const monthStr = getMonthString(selectedYear, i);
+    const monthData = monthlyData.find((md) => md.month === monthStr);
+    const hours = monthData?.totalHours || 0;
+    const rate = monthData?.rtPerHour || 2.5;
+
+    if (hours === 0) {
+      splitRows.push({
+        monthStr,
+        monthName: MONTH_FULL[i],
+        hours: 0,
+        rate,
+        rateTier: 'standard',
+        cumulativeHours: cumulative,
+      });
+      continue;
+    }
+
+    const prevCumulative = cumulative;
+    cumulative += hours;
+
+    if (prevCumulative < 1000 && cumulative > 1000) {
+      // This month crosses 1000 — split into 2 rows
+      const basicHours = 1000 - prevCumulative;
+      const premiumHours = hours - basicHours;
+      const hasBonus = employeeInfo?.isTeamLeader || employeeInfo?.isSupervisor || false;
+      const basicRate = hasBonus ? 3.0 : 2.5;
+      const premiumRate = hasBonus ? 5.5 : 5.0;
+
+      splitRows.push({
+        monthStr,
+        monthName: MONTH_FULL[i],
+        hours: basicHours,
+        rate: basicRate,
+        rateTier: 'standard',
+        cumulativeHours: prevCumulative + basicHours,
+      });
+      splitRows.push({
+        monthStr,
+        monthName: MONTH_FULL[i],
+        hours: premiumHours,
+        rate: premiumRate,
+        rateTier: 'premium',
+        cumulativeHours: cumulative,
+      });
+    } else if (cumulative <= 1000) {
+      // All at basic rate
+      const hasBonus = employeeInfo?.isTeamLeader || employeeInfo?.isSupervisor || false;
+      const basicRate = hasBonus ? 3.0 : 2.5;
+      splitRows.push({
+        monthStr,
+        monthName: MONTH_FULL[i],
+        hours,
+        rate: basicRate,
+        rateTier: 'standard',
+        cumulativeHours: cumulative,
+      });
+    } else {
+      // All at premium rate (already past 1000)
+      const hasBonus = employeeInfo?.isTeamLeader || employeeInfo?.isSupervisor || false;
+      const premiumRate = hasBonus ? 5.5 : 5.0;
+      splitRows.push({
+        monthStr,
+        monthName: MONTH_FULL[i],
+        hours,
+        rate: premiumRate,
+        rateTier: 'premium',
+        cumulativeHours: cumulative,
+      });
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* Header */}
@@ -474,32 +559,28 @@ function EmployeeDetailPage({
                   <th className="text-left text-slate-400 font-semibold text-sm py-3 px-4 w-[180px]">Month</th>
                   <th className="text-right text-slate-400 font-semibold text-sm py-3 px-4 w-[160px]">Total Hours</th>
                   <th className="text-right text-slate-400 font-semibold text-sm py-3 px-4 w-[140px]">RT/HR</th>
+                  <th className="text-right text-slate-400 font-semibold text-sm py-3 px-4 w-[160px]">Cumulative</th>
                 </tr>
               </thead>
               <tbody>
-                {MONTH_FULL.map((monthName, i) => {
-                  const available = isMonthAvailable(selectedYear, i);
-                  const monthStr = getMonthString(selectedYear, i);
-                  const monthData = monthlyData.find((md) => md.month === monthStr);
-                  if (!available) return null;
-                  const hours = monthData?.totalHours || 0;
-                  const rate = monthData?.rtPerHour || 2.5;
+                {splitRows.map((row, idx) => {
+                  const isPremium = row.rateTier === 'premium';
+                  const isSplitMonth = splitRows.some((r, i) => i !== idx && r.monthStr === row.monthStr);
                   return (
-                    <tr key={monthStr} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                      <td className="text-white text-sm font-medium py-2.5 px-4">{monthName}</td>
-                      <td className="py-2.5 px-4 text-right">
-                        {editMode ? (
-                          <Input
-                            type="number"
-                            min={0}
-                            step={1}
-                            value={hours}
-                            onChange={(e) => handleMonthlyHoursChange(monthStr, parseFloat(e.target.value) || 0)}
-                            className="w-full h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
-                          />
-                        ) : (
-                          <span className={cn('text-sm', hours > 0 ? 'text-white' : 'text-slate-500')}>
-                            {formatNumber(hours)}
+                    <tr key={`${row.monthStr}-${row.rateTier}-${idx}`} className={cn(
+                      'border-b border-slate-700/50 hover:bg-slate-700/30',
+                      isPremium && 'bg-amber-500/5'
+                    )}>
+                      <td className="text-white text-sm font-medium py-2.5 px-4">
+                        {row.monthName}
+                        {isSplitMonth && (
+                          <span className={cn(
+                            'ml-2 inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold whitespace-nowrap',
+                            isPremium
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                              : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          )}>
+                            {isPremium ? 'Premium' : 'Basic'}
                           </span>
                         )}
                       </td>
@@ -508,24 +589,39 @@ function EmployeeDetailPage({
                           <Input
                             type="number"
                             min={0}
-                            step={0.5}
-                            value={rate}
-                            onChange={(e) => handleMonthlyRateChange(monthStr, parseFloat(e.target.value) || 0)}
+                            step={1}
+                            value={row.hours}
+                            onChange={(e) => handleMonthlyHoursChange(row.monthStr, parseFloat(e.target.value) || 0)}
                             className="w-full h-8 text-sm bg-slate-900 border-slate-600 text-white text-right"
+                            disabled={isSplitMonth && isPremium}
                           />
                         ) : (
-                          <span className="text-sm text-white">{formatNumber(rate)}</span>
+                          <span className={cn('text-sm', row.hours > 0 ? 'text-white' : 'text-slate-500')}>
+                            {formatNumber(row.hours)}
+                          </span>
                         )}
+                      </td>
+                      <td className="py-2.5 px-4 text-right">
+                        <span className="text-sm text-white">{formatNumber(row.rate)}</span>
+                      </td>
+                      <td className="py-2.5 px-4 text-right">
+                        <span className={cn(
+                          'text-sm font-medium',
+                          row.cumulativeHours >= 1000 ? 'text-amber-400' : 'text-slate-400'
+                        )}>
+                          {formatNumber(row.cumulativeHours)}
+                        </span>
                       </td>
                     </tr>
                   );
-                }).filter(Boolean)}
+                })}
               </tbody>
               {/* Total Row - visually separated */}
               <tfoot>
                 <tr className="border-t-2 border-slate-500 bg-slate-900/60">
                   <td className="text-sm text-slate-300 font-bold py-3 px-4">TOTAL</td>
                   <td className="text-sm text-white font-bold py-3 px-4 text-right">{formatNumber(totalYearHours)}</td>
+                  <td className="py-3 px-4"></td>
                   <td className="py-3 px-4"></td>
                 </tr>
               </tfoot>
@@ -1186,6 +1282,12 @@ function SiteSalarySheet({
     return employees.some((e, i) => i < idx && e.empId === emp.empId && e.rateTier === 'standard');
   };
 
+  // Find the standard (first) entry's data for a split employee to copy into premium row
+  const getStandardEntryForSplit = (emp: EmployeeSalaryData): EmployeeSalaryData | undefined => {
+    if (emp.rateTier !== 'premium') return undefined;
+    return employees.find((e) => e.empId === emp.empId && e.rateTier === 'standard');
+  };
+
   return (
     <div className="space-y-4">
       {/* Title rows */}
@@ -1219,7 +1321,12 @@ function SiteSalarySheet({
           <TableBody>
             {employees.map((emp, index) => {
               const isPremiumSplit = isSplitDuplicate(emp, index);
-              const dimClass = isPremiumSplit ? 'opacity-40 pointer-events-none' : '';
+              const standardEntry = isPremiumSplit ? getStandardEntryForSplit(emp) : null;
+              // For premium split rows, show same identity data as standard row
+              const displayName = isPremiumSplit && standardEntry ? standardEntry.empName : emp.empName;
+              const displayNationality = isPremiumSplit && standardEntry ? standardEntry.nationality : emp.nationality;
+              const displayTrade = isPremiumSplit && standardEntry ? standardEntry : emp;
+              const displayEmpCode = isPremiumSplit && standardEntry ? standardEntry.employeeCode : emp.employeeCode;
               return (
                 <TableRow
                   key={`${emp.empId}-${emp.rateTier}-${index}`}
@@ -1231,7 +1338,7 @@ function SiteSalarySheet({
                   )}
                 >
                   <TableCell className="text-slate-400 text-xs text-center font-mono">{emp.slNo}</TableCell>
-                  <TableCell className={dimClass}>
+                  <TableCell>
                     {editMode && !isPremiumSplit ? (
                       <Input
                         value={emp.nationality}
@@ -1243,10 +1350,10 @@ function SiteSalarySheet({
                         className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[70px]"
                       />
                     ) : (
-                      <span className="text-xs text-slate-300 px-1">{isPremiumSplit ? '—' : (emp.nationality || '-')}</span>
+                      <span className="text-xs text-slate-300 px-1">{displayNationality || '-'}</span>
                     )}
                   </TableCell>
-                  <TableCell className={dimClass}>
+                  <TableCell>
                     {editMode && !isPremiumSplit ? (
                       <Input
                         value={emp.empName}
@@ -1258,13 +1365,13 @@ function SiteSalarySheet({
                         className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[110px]"
                       />
                     ) : (
-                      <span className="text-xs text-white font-medium px-1">{isPremiumSplit ? '—' : (emp.empName || '-')}</span>
+                      <span className="text-xs text-white font-medium px-1">{displayName || '-'}</span>
                     )}
                   </TableCell>
-                  <TableCell className={cn('text-xs text-slate-300', dimClass)}>
-                    {isPremiumSplit ? '—' : tradeDisplay(emp)}
+                  <TableCell className="text-xs text-slate-300">
+                    {tradeDisplay(displayTrade)}
                   </TableCell>
-                  <TableCell className={dimClass}>
+                  <TableCell>
                     {editMode && !isPremiumSplit ? (
                       <Input
                         value={emp.employeeCode}
@@ -1276,7 +1383,7 @@ function SiteSalarySheet({
                         className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono min-w-[75px]"
                       />
                     ) : (
-                      <span className="text-xs text-slate-300 font-mono px-1">{isPremiumSplit ? '—' : (emp.employeeCode || '-')}</span>
+                      <span className="text-xs text-slate-300 font-mono px-1">{displayEmpCode || '-'}</span>
                     )}
                   </TableCell>
                   <TableCell>
@@ -1336,7 +1443,7 @@ function SiteSalarySheet({
                       />
                     ) : (
                       <span className={cn('text-xs text-right block', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                        {isPremiumSplit ? '—' : (emp.deduction || '-')}
+                        {isPremiumSplit && emp.deduction === 0 ? '—' : (emp.deduction || '-')}
                       </span>
                     )}
                   </TableCell>
@@ -1352,7 +1459,7 @@ function SiteSalarySheet({
                       />
                     ) : (
                       <span className={cn('text-xs text-right block', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                        {isPremiumSplit ? '—' : (emp.advance || '-')}
+                        {isPremiumSplit && emp.advance === 0 ? '—' : (emp.advance || '-')}
                       </span>
                     )}
                   </TableCell>
@@ -1768,8 +1875,10 @@ export function AccountsPage() {
   }, [monthStr, selectedYear]);
 
   useEffect(() => {
-    fetchAccounts();
-  }, [fetchAccounts]);
+    if (subView === 'accounts') {
+      fetchAccounts();
+    }
+  }, [fetchAccounts, subView]);
 
   const toggleSiteExpand = (siteId: string) => {
     setExpandedSiteIds((prev) => {
