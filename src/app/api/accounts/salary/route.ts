@@ -294,6 +294,74 @@ export async function PUT(request: NextRequest) {
       data: updateData,
     });
 
+    // ── Cascade employee info changes back to Employee table and related tables ──
+    const empId = existing.empId;
+
+    // Cascade empName change
+    if (typeof empName === 'string' && empName && empName !== existing.empName) {
+      // Update Employee table
+      await db.employee.update({ where: { id: empId }, data: { fullName: empName } });
+      // Update all other SalaryRecords for this employee
+      await db.salaryRecord.updateMany({
+        where: { empId, id: { not: id }, isDeleted: false },
+        data: { empName },
+      });
+      // Update TotalEmployeeWorkingHours
+      await db.totalEmployeeWorkingHours.updateMany({
+        where: { empId },
+        data: { empName },
+      });
+      // Update EmpCountSitePerMonth
+      await db.empCountSitePerMonth.updateMany({
+        where: { empId },
+        data: { empName },
+      });
+      // Update UniformRegistry
+      await db.uniformRegistry.updateMany({
+        where: { employeeId: empId },
+        data: { employeeName: empName },
+      });
+    }
+
+    // Cascade employeeCode change
+    if (typeof employeeCode === 'string' && employeeCode !== existing.employeeCode) {
+      // Check uniqueness before updating Employee.employeeId
+      const currentEmp = await db.employee.findUnique({ where: { id: empId } });
+      if (currentEmp && currentEmp.employeeId !== employeeCode) {
+        const duplicate = await db.employee.findUnique({ where: { employeeId: employeeCode } });
+        if (duplicate && duplicate.id !== empId) {
+          // Don't fail, just skip Employee update but still update other SalaryRecords
+        } else {
+          await db.employee.update({ where: { id: empId }, data: { employeeId: employeeCode } });
+        }
+      }
+      // Update all other SalaryRecords for this employee
+      await db.salaryRecord.updateMany({
+        where: { empId, id: { not: id }, isDeleted: false },
+        data: { employeeCode },
+      });
+    }
+
+    // Cascade trade change
+    if (typeof trade === 'string' && trade !== existing.trade) {
+      await db.employee.update({ where: { id: empId }, data: { trade, position: trade } });
+      // Update all other SalaryRecords for this employee
+      await db.salaryRecord.updateMany({
+        where: { empId, id: { not: id }, isDeleted: false },
+        data: { trade },
+      });
+    }
+
+    // Cascade nationality change
+    if (typeof nationality === 'string' && nationality !== existing.nationality) {
+      await db.employee.update({ where: { id: empId }, data: { nationality: nationality || null } });
+      // Update all other SalaryRecords for this employee
+      await db.salaryRecord.updateMany({
+        where: { empId, id: { not: id }, isDeleted: false },
+        data: { nationality },
+      });
+    }
+
     // Bidirectional sync: update TotalEmployeeWorkingHours for the month
     // Sum ALL salary records for this employee+month (both standard and premium)
     if (updateWorkingHours || typeof totalWorkingHours === 'number') {
@@ -302,15 +370,18 @@ export async function PUT(request: NextRequest) {
       });
       const totalHoursFromSalary = allSalaryRecords.reduce((sum, sr) => sum + sr.totalHours, 0);
 
+      const latestEmpName = typeof empName === 'string' && empName ? empName : existing.empName;
+
       await db.totalEmployeeWorkingHours.upsert({
         where: { empId_month: { empId: existing.empId, month: existing.month } },
         update: {
           totalWorkingHours: totalHoursFromSalary,
           isDeleted: false,
+          empName: latestEmpName,
         },
         create: {
           empId: existing.empId,
-          empName: existing.empName,
+          empName: latestEmpName,
           month: existing.month,
           totalWorkingHours: totalHoursFromSalary,
           rtPerHour: 2.5,

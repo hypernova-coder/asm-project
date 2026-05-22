@@ -1137,7 +1137,8 @@ function SiteSalarySheet({
       if (!currentEmp) return prev;
 
       // Fields that should sync to the sibling split row (same empId, different rateTier)
-      const syncFields = new Set(['empName', 'nationality', 'trade', 'employeeCode', 'deduction', 'advance', 'isPaid']);
+      // All fields except rate and hour fields should sync between split rows
+      const skipSyncFields = new Set(['totalHours', 'rtPerHour', 'totalSalary', 'balanceSalary', 'rateTier', 'salaryRecordId']);
 
       return prev.map((emp, i) => {
         if (i === index) {
@@ -1151,7 +1152,7 @@ function SiteSalarySheet({
         }
 
         // Sync shared fields to the sibling split row
-        if (syncFields.has(field) && emp.empId === currentEmp.empId && emp.rateTier !== currentEmp.rateTier) {
+        if (!skipSyncFields.has(field) && emp.empId === currentEmp.empId && emp.rateTier !== currentEmp.rateTier) {
           const updated = { ...emp, [field]: value };
           // Recalculate balance if deduction/advance changed
           if (field === 'deduction' || field === 'advance') {
@@ -1347,8 +1348,16 @@ function SiteSalarySheet({
                       <span className="text-xs text-white font-medium px-1">{emp.empName || '-'}</span>
                     )}
                   </TableCell>
-                  <TableCell className="text-xs text-slate-300">
-                    {tradeDisplay(emp)}
+                  <TableCell>
+                    {editMode ? (
+                      <Input
+                        value={emp.trade}
+                        onChange={(e) => handleCellChange(index, 'trade', e.target.value)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white min-w-[80px]"
+                      />
+                    ) : (
+                      <span className="text-xs text-slate-300 px-1">{tradeDisplay(emp)}</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     {editMode ? (

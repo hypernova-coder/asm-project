@@ -161,7 +161,7 @@ export async function GET(request: NextRequest) {
 
           rawEntries.push({
             empId: record.empId,
-            empName: record.empName,
+            empName: emp.fullName || record.empName,  // Always use latest from Employee table
             employeeCode: emp.employeeId,
             nationality: emp.nationality || '',
             trade: emp.trade || '',
@@ -191,6 +191,7 @@ export async function GET(request: NextRequest) {
           const empInfo = await db.employee.findUnique({
             where: { id: manualRecord.empId },
             select: {
+              fullName: true,
               employeeId: true,
               nationality: true,
               trade: true,
@@ -203,10 +204,10 @@ export async function GET(request: NextRequest) {
 
           rawEntries.push({
             empId: manualRecord.empId,
-            empName: manualRecord.empName,
-            employeeCode: manualRecord.employeeCode || empInfo?.employeeId || '',
-            nationality: manualRecord.nationality || empInfo?.nationality || '',
-            trade: manualRecord.trade || empInfo?.trade || '',
+            empName: empInfo?.fullName || manualRecord.empName,  // Always use latest from Employee table
+            employeeCode: empInfo?.employeeId || manualRecord.employeeCode || '',
+            nationality: empInfo?.nationality || manualRecord.nationality || '',
+            trade: empInfo?.trade || manualRecord.trade || '',
             isTeamLeader: empInfo?.isTeamLeader ?? false,
             isSupervisor: empInfo?.isSupervisor ?? false,
             teamLeaderSiteId: empInfo?.teamLeaderSiteId ?? null,
