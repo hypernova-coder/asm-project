@@ -48,13 +48,14 @@ export async function GET(request: NextRequest) {
       where: {
         empId,
         month: { startsWith: yearPrefix },
+        isDeleted: false,
       },
       orderBy: { month: 'asc' },
     });
 
     // Get aggregate total across all years for RT/HR calculation
     const allRecords = await db.totalEmployeeWorkingHours.findMany({
-      where: { empId },
+      where: { empId, isDeleted: false },
       select: { totalWorkingHours: true, rtPerHour: true, isCustom: true, month: true },
     });
     const aggregateTotalHours = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
@@ -166,6 +167,7 @@ export async function PUT(request: NextRequest) {
             totalWorkingHours: numTotalHours,
             rtPerHour: numRtPerHour,
             empName: employee.fullName,
+            isDeleted: false,
           },
           create: {
             empId,
@@ -266,7 +268,7 @@ export async function PUT(request: NextRequest) {
 
     // Calculate aggregate total working hours across all months
     const allRecords = await db.totalEmployeeWorkingHours.findMany({
-      where: { empId },
+      where: { empId, isDeleted: false },
       select: { totalWorkingHours: true },
     });
     const aggregateTotalHours = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);

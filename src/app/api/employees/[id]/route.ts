@@ -351,34 +351,46 @@ export async function DELETE(
       data: { isHidden: true },
     });
 
-    // 3. Hide all notifications for this employee
-    await db.notification.updateMany({
-      where: { userId: id, isHidden: false },
-      data: { isHidden: true },
-    });
-
-    // 4. Hide all warnings
+    // 3. Hide all warnings
     await db.warning.updateMany({
       where: { employeeId: id, isHidden: false },
       data: { isHidden: true },
     });
 
-    // 5. Hide all fines
+    // 4. Hide all fines
     await db.fine.updateMany({
       where: { employeeId: id, isHidden: false },
       data: { isHidden: true },
     });
 
-    // 6. Hide all leave requests
+    // 5. Hide all leave requests
     await db.leaveRequest.updateMany({
       where: { employeeId: id, isHidden: false },
       data: { isHidden: true },
     });
 
-    // 7. Hide all cancellation requests
+    // 6. Hide all cancellation requests
     await db.cancellationRequest.updateMany({
       where: { employeeId: id, isHidden: false },
       data: { isHidden: true },
+    });
+
+    // 7. Soft-delete all TotalEmployeeWorkingHours records
+    await db.totalEmployeeWorkingHours.updateMany({
+      where: { empId: id, isDeleted: false },
+      data: { isDeleted: true },
+    });
+
+    // 8. Soft-delete all SalaryRecord entries
+    await db.salaryRecord.updateMany({
+      where: { empId: id, isDeleted: false },
+      data: { isDeleted: true },
+    });
+
+    // 9. Soft-delete all EmpCountSitePerMonth records
+    await db.empCountSitePerMonth.updateMany({
+      where: { empId: id, deletedDate: null },
+      data: { deletedDate: new Date() },
     });
 
     return NextResponse.json({

@@ -281,6 +281,7 @@ model TotalEmployeeWorkingHours {
   totalWorkingHours Float  @default(0) // hours for this specific month
   rtPerHour        Float    @default(2.5) // rate per hour for this month (auto-calculated or custom)
   isCustom         Boolean  @default(false) // if true, rtPerHour is manually set
+  isDeleted        Boolean  @default(false) // soft delete
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -289,6 +290,7 @@ model TotalEmployeeWorkingHours {
   @@unique([empId, month])
   @@index([empId])
   @@index([month])
+  @@index([isDeleted])
 }
 
 model SalaryRecord {

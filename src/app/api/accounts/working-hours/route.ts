@@ -29,6 +29,7 @@ export async function GET(request: NextRequest) {
     // If available=true, return employees NOT in TotalEmployeeWorkingHours
     if (available === 'true') {
       const existingRecords = await db.totalEmployeeWorkingHours.findMany({
+        where: { isDeleted: false },
         distinct: ['empId'],
         select: { empId: true },
       });
@@ -61,7 +62,7 @@ export async function GET(request: NextRequest) {
     // If a specific empId is requested, return that single record (aggregated)
     if (empId) {
       const monthlyRecords = await db.totalEmployeeWorkingHours.findMany({
-        where: { empId },
+        where: { empId, isDeleted: false },
         include: {
           employee: {
             select: {
@@ -142,6 +143,9 @@ export async function GET(request: NextRequest) {
         },
       ];
     }
+
+    // Ensure soft-deleted records are excluded
+    whereClause.isDeleted = false;
 
     // Get all monthly records, then aggregate by empId
     const allRecords = await db.totalEmployeeWorkingHours.findMany({
@@ -257,7 +261,7 @@ export async function POST(request: NextRequest) {
 
         // Check if any records already exist for this employee
         const existing = await db.totalEmployeeWorkingHours.findFirst({
-          where: { empId: eid },
+          where: { empId: eid, isDeleted: false },
         });
         if (existing) continue;
 
@@ -342,6 +346,7 @@ export async function POST(request: NextRequest) {
         totalWorkingHours: parsedTotalHours,
         rtPerHour: parsedIsCustom ? parsedRtPerHour : calculatedRtPerHour,
         isCustom: parsedIsCustom,
+        isDeleted: false,
       },
       create: {
         empId,
@@ -394,7 +399,7 @@ export async function PUT(request: NextRequest) {
     // We need to find or create a record for the current month
     if (empId && !month) {
       const existingRecords = await db.totalEmployeeWorkingHours.findMany({
-        where: { empId },
+        where: { empId, isDeleted: false },
         include: {
           employee: {
             select: {
@@ -463,7 +468,7 @@ export async function PUT(request: NextRequest) {
 
       // Calculate aggregate total
       const allRecords = await db.totalEmployeeWorkingHours.findMany({
-        where: { empId },
+        where: { empId, isDeleted: false },
         select: { totalWorkingHours: true, rtPerHour: true, isCustom: true },
       });
       const aggregateTotal = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
@@ -515,6 +520,7 @@ export async function PUT(request: NextRequest) {
           rtPerHour: typeof rtPerHour === 'number' ? rtPerHour : undefined,
           isCustom: typeof isCustom === 'boolean' ? isCustom : undefined,
           empName: typeof empName === 'string' ? empName : undefined,
+          isDeleted: false,
         },
         create: {
           empId,
@@ -558,7 +564,7 @@ export async function PUT(request: NextRequest) {
       include: { employee: true },
     });
 
-    if (!existing) {
+    if (!existing || existing.isDeleted) {
       return NextResponse.json(
         { success: false, error: 'Working hours record not found' },
         { status: 404 }

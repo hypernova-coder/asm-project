@@ -233,7 +233,7 @@ export async function GET(request: NextRequest) {
     }
 
     const allWhRecords = await db.totalEmployeeWorkingHours.findMany({
-      where: { empId: { in: Array.from(allEmpIds) } },
+      where: { empId: { in: Array.from(allEmpIds) }, isDeleted: false },
     });
 
     // Group working-hours records by empId

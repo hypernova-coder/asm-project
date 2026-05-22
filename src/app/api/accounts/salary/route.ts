@@ -8,7 +8,7 @@ async function calculateRtPerHour(
 ): Promise<number> {
   // Get all monthly working hours records for aggregate total
   const workingHoursRecords = await db.totalEmployeeWorkingHours.findMany({
-    where: { empId },
+    where: { empId, isDeleted: false },
   });
   const totalHrs = workingHoursRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
   const hasCustom = workingHoursRecords.some(r => r.isCustom);
@@ -135,6 +135,7 @@ export async function POST(request: NextRequest) {
           update: {
             totalWorkingHours: totalHoursFromSalary,
             empName,
+            isDeleted: false,
           },
           create: {
             empId,
@@ -196,6 +197,7 @@ export async function POST(request: NextRequest) {
         update: {
           totalWorkingHours: totalHoursFromSalary,
           empName,
+          isDeleted: false,
         },
         create: {
           empId,
@@ -299,6 +301,7 @@ export async function PUT(request: NextRequest) {
         where: { empId_month: { empId: existing.empId, month: existing.month } },
         update: {
           totalWorkingHours: totalHoursFromSalary,
+          isDeleted: false,
         },
         create: {
           empId: existing.empId,
