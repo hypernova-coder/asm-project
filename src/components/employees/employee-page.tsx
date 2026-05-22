@@ -1258,7 +1258,7 @@ export function EmployeePage() {
     try {
       const doc = generateEmployeePDF(employee);
       const pdfBlob = doc.output('blob');
-      const file = new File([pdfBlob], 'EMPLOYEE_DATA.pdf', { type: 'application/pdf' });
+      const file = new File([pdfBlob], 'employee_data.pdf', { type: 'application/pdf' });
 
       // Try Web Share API first (supports file sharing to WhatsApp on mobile)
       if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1268,21 +1268,21 @@ export function EmployeePage() {
           text: `Employee details for ${employee.fullName}`,
         });
       } else {
-        // Fallback: download PDF and open WhatsApp
-        doc.save('EMPLOYEE_DATA.pdf');
-        window.open('https://wa.me/?text=' + encodeURIComponent(`Employee Details: ${employee.fullName} (${employee.employeeId})`), '_blank');
+        // Fallback: download PDF and open WhatsApp with text
+        doc.save('employee_data.pdf');
+        window.open('https://wa.me/?text=' + encodeURIComponent(`Employee Details: ${employee.fullName} (${employee.employeeId})\n\nPDF has been downloaded. Please attach it manually.`), '_blank');
       }
     } catch (error) {
       console.error('PDF share error:', error);
       // Final fallback: just download
       const doc = generateEmployeePDF(employee);
-      doc.save('EMPLOYEE_DATA.pdf');
+      doc.save('employee_data.pdf');
     }
   };
 
   const handleDownloadPDF = (employee: Employee) => {
     const doc = generateEmployeePDF(employee);
-    doc.save('EMPLOYEE_DATA.pdf');
+    doc.save('employee_data.pdf');
   };
 
   // ── Pagination ──

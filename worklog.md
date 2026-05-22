@@ -238,3 +238,31 @@ Stage Summary:
 - All list APIs filter out hidden/deleted records
 - Professional A4 single-page employee PDF with company header
 - WhatsApp sharing via Web Share API + download fallback
+
+---
+Task ID: 12
+Agent: Main Agent
+Task: Uniform registry filtering - show latest entry per employee + fix creation error
+
+Work Log:
+- Added `latestOnly` query parameter to GET /api/uniform-registry
+- When latestOnly=true, API fetches all matching entries, deduplicates by keeping only the latest per employeeId
+- Added employeeEntryCount field to API response (counts total entries per employee)
+- Updated uniform-registry-page.tsx frontend to pass latestOnly=true
+- Added entry count badge ("N entries") when employee has multiple entries
+- Added employee ID display below employee name in both desktop and mobile views
+- Updated subtitle: "Showing latest entry per employee — click to view all entries"
+- Updated pagination text from "entries" to "employees"
+- Fixed "Failed to create uniform registry entry" error: caused by stale SQLite file descriptors after DB file was recreated
+- Restarted dev server to pick up current database file
+- Verified cascade soft-deletion already implemented in DELETE /api/employees/[id]
+- Updated PDF filename from EMPLOYEE_DATA.pdf to employee_data.pdf per user request
+- Improved WhatsApp fallback message
+
+Stage Summary:
+- Main uniform registry view now shows only the latest entry per employee (deduplication)
+- Purple badge shows "N entries" when employee has multiple entries
+- Detailed view (UniformEntryDetails) already shows all entries per employee
+- Creation error fixed by server restart (stale DB file descriptor)
+- Cascade soft-deletion confirmed working for all 7 related record types
+- PDF filename standardized to employee_data.pdf
