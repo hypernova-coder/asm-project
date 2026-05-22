@@ -45,6 +45,7 @@ interface MergedEmployeeRow {
   lowRateHours: number; // From standard record (editable)
   highRateHours: number; // From premium record (editable)
   previousCumulativeHours: number; // Hours from previous months (for split calculation)
+  hoursThreshold: number; // Per-employee threshold (default 1000)
 
   // Rates
   lowRate: number; // 2.5 or 3.0 based on TL/Supervisor (editable)
@@ -125,6 +126,8 @@ interface ApiEmployeeEntry {
     rtPerHour: number;
     isCustom: boolean;
     calculatedRtPerHour: number;
+    previousCumulativeHours: number;
+    hoursThreshold: number;
   };
 }
 
@@ -226,9 +229,9 @@ function mergeApiEntries(
       rateTier = 'premium';
     }
 
-    // Compute previousCumulativeHours from aggregate totalWorkingHours
-    const aggregateWorkingHours = (baseEntry.workingHours?.totalWorkingHours as number) || 0;
-    const previousCumulativeHours = Math.max(0, aggregateWorkingHours - totalHours);
+    // Use API-provided previousCumulativeHours (computed from salary records)
+    const previousCumulativeHours = (baseEntry.workingHours?.previousCumulativeHours as number) || 0;
+    const hoursThreshold = (baseEntry.workingHours?.hoursThreshold as number) || 1000;
 
     merged.push({
       empId,
@@ -243,6 +246,7 @@ function mergeApiEntries(
       lowRateHours,
       highRateHours,
       previousCumulativeHours,
+      hoursThreshold,
       lowRate: standardEntry?.salaryRecord?.rtPerHour ?? lowRate,
       highRate: premiumEntry?.salaryRecord?.rtPerHour ?? highRate,
       totalSalary,
@@ -351,7 +355,7 @@ export function ConsolidatedSalarySheet() {
         // Recalculate salary fields when relevant fields change
         if (field === 'totalHours') {
           // When totalHours changes, recalculate the split based on cumulative threshold
-          const threshold = 1000; // Default, allocation engine will use actual
+          const threshold = u.hoursThreshold || 1000; // Use per-employee threshold
           const cumulativeBefore = u.previousCumulativeHours; // Use actual cumulative from previous months
           const remainingThreshold = threshold - cumulativeBefore;
           const totalHrs = u.totalHours;
@@ -471,6 +475,7 @@ export function ConsolidatedSalarySheet() {
             lowRateHours: 0,
             highRateHours: 0,
             previousCumulativeHours: 0,
+            hoursThreshold: 1000,
             lowRate: 2.5,
             highRate: 5.0,
             totalSalary: 0,

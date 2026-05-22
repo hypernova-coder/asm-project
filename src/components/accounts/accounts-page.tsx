@@ -94,6 +94,8 @@ interface EmployeeSalaryData {
   totalWorkingHours: number;
   calculatedRtPerHour: number;
   rateTier: 'standard' | 'premium';
+  previousCumulativeHours: number;
+  hoursThreshold: number;
 }
 
 interface WorkingHoursData {
@@ -207,6 +209,7 @@ interface MergedEmployeeRow {
   premiumRecordId: string | null;
   rateTier: 'standard' | 'premium' | 'split';
   previousCumulativeHours: number; // Hours from previous months (aggregate - current month)
+  hoursThreshold: number; // Per-employee threshold (default 1000)
 }
 
 /* ───────── Constants ───────── */
@@ -278,9 +281,9 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
     const advance = standard?.advance || 0;
     const balanceSalary = totalSalary - deduction - advance;
 
-    // Compute previousCumulativeHours from aggregate totalWorkingHours
-    const aggregateWorkingHours = any.totalWorkingHours || 0;
-    const previousCumulativeHours = Math.max(0, aggregateWorkingHours - totalHours);
+    // Use API-provided previousCumulativeHours (computed from salary records)
+    const previousCumulativeHours = any.previousCumulativeHours || 0;
+    const hoursThreshold = any.hoursThreshold || 1000;
 
     result.push({
       empId: any.empId,
@@ -305,6 +308,7 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
       premiumRecordId: premium?.salaryRecordId || null,
       rateTier: standard && premium ? 'split' : standard ? 'standard' : 'premium',
       previousCumulativeHours,
+      hoursThreshold,
     });
   }
 
@@ -334,6 +338,7 @@ function EmployeeDetailPage({
     totalWorkingHours: number;
     rtPerHour: number;
     isCustom: boolean;
+    hoursThreshold: number;
   } | null>(null);
 
   const yearOptions = useMemo(() => {
@@ -476,6 +481,7 @@ function EmployeeDetailPage({
   }> = [];
 
   let cumulative = 0;
+  const threshold = employeeInfo?.hoursThreshold || 1000;
   for (let i = 0; i < 12; i++) {
     const available = isMonthAvailable(selectedYear, i);
     if (!available) continue;
@@ -499,9 +505,9 @@ function EmployeeDetailPage({
     const prevCumulative = cumulative;
     cumulative += hours;
 
-    if (prevCumulative < 1000 && cumulative > 1000) {
-      // This month crosses 1000 — split into 2 rows
-      const basicHours = 1000 - prevCumulative;
+    if (prevCumulative < threshold && cumulative > threshold) {
+      // This month crosses threshold — split into 2 rows
+      const basicHours = threshold - prevCumulative;
       const premiumHours = hours - basicHours;
       const hasBonus = employeeInfo?.isTeamLeader || employeeInfo?.isSupervisor || false;
       const basicRate = hasBonus ? 3.0 : 2.5;
@@ -523,7 +529,7 @@ function EmployeeDetailPage({
         rateTier: 'premium',
         cumulativeHours: cumulative,
       });
-    } else if (cumulative <= 1000) {
+    } else if (cumulative <= threshold) {
       // All at basic rate
       const hasBonus = employeeInfo?.isTeamLeader || employeeInfo?.isSupervisor || false;
       const basicRate = hasBonus ? 3.0 : 2.5;
@@ -536,7 +542,7 @@ function EmployeeDetailPage({
         cumulativeHours: cumulative,
       });
     } else {
-      // All at premium rate (already past 1000)
+      // All at premium rate (already past threshold)
       const hasBonus = employeeInfo?.isTeamLeader || employeeInfo?.isSupervisor || false;
       const premiumRate = hasBonus ? 5.5 : 5.0;
       splitRows.push({
@@ -688,7 +694,7 @@ function EmployeeDetailPage({
                       <td className="py-2.5 px-4 text-right">
                         <span className={cn(
                           'text-sm font-medium',
-                          row.cumulativeHours >= 1000 ? 'text-amber-400' : 'text-slate-400'
+                          row.cumulativeHours >= (employeeInfo?.hoursThreshold || 1000) ? 'text-amber-400' : 'text-slate-400'
                         )}>
                           {formatNumber(row.cumulativeHours)}
                         </span>
@@ -1270,7 +1276,7 @@ function SiteSalarySheet({
 
         if (field === 'totalHours') {
           // Recalculate split allocation using cumulative threshold
-          const threshold = 1000;
+          const threshold = updated.hoursThreshold || 1000;
           const cumulativeBeforeThisSite = updated.previousCumulativeHours;
           const remainingThreshold = threshold - cumulativeBeforeThisSite;
 
@@ -1394,6 +1400,7 @@ function SiteSalarySheet({
       premiumRecordId: null,
       rateTier: 'standard',
       previousCumulativeHours: 0,
+      hoursThreshold: 1000,
     };
     setMergedEmployees((prev) => [...prev, newRow]);
   };
@@ -2081,6 +2088,8 @@ export function AccountsPage() {
             totalWorkingHours: e.workingHours.totalWorkingHours,
             calculatedRtPerHour: e.workingHours.calculatedRtPerHour,
             rateTier: e.rateTier || 'standard',
+            previousCumulativeHours: e.workingHours.previousCumulativeHours || 0,
+            hoursThreshold: e.workingHours.hoursThreshold || 1000,
           })),
         }));
         setSites(mappedSites);

@@ -420,9 +420,7 @@ export async function GET(request: NextRequest) {
             const carryAdvance = decision.rateTier === 'standard'
               ? (stdRecord?.advance ?? 0)
               : 0;
-            const carryIsPaid = decision.rateTier === 'standard'
-              ? (stdRecord?.isPaid ?? false)
-              : false;
+            const carryIsPaid = stdRecord?.isPaid || entry.salaryRecords.find(sr => sr.rateTier === 'premium')?.isPaid || false;
 
             salaryRecordData = {
               ...matchingRecord,
@@ -469,7 +467,7 @@ export async function GET(request: NextRequest) {
                 deduction: 0,
                 advance: 0,
                 balanceSalary: computedTotalSalary,
-                isPaid: false,
+                isPaid: entry.salaryRecords.find(sr => sr.rateTier === 'standard')?.isPaid || entry.salaryRecords.find(sr => sr.rateTier === 'premium')?.isPaid || false,
                 createdAt: anyRecord.createdAt.toISOString(),
                 updatedAt: anyRecord.updatedAt.toISOString(),
               };
@@ -489,6 +487,8 @@ export async function GET(request: NextRequest) {
             rtPerHour: calculatedRtPerHour,
             isCustom: false,
             calculatedRtPerHour,
+            previousCumulativeHours: hoursInfo.previousAggregate,
+            hoursThreshold: threshold,
           };
 
           finalEntries.push({

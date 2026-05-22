@@ -32,6 +32,7 @@ export async function GET(request: NextRequest) {
         employeeId: true,
         isTeamLeader: true,
         isSupervisor: true,
+        hoursThreshold: true,
       },
     });
 
@@ -68,7 +69,8 @@ export async function GET(request: NextRequest) {
 
     // Auto-calculate the aggregate rate
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
-    const autoRate = aggregateTotalHours >= 1000 ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
+    const empThreshold = employee.hoursThreshold || 1000;
+    const autoRate = aggregateTotalHours >= empThreshold ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
 
     // Build monthly data for all 12 months
     const monthlyData = [];
@@ -94,6 +96,7 @@ export async function GET(request: NextRequest) {
           totalWorkingHours: aggregateTotalHours,
           rtPerHour: hasCustom ? latestRate : autoRate,
           isCustom: hasCustom,
+          hoursThreshold: empThreshold,
         },
       },
     });
