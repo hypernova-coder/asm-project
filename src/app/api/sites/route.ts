@@ -169,6 +169,54 @@ export async function PUT(request: NextRequest) {
       });
     }
 
+    // When site is being deactivated, unassign all employees and clean up roles/history
+    if (isActive === false && existing.isActive === true) {
+      const siteNameForCleanup = trimmedName;
+
+      await db.$transaction(async (tx) => {
+        // Find all employees currently assigned to this site
+        const assignedEmployees = await tx.employee.findMany({
+          where: {
+            currentSite: siteNameForCleanup,
+            status: { not: 'deleted' },
+          },
+        });
+
+        for (const emp of assignedEmployees) {
+          const empUpdateData: Record<string, unknown> = { currentSite: null };
+
+          // If they were team leader of this site, clear team leader role
+          if (emp.isTeamLeader && emp.teamLeaderSiteId === id) {
+            empUpdateData.isTeamLeader = false;
+            empUpdateData.teamLeaderSiteId = null;
+          }
+
+          // If they were supervisor of this site, clear supervisor role
+          if (emp.isSupervisor && emp.supervisorSiteId === id) {
+            empUpdateData.isSupervisor = false;
+            empUpdateData.supervisorSiteId = null;
+          }
+
+          await tx.employee.update({
+            where: { id: emp.id },
+            data: empUpdateData,
+          });
+
+          // Close any open EmpCountSitePerMonth records for this employee+site
+          await tx.empCountSitePerMonth.updateMany({
+            where: {
+              empId: emp.id,
+              siteId: id,
+              removedDate: null,
+            },
+            data: {
+              removedDate: new Date(),
+            },
+          });
+        }
+      });
+    }
+
     return NextResponse.json({
       success: true,
       data: {

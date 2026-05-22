@@ -23,6 +23,7 @@ import {
   Power,
   PowerOff,
   MoreHorizontal,
+  History,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -127,6 +128,22 @@ interface AllEmployee {
 
 type SubView = 'list' | 'employees';
 
+/* ───────── History Record type ───────── */
+interface HistoryRecord {
+  id: string;
+  empId: string;
+  empName: string;
+  employeeId: string;
+  siteId: string;
+  siteName: string;
+  month: string;
+  createdDate: string;
+  removedDate: string | null;
+  updatedDate: string;
+  deletedDate: string | null;
+  siteClosedDate: string | null;
+}
+
 /* ───────── Star Rating ───────── */
 function StarRating({ rating }: { rating: number }) {
   const fullStars = Math.floor(rating);
@@ -174,6 +191,7 @@ function SiteCardsGrid({
   onEditSite,
   onToggleActive,
   onAttendanceSheet,
+  onViewHistory,
 }: {
   sites: Site[];
   search: string;
@@ -184,6 +202,7 @@ function SiteCardsGrid({
   onEditSite: (site: Site) => void;
   onToggleActive: (site: Site) => void;
   onAttendanceSheet: (site: Site) => void;
+  onViewHistory: (site: Site) => void;
 }) {
   const filteredSites = sites.filter((s) =>
     s.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -338,6 +357,17 @@ function SiteCardsGrid({
                   <FileSpreadsheet className="h-4 w-4" />
                 </Button>
               </div>
+              {/* History button - only for inactive sites */}
+              {!site.isActive && (
+                <Button
+                  variant="outline"
+                  className="w-full bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-violet-600 hover:text-white hover:border-violet-600 gap-2 transition-all"
+                  onClick={() => onViewHistory(site)}
+                >
+                  <History className="h-4 w-4" />
+                  View All Employees Worked Here
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -459,6 +489,113 @@ function AddEmployeeCombobox({
   );
 }
 
+/* ───────── Site Employee History Dialog ───────── */
+function SiteEmployeeHistoryDialog({
+  open,
+  siteName,
+  records,
+  loading,
+  onClose,
+}: {
+  open: boolean;
+  siteName: string;
+  records: HistoryRecord[];
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const formatDate = (dateStr: string | null) => {
+    if (!dateStr) return null;
+    try {
+      return new Date(dateStr).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
+      <DialogContent className="bg-slate-900 border-slate-700 text-slate-200 max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="text-white flex items-center gap-2">
+            <History className="h-5 w-5 text-amber-400" />
+            Employees Worked at {siteName}
+          </DialogTitle>
+          <DialogDescription className="text-slate-400">
+            Historical record of all employees who worked at this site.
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-amber-400" />
+            <span className="ml-3 text-slate-400">Loading employee history...</span>
+          </div>
+        ) : records.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <Users className="h-10 w-10 text-slate-600 mb-3" />
+            <p className="text-slate-400">No employee history found for this site.</p>
+          </div>
+        ) : (
+          <div className="overflow-auto flex-1 -mx-6 px-6">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-slate-700 hover:bg-transparent">
+                  <TableHead className="text-slate-400 font-semibold w-14">SL.NO</TableHead>
+                  <TableHead className="text-slate-400 font-semibold">Name</TableHead>
+                  <TableHead className="text-slate-400 font-semibold">EMP ID</TableHead>
+                  <TableHead className="text-slate-400 font-semibold">Start Date</TableHead>
+                  <TableHead className="text-slate-400 font-semibold">End Date</TableHead>
+                  <TableHead className="text-slate-400 font-semibold">Site Closed Date</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {records.map((record, index) => (
+                  <TableRow key={record.id} className="border-slate-700/50 hover:bg-slate-700/30">
+                    <TableCell className="text-slate-400 text-sm">{index + 1}</TableCell>
+                    <TableCell className="text-white text-sm font-medium">{record.empName}</TableCell>
+                    <TableCell className="text-slate-300 text-sm font-mono">{record.employeeId}</TableCell>
+                    <TableCell className="text-slate-300 text-sm">
+                      {formatDate(record.createdDate) || 'N/A'}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {record.removedDate ? (
+                        <span className="text-slate-300">{formatDate(record.removedDate)}</span>
+                      ) : (
+                        <span className="text-emerald-400 font-medium">Still Active</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {record.siteClosedDate ? (
+                        <span className="text-slate-300">{formatDate(record.siteClosedDate)}</span>
+                      ) : (
+                        <span className="text-slate-500">N/A</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+
+        <DialogFooter className="mt-2">
+          <Button
+            variant="outline"
+            onClick={onClose}
+            className="bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600"
+          >
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ───────── Main Component ───────── */
 export function SitesPage() {
   // Sub view management
@@ -517,6 +654,12 @@ export function SitesPage() {
     existingSupervisor: { id: string; fullName: string } | null;
   }>({ open: false, emp: null, existingSupervisor: null });
   const [assignLoading, setAssignLoading] = useState(false);
+
+  // Employee history dialog state
+  const [showHistoryDialog, setShowHistoryDialog] = useState(false);
+  const [historySite, setHistorySite] = useState<Site | null>(null);
+  const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   /* ── Fetch sites ── */
   const fetchSites = useCallback(async () => {
@@ -1032,6 +1175,35 @@ export function SitesPage() {
     }
   }, []);
 
+  /* ── View employee history for inactive site ── */
+  const handleViewHistory = useCallback(async (site: Site) => {
+    setHistorySite(site);
+    setShowHistoryDialog(true);
+    setLoadingHistory(true);
+    setHistoryRecords([]);
+    try {
+      const res = await fetch(`/api/site-history?siteId=${site.id}`);
+      const json = await res.json();
+      if (json.success) {
+        setHistoryRecords(json.data.records || []);
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to fetch history', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to fetch employee history', variant: 'destructive' });
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
+  /* ── Close history dialog ── */
+  const handleCloseHistory = useCallback(() => {
+    setShowHistoryDialog(false);
+    setHistorySite(null);
+    setHistoryRecords([]);
+    setLoadingHistory(false);
+  }, []);
+
   // Current site's team leader and supervisor
   const currentTeamLeader = useMemo(() => {
     if (!viewSite) return null;
@@ -1131,6 +1303,7 @@ export function SitesPage() {
                 }}
                 onToggleActive={handleToggleActive}
                 onAttendanceSheet={handleAttendanceSheet}
+                onViewHistory={handleViewHistory}
               />
             </TabsContent>
 
@@ -1150,6 +1323,7 @@ export function SitesPage() {
                 }}
                 onToggleActive={handleToggleActive}
                 onAttendanceSheet={handleAttendanceSheet}
+                onViewHistory={handleViewHistory}
               />
             </TabsContent>
           </Tabs>
@@ -1646,6 +1820,15 @@ export function SitesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Employee History Dialog */}
+      <SiteEmployeeHistoryDialog
+        open={showHistoryDialog}
+        siteName={historySite?.name || ''}
+        records={historyRecords}
+        loading={loadingHistory}
+        onClose={handleCloseHistory}
+      />
     </div>
   );
 }

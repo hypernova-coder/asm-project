@@ -234,6 +234,61 @@ export async function PUT(
       data: data as Parameters<typeof db.employee.update>[0]['data'],
     });
 
+    // Track EmpCountSitePerMonth when currentSite changes
+    if (body.currentSite !== undefined && body.currentSite !== existing.currentSite) {
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const newSite = body.currentSite; // null means removed from site
+
+      if (newSite) {
+        // Case A: Adding employee to a site (or moving to a different site)
+        const site = await db.site.findFirst({ where: { name: newSite } });
+
+        if (site) {
+          // If employee was previously at a DIFFERENT site, close old open records
+          if (existing.currentSite && existing.currentSite !== newSite) {
+            const oldSite = await db.site.findFirst({ where: { name: existing.currentSite } });
+            if (oldSite) {
+              await db.empCountSitePerMonth.updateMany({
+                where: {
+                  empId: id,
+                  siteId: oldSite.id,
+                  removedDate: null,
+                },
+                data: {
+                  removedDate: now,
+                },
+              });
+            }
+          }
+
+          // Create new EmpCountSitePerMonth record
+          await db.empCountSitePerMonth.create({
+            data: {
+              empId: employee.id,
+              empName: employee.fullName,
+              siteId: site.id,
+              siteName: site.name,
+              month,
+              createdDate: now,
+              removedDate: null,
+            },
+          });
+        }
+      } else {
+        // Case B: Removing employee from a site (currentSite set to null)
+        await db.empCountSitePerMonth.updateMany({
+          where: {
+            empId: id,
+            removedDate: null,
+          },
+          data: {
+            removedDate: now,
+          },
+        });
+      }
+    }
+
     const decrypted = decryptEmployee({
       ...employee,
       dateOfBirth: employee.dateOfBirth?.toISOString() || null,

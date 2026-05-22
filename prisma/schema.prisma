@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -77,6 +77,7 @@ model Employee {
   leaveRequests        LeaveRequest[]
   cancellationRequests CancellationRequest[]
   uniformRegistry      UniformRegistry[]
+  siteHistory          EmpCountSitePerMonth[]
 
   @@index([trade])
   @@index([isTeamLeader])
@@ -91,6 +92,8 @@ model Site {
   projectName String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
+
+  employeeHistory EmpCountSitePerMonth[]
 }
 
 model Attendance {
@@ -265,4 +268,25 @@ model AdminPermission {
   @@unique([adminId, permissionId])
   @@index([adminId])
   @@index([permissionId])
+}
+
+model EmpCountSitePerMonth {
+  id          String    @id @default(cuid())
+  empId       String    // referenced from Employee table
+  empName     String    // name of the employee
+  siteId      String    // referenced from Site table
+  siteName    String    // name of the site
+  month       String    // which month the employee worked there (YYYY-MM format)
+  createdDate DateTime  @default(now()) // when added to site
+  removedDate DateTime? // when removed from site (null if still at site)
+  updatedDate DateTime  @updatedAt
+  deletedDate DateTime? // soft delete timestamp
+
+  employee Employee @relation(fields: [empId], references: [id], onDelete: Cascade)
+  site     Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([empId])
+  @@index([siteId])
+  @@index([month])
+  @@index([empId, siteId])
 }

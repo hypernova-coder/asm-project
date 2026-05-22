@@ -293,3 +293,67 @@ Stage Summary:
 - When site filter or search is active, only those filtered employees are marked
 - Attendance data properly refreshes after bulk mark (fixed API URL format)
 - Confirmation dialog clearly shows which employees will be affected
+
+---
+Task ID: 2-3-4
+Agent: Backend Agent
+Task: Backend API changes for site employee history tracking
+
+Work Log:
+- Updated PUT /api/sites/route.ts: When a site is set to inactive (isActive: false), added transactional logic to:
+  - Find all employees currently assigned to the site (currentSite === site.name, status !== 'deleted')
+  - Set each employee's currentSite to null (makes them Idle)
+  - Clear isTeamLeader/teamLeaderSiteId if they were TL of this site
+  - Clear isSupervisor/supervisorSiteId if they were supervisor of this site
+  - Close any open EmpCountSitePerMonth records (set removedDate to now) for each employee+site
+- Updated PUT /api/employees/[id]/route.ts: When currentSite changes, added EmpCountSitePerMonth tracking:
+  - Case A (adding to site): Create new EmpCountSitePerMonth record with empId, empName, siteId, siteName, month (YYYY-MM), createdDate=now, removedDate=null
+  - Case A (moving sites): Also close open EmpCountSitePerMonth record for the OLD site
+  - Case B (removing from site, currentSite set to null): Close all open EmpCountSitePerMonth records for the employee
+- Created new GET /api/site-history/route.ts:
+  - Accepts siteId query parameter (required)
+  - Returns all EmpCountSitePerMonth records for the site where deletedDate is null
+  - Ordered by empName ascending, then createdDate ascending
+  - Includes employee relation for employeeId (the code like "EMP001")
+  - Returns siteClosedDate (site.createdAt if inactive, null if active) at both record and data level
+  - All date fields serialized as ISO strings
+- All lint checks pass cleanly
+
+Stage Summary:
+- Site deactivation now cascades: unassigns employees, clears TL/Supervisor roles, closes EmpCountSitePerMonth records
+- Employee site changes now create/close EmpCountSitePerMonth records for full audit trail
+- New /api/site-history endpoint provides historical employee records per site for reporting
+
+---
+Task ID: 5
+Agent: Frontend Agent
+Task: Add View All Employees Worked Here button and history dialog
+
+Work Log:
+- Added `History` icon import from lucide-react
+- Added `onViewHistory` prop to `SiteCardsGrid` component with type `(site: Site) => void`
+- Added "View All Employees Worked Here" button on inactive site cards only (`!site.isActive`), with amber/violet color scheme (`bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-violet-600`)
+- Added `HistoryRecord` interface matching the `/api/site-history` response format
+- Added `showHistoryDialog`, `historySite`, `historyRecords`, `loadingHistory` state variables to `SitesPage`
+- Created `handleViewHistory` callback that sets dialog state, fetches from `/api/site-history?siteId=${site.id}`, and populates `historyRecords`
+- Created `handleCloseHistory` callback that closes dialog and resets all history state
+- Created `SiteEmployeeHistoryDialog` component inline with:
+  - Dialog title "Employees Worked at {siteName}" with History icon
+  - Table with columns: SL.NO, Name, EMP ID, Start Date, End Date, Site Closed Date
+  - SL.NO as simple incrementing counter (index + 1)
+  - Dates formatted as "Mar 15, 2025" style
+  - End Date shows "Still Active" in green when removedDate is null
+  - Site Closed Date shows "N/A" in gray when null
+  - Loading state with Loader2 spinner
+  - Empty state with Users icon and message
+  - Close button in dialog footer
+- Wired up `onViewHistory={handleViewHistory}` prop to both `<SiteCardsGrid>` instances (active and inactive tabs)
+- Added `<SiteEmployeeHistoryDialog>` render at the end of the SitesPage JSX
+- All lint checks pass cleanly
+
+Stage Summary:
+- Inactive site cards now show a "View All Employees Worked Here" button with History icon
+- Clicking the button opens a dialog showing historical employee records from EmpCountSitePerMonth
+- Dialog displays employee name, EMP ID, start date, end date, and site closed date
+- Still Active employees highlighted in green; N/A values in slate/gray
+- Both active and inactive SiteCardsGrid instances receive the onViewHistory prop (button only renders for inactive sites)
