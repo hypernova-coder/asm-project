@@ -545,3 +545,43 @@ Stage Summary:
 - Rate tier badges displayed next to RT/HR column
 - Index-based change tracking ensures split entries can be edited independently
 - handleSave sends rateTier with each salary record to backend
+
+---
+Task ID: 15
+Agent: Main Agent
+Task: Implement cascade soft-delete for employee deletion - ensure all related data is soft-deleted when employee is deleted
+
+Work Log:
+- Analyzed all Employee relations in Prisma schema: Attendance, Warning, Fine, LeaveRequest, CancellationRequest, UniformRegistry, EmpCountSitePerMonth, SalaryRecord, TotalEmployeeWorkingHours
+- Added `isDeleted Boolean @default(false)` field to TotalEmployeeWorkingHours model (was missing soft-delete support)
+- Added `@@index([isDeleted])` to TotalEmployeeWorkingHours for query performance
+- Updated DELETE handler in /api/employees/[id]/route.ts to cascade soft-delete to ALL 9 related tables:
+  1. UniformRegistry: isDeleted = true
+  2. Attendance: isHidden = true
+  3. Warning: isHidden = true
+  4. Fine: isHidden = true
+  5. LeaveRequest: isHidden = true
+  6. CancellationRequest: isHidden = true
+  7. TotalEmployeeWorkingHours: isDeleted = true (NEW)
+  8. SalaryRecord: isDeleted = true (NEW)
+  9. EmpCountSitePerMonth: deletedDate = now (NEW)
+- Updated delete-request approval handler (/api/delete-requests/[id]/route.ts) with same cascade logic
+- Previously only UniformRegistry was soft-deleted on approval; now all 9 tables are handled
+- Removed incorrect Notification hiding from employee DELETE handler (Notification relates to User, not Employee)
+- Updated all TotalEmployeeWorkingHours queries across 4 API files to filter isDeleted: false:
+  - /api/accounts/working-hours/route.ts: 9 edits (findMany, findFirst, findUnique, upsert)
+  - /api/accounts/salary/route.ts: 4 edits (findMany, upsert)
+  - /api/accounts/route.ts: 1 edit (findMany)
+  - /api/accounts/employee-monthly/route.ts: 4 edits (findMany, upsert)
+- For upsert operations: added isDeleted: false to update data (restores soft-deleted records on re-upsert)
+- For findUnique: added post-query isDeleted check to return 404 for soft-deleted records
+- Pushed schema changes with `bun run db:push`
+- All lint checks pass
+- Pushed to GitHub (commit 6198c0b)
+
+Stage Summary:
+- Complete cascade soft-delete: when an employee is deleted, ALL related data across 9 tables is soft-deleted
+- Both direct DELETE and delete-request approval workflows handle all related data
+- TotalEmployeeWorkingHours now has isDeleted field with proper query filtering
+- No data is permanently removed - all soft-deleted records can be recovered
+- Code pushed to GitHub: https://github.com/hypernova-coder/asm-project.git (main branch)
