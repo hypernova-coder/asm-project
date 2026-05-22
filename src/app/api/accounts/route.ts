@@ -34,6 +34,8 @@ interface RawEmployeeEntry {
   teamLeaderSiteId: string | null;
   supervisorSiteId: string | null;
   hoursThreshold: number;
+  isCustomRate: boolean;
+  customRate: number;
   siteId: string;
   siteName: string;
   // findMany — there can be "standard" AND "premium" records for the same emp+site+month
@@ -173,6 +175,8 @@ export async function GET(request: NextRequest) {
             teamLeaderSiteId: emp.teamLeaderSiteId,
             supervisorSiteId: emp.supervisorSiteId,
             hoursThreshold: emp.hoursThreshold || 1000,
+            isCustomRate: false, // populated later from TotalEmployeeWorkingHours
+            customRate: 0,
             siteId: site.id,
             siteName: site.name,
             salaryRecords,
@@ -218,6 +222,8 @@ export async function GET(request: NextRequest) {
             teamLeaderSiteId: empInfo?.teamLeaderSiteId ?? null,
             supervisorSiteId: empInfo?.supervisorSiteId ?? null,
             hoursThreshold: empInfo?.hoursThreshold || 1000,
+            isCustomRate: false, // populated later from TotalEmployeeWorkingHours
+            customRate: 0,
             siteId: site.id,
             siteName: site.name,
             salaryRecords: [manualRecord],
@@ -252,6 +258,24 @@ export async function GET(request: NextRequest) {
     for (const sr of allEmpSalaryRecords) {
       if (!salaryByEmpId.has(sr.empId)) salaryByEmpId.set(sr.empId, []);
       salaryByEmpId.get(sr.empId)!.push(sr);
+    }
+
+    // Fetch TotalEmployeeWorkingHours for current month to get custom rate info
+    const currentMonthWhRecords = await db.totalEmployeeWorkingHours.findMany({
+      where: { empId: { in: Array.from(allEmpIds) }, month, isDeleted: false },
+    });
+    const customRateByEmpId = new Map<string, { isCustom: boolean; rtPerHour: number }>();
+    for (const wh of currentMonthWhRecords) {
+      customRateByEmpId.set(wh.empId, { isCustom: wh.isCustom, rtPerHour: wh.rtPerHour });
+    }
+
+    // Now populate isCustomRate/customRate on all raw entries
+    for (const { rawEntries } of siteRawData) {
+      for (const entry of rawEntries) {
+        const customInfo = customRateByEmpId.get(entry.empId);
+        entry.isCustomRate = customInfo?.isCustom ?? false;
+        entry.customRate = customInfo?.rtPerHour ?? 0;
+      }
     }
 
     // Build per-employee hours info from salary records
@@ -331,6 +355,18 @@ export async function GET(request: NextRequest) {
 
         // Compute raw hours for this site from existing salary records
         const siteRawHours = entry.salaryRecords.reduce((sum, sr) => sum + sr.totalHours, 0);
+
+        // If employee has a custom rate, skip split — all hours at the custom rate
+        if (entry.isCustomRate && entry.customRate > 0) {
+          const decisions: SplitDecision[] = [];
+          if (siteRawHours > 0) {
+            decisions.push({ rateTier: 'standard', hours: siteRawHours, rate: entry.customRate });
+          } else {
+            decisions.push({ rateTier: 'standard', hours: 0, rate: entry.customRate });
+          }
+          empDecisions.set(entry.siteId, decisions);
+          continue;
+        }
 
         // ALWAYS recalculate the split based on cumulative threshold
         // This ensures correctness even if existing records have wrong data
@@ -480,12 +516,15 @@ export async function GET(request: NextRequest) {
             ? (hasBonus ? 5.5 : 5.0)
             : (hasBonus ? 3.0 : 2.5);
 
+          // If employee has a custom rate, use it as the effective rate
+          const effectiveRtPerHour = entry.isCustomRate ? entry.customRate : calculatedRtPerHour;
+
           const workingHoursObj: Record<string, unknown> = {
             empId: entry.empId,
             empName: entry.empName,
             totalWorkingHours: aggregateTotal,
-            rtPerHour: calculatedRtPerHour,
-            isCustom: false,
+            rtPerHour: effectiveRtPerHour,
+            isCustom: entry.isCustomRate,
             calculatedRtPerHour,
             previousCumulativeHours: hoursInfo.previousAggregate,
             hoursThreshold: threshold,

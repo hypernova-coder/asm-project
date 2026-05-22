@@ -126,6 +126,17 @@ export async function allocateEmployeeHours(
     const highRate = hasBonus ? 5.5 : 5.0;
 
     // ------------------------------------------------------------------
+    // 3a2. Check if employee has a custom rate override
+    // ------------------------------------------------------------------
+    // If isCustom is true, the employee's rate is manually set and should
+    // be used everywhere instead of the calculated low/high rate split.
+    const currentMonthWhRecord = await db.totalEmployeeWorkingHours.findUnique({
+      where: { empId_month: { empId, month } },
+    });
+    const isCustomRate = currentMonthWhRecord?.isCustom ?? false;
+    const customRate = currentMonthWhRecord?.rtPerHour ?? lowRate;
+
+    // ------------------------------------------------------------------
     // 3b. Compute previous months' cumulative hours
     // ------------------------------------------------------------------
     // IMPORTANT: We compute previousCumulative from SALARY RECORDS directly
@@ -199,10 +210,27 @@ export async function allocateEmployeeHours(
     // KEY CHANGE: Start consumedThreshold from previous cumulative hours
     // This means if the employee already has 800 hours from previous months,
     // only 200 more hours can be at the low rate in this month
+    //
+    // If the employee has a custom rate, skip the split entirely —
+    // all hours go at the custom rate as a single "standard" record.
     let consumedThreshold = Math.min(previousCumulative, threshold);
     const siteAllocations: SiteAllocation[] = [];
 
     for (const site of sortedSites) {
+      if (isCustomRate) {
+        // ── Custom Rate: no split, all hours at the custom rate ──
+        siteAllocations.push({
+          siteId: site.siteId,
+          siteName: site.siteName,
+          rawHours: site.rawHours,
+          lowRateHours: site.rawHours,
+          highRateHours: 0,
+          lowRate: customRate,
+          highRate: customRate,
+        });
+        continue;
+      }
+
       const remainingThreshold = threshold - consumedThreshold;
       let lowRateHours = 0;
       let highRateHours = 0;
@@ -250,11 +278,14 @@ export async function allocateEmployeeHours(
 
       // --- Standard (lowRate) record ---
       if (alloc.lowRateHours > 0) {
-        // Preserve user-edited rate from existing record if it differs from default
+        // For custom rate employees, always use the custom rate
+        // For others, preserve user-edited rate from existing record if it differs from default
         const existingStdRate = siteData.existingStandard?.rtPerHour;
-        const effectiveLowRate = (existingStdRate && existingStdRate !== lowRate)
-          ? existingStdRate
-          : lowRate;
+        const effectiveLowRate = isCustomRate
+          ? customRate
+          : (existingStdRate && existingStdRate !== lowRate)
+            ? existingStdRate
+            : alloc.lowRate;
         const totalSalary = alloc.lowRateHours * effectiveLowRate;
         const carryDeduction = siteData.existingStandard?.deduction ?? 0;
         const carryAdvance = siteData.existingStandard?.advance ?? 0;
@@ -329,11 +360,14 @@ export async function allocateEmployeeHours(
 
       // --- Premium (highRate) record ---
       if (alloc.highRateHours > 0) {
-        // Preserve user-edited rate from existing record if it differs from default
+        // For custom rate employees, always use the custom rate
+        // For others, preserve user-edited rate from existing record if it differs from default
         const existingPremRate = siteData.existingPremium?.rtPerHour;
-        const effectiveHighRate = (existingPremRate && existingPremRate !== highRate)
-          ? existingPremRate
-          : highRate;
+        const effectiveHighRate = isCustomRate
+          ? customRate
+          : (existingPremRate && existingPremRate !== highRate)
+            ? existingPremRate
+            : alloc.highRate;
         const totalSalary = alloc.highRateHours * effectiveHighRate;
         const carryDeduction = siteData.existingPremium?.deduction ?? 0;
         const carryAdvance = siteData.existingPremium?.advance ?? 0;
@@ -572,8 +606,10 @@ export function computeAllocationSplit(params: {
   threshold: number;
   isTeamLeader: boolean;
   isSupervisor: boolean;
+  isCustomRate?: boolean;
+  customRate?: number;
 }): SiteAllocation[] {
-  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor } = params;
+  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate, customRate } = params;
   const hasBonus = isTeamLeader || isSupervisor;
   const lowRate = hasBonus ? 3.0 : 2.5;
   const highRate = hasBonus ? 5.5 : 5.0;
@@ -587,6 +623,20 @@ export function computeAllocationSplit(params: {
   );
 
   for (const site of sortedSites) {
+    // If custom rate is set, no split — all hours at the custom rate
+    if (isCustomRate && customRate) {
+      siteAllocations.push({
+        siteId: site.siteId,
+        siteName: site.siteName,
+        rawHours: site.rawHours,
+        lowRateHours: site.rawHours,
+        highRateHours: 0,
+        lowRate: customRate,
+        highRate: customRate,
+      });
+      continue;
+    }
+
     const remainingThreshold = threshold - consumedThreshold;
     let lowRateHours = 0;
     let highRateHours = 0;

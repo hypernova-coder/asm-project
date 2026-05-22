@@ -48,8 +48,8 @@ interface MergedEmployeeRow {
   hoursThreshold: number; // Per-employee threshold (default 1000)
 
   // Rates
-  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor (editable)
-  highRate: number; // 5.0 or 5.5 based on TL/Supervisor (editable)
+  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor (editable) or custom rate
+  highRate: number; // 5.0 or 5.5 based on TL/Supervisor (editable) or custom rate
 
   // Salary
   totalSalary: number; // Sum of standard + premium salary
@@ -64,6 +64,9 @@ interface MergedEmployeeRow {
 
   // Rate tier info
   rateTier: 'standard' | 'premium' | 'split';
+
+  // Custom rate flag
+  isCustomRate: boolean; // Whether the employee has a custom rate override
 
   // Site info for save
   siteId: string;
@@ -233,6 +236,9 @@ function mergeApiEntries(
     const previousCumulativeHours = (baseEntry.workingHours?.previousCumulativeHours as number) || 0;
     const hoursThreshold = (baseEntry.workingHours?.hoursThreshold as number) || 1000;
 
+    // Detect custom rate: if the low rate differs from default and workingHours says custom
+    const isCustomRate = (baseEntry.workingHours?.isCustom as boolean) ?? false;
+
     merged.push({
       empId,
       empName: baseEntry.empName,
@@ -257,6 +263,7 @@ function mergeApiEntries(
       standardRecordId: standardEntry?.salaryRecord?.id ?? null,
       premiumRecordId: premiumEntry?.salaryRecord?.id ?? null,
       rateTier,
+      isCustomRate,
       siteId,
       siteName,
     });
@@ -354,26 +361,35 @@ export function ConsolidatedSalarySheet() {
 
         // Recalculate salary fields when relevant fields change
         if (field === 'totalHours') {
-          // When totalHours changes, recalculate the split based on cumulative threshold
-          const threshold = u.hoursThreshold || 1000; // Use per-employee threshold
-          const cumulativeBefore = u.previousCumulativeHours; // Use actual cumulative from previous months
-          const remainingThreshold = threshold - cumulativeBefore;
-          const totalHrs = u.totalHours;
-
-          if (remainingThreshold <= 0) {
-            u.lowRateHours = 0;
-            u.highRateHours = totalHrs;
-          } else if (remainingThreshold >= totalHrs) {
-            u.lowRateHours = totalHrs;
+          // Custom rate employees: no split, all hours at the custom rate
+          if (u.isCustomRate) {
+            u.lowRateHours = u.totalHours;
             u.highRateHours = 0;
+            u.totalSalary = u.lowRateHours * u.lowRate;
+            u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+            u.rateTier = 'standard';
           } else {
-            u.lowRateHours = remainingThreshold;
-            u.highRateHours = totalHrs - remainingThreshold;
-          }
+            // When totalHours changes, recalculate the split based on cumulative threshold
+            const threshold = u.hoursThreshold || 1000; // Use per-employee threshold
+            const cumulativeBefore = u.previousCumulativeHours; // Use actual cumulative from previous months
+            const remainingThreshold = threshold - cumulativeBefore;
+            const totalHrs = u.totalHours;
 
-          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
-          u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+            if (remainingThreshold <= 0) {
+              u.lowRateHours = 0;
+              u.highRateHours = totalHrs;
+            } else if (remainingThreshold >= totalHrs) {
+              u.lowRateHours = totalHrs;
+              u.highRateHours = 0;
+            } else {
+              u.lowRateHours = remainingThreshold;
+              u.highRateHours = totalHrs - remainingThreshold;
+            }
+
+            u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
+            u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+            u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+          }
         }
 
         if (field === 'deduction' || field === 'advance') {
@@ -486,6 +502,7 @@ export function ConsolidatedSalarySheet() {
             standardRecordId: null,
             premiumRecordId: null,
             rateTier: 'standard' as const,
+            isCustomRate: false,
             siteId,
             siteName: site?.name || '',
           },

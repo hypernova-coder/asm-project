@@ -198,8 +198,8 @@ interface MergedEmployeeRow {
   totalHours: number;        // Sum of standard + premium hours (editable)
   lowRateHours: number;      // From standard record (read-only)
   highRateHours: number;     // From premium record (read-only)
-  lowRate: number;           // 2.5 or 3.0
-  highRate: number;          // 5.0 or 5.5
+  lowRate: number;           // 2.5 or 3.0 (or custom rate)
+  highRate: number;          // 5.0 or 5.5 (or custom rate)
   totalSalary: number;       // Sum of standard + premium salary
   deduction: number;
   advance: number;
@@ -210,6 +210,7 @@ interface MergedEmployeeRow {
   rateTier: 'standard' | 'premium' | 'split';
   previousCumulativeHours: number; // Hours from previous months (aggregate - current month)
   hoursThreshold: number; // Per-employee threshold (default 1000)
+  isCustomRate: boolean; // Whether the employee has a custom rate override
 }
 
 /* ───────── Constants ───────── */
@@ -266,15 +267,20 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
     const any = empEntries[0];
 
     const hasBonus = any.isTeamLeader || any.isSupervisor;
-    const lowRate = hasBonus ? 3.0 : 2.5;
-    const highRate = hasBonus ? 5.5 : 5.0;
+    const defaultLowRate = hasBonus ? 3.0 : 2.5;
+    const defaultHighRate = hasBonus ? 5.5 : 5.0;
+
+    // Use actual rates from salary records (important for custom rate employees)
+    const lowRate = standard?.rtPerHour || defaultLowRate;
+    const highRate = premium?.rtPerHour || defaultHighRate;
 
     const lowRateHours = standard?.totalHours || 0;
     const highRateHours = premium?.totalHours || 0;
     const totalHours = lowRateHours + highRateHours;
 
-    const lowSalary = lowRateHours * lowRate;
-    const highSalary = highRateHours * highRate;
+    // Use actual salary from salary records (they already have correct rate applied)
+    const lowSalary = standard?.totalSalary || (lowRateHours * lowRate);
+    const highSalary = premium?.totalSalary || (highRateHours * highRate);
     const totalSalary = lowSalary + highSalary;
 
     const deduction = standard?.deduction || 0;
@@ -284,6 +290,10 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
     // Use API-provided previousCumulativeHours (computed from salary records)
     const previousCumulativeHours = any.previousCumulativeHours || 0;
     const hoursThreshold = any.hoursThreshold || 1000;
+
+    // Detect custom rate: if the standard rate differs from the default calculated rate
+    const defaultLowRate = hasBonus ? 3.0 : 2.5;
+    const isCustomRate = lowRate !== defaultLowRate && lowRateHours > 0;
 
     result.push({
       empId: any.empId,
@@ -309,6 +319,7 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
       rateTier: standard && premium ? 'split' : standard ? 'standard' : 'premium',
       previousCumulativeHours,
       hoursThreshold,
+      isCustomRate,
     });
   }
 
@@ -1290,30 +1301,39 @@ function SiteSalarySheet({
         const updated = { ...emp, [field]: value };
 
         if (field === 'totalHours') {
-          // Recalculate split allocation using cumulative threshold
-          const threshold = updated.hoursThreshold || 1000;
-          const cumulativeBeforeThisSite = updated.previousCumulativeHours;
-          const remainingThreshold = threshold - cumulativeBeforeThisSite;
-
-          const totalHrs = updated.totalHours;
-
-          if (remainingThreshold <= 0) {
-            // All hours at high rate
-            updated.lowRateHours = 0;
-            updated.highRateHours = totalHrs;
-          } else if (remainingThreshold >= totalHrs) {
-            // All hours at low rate
-            updated.lowRateHours = totalHrs;
+          // Custom rate employees: no split, all hours at the custom rate
+          if (updated.isCustomRate) {
+            updated.lowRateHours = updated.totalHours;
             updated.highRateHours = 0;
+            updated.totalSalary = updated.lowRateHours * updated.lowRate;
+            updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+            updated.rateTier = 'standard';
           } else {
-            // Split
-            updated.lowRateHours = remainingThreshold;
-            updated.highRateHours = totalHrs - remainingThreshold;
-          }
+            // Recalculate split allocation using cumulative threshold
+            const threshold = updated.hoursThreshold || 1000;
+            const cumulativeBeforeThisSite = updated.previousCumulativeHours;
+            const remainingThreshold = threshold - cumulativeBeforeThisSite;
 
-          updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
-          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
-          updated.rateTier = updated.highRateHours > 0 ? (updated.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+            const totalHrs = updated.totalHours;
+
+            if (remainingThreshold <= 0) {
+              // All hours at high rate
+              updated.lowRateHours = 0;
+              updated.highRateHours = totalHrs;
+            } else if (remainingThreshold >= totalHrs) {
+              // All hours at low rate
+              updated.lowRateHours = totalHrs;
+              updated.highRateHours = 0;
+            } else {
+              // Split
+              updated.lowRateHours = remainingThreshold;
+              updated.highRateHours = totalHrs - remainingThreshold;
+            }
+
+            updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
+            updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+            updated.rateTier = updated.highRateHours > 0 ? (updated.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+          }
         }
 
         if (field === 'deduction' || field === 'advance') {
