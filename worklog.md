@@ -266,3 +266,30 @@ Stage Summary:
 - Creation error fixed by server restart (stale DB file descriptor)
 - Cascade soft-deletion confirmed working for all 7 related record types
 - PDF filename standardized to employee_data.pdf
+
+---
+Task ID: 13
+Agent: Main Agent
+Task: Fix attendance P button bulk mark - error marking and filtered employees
+
+Work Log:
+- Diagnosed two bugs in the bulk mark present functionality:
+  1. Attendance refresh URL after bulk mark was wrong: `month=${monthStr}` (just "03") instead of `month=${yearStr}-${monthStr}` ("2025-03"). This caused the API to fail parsing and return stale/empty data.
+  2. Bulk-mark API always marked ALL active employees, ignoring any filters applied on the page.
+- Fixed `/api/attendance/bulk-mark/route.ts`:
+  - Added `employeeIds` optional parameter to the request body
+  - When `employeeIds` is provided (array of IDs), only those employees are marked
+  - When not provided, falls back to marking all active employees (backward compatible)
+- Fixed `attendance-page.tsx`:
+  - `handleBulkMarkPresent` now extracts `employeeIds` from the currently displayed (filtered) employees array
+  - Passes `employeeIds` to the bulk-mark API so only filtered employees get marked
+  - Fixed attendance refresh URL: uses `month=${yearStr}-${monthStr}` format matching the initial fetch
+  - Confirmation dialog now shows filter context (site name, search term) when applicable
+  - Added `searchDebounce` and `selectedSite` to useCallback dependency array
+- Pushed to GitHub (commit a1b0343)
+
+Stage Summary:
+- P button bulk mark now works correctly: marks only currently displayed employees as present
+- When site filter or search is active, only those filtered employees are marked
+- Attendance data properly refreshes after bulk mark (fixed API URL format)
+- Confirmation dialog clearly shows which employees will be affected
