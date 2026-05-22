@@ -292,7 +292,6 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
     const hoursThreshold = any.hoursThreshold || 1000;
 
     // Detect custom rate: if the standard rate differs from the default calculated rate
-    const defaultLowRate = hasBonus ? 3.0 : 2.5;
     const isCustomRate = lowRate !== defaultLowRate && lowRateHours > 0;
 
     result.push({
