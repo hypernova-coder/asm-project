@@ -282,10 +282,48 @@ export async function DELETE(
       data: { status: 'deleted' },
     });
 
-    // Mark all uniform registry records for this employee as deleted
+    // Cascade soft-deletion to all related records
+
+    // 1. Mark all uniform registry records for this employee as deleted
     await db.uniformRegistry.updateMany({
       where: { employeeId: id, isDeleted: false },
       data: { isDeleted: true },
+    });
+
+    // 2. Hide all attendance records
+    await db.attendance.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 3. Hide all notifications for this employee
+    await db.notification.updateMany({
+      where: { userId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 4. Hide all warnings
+    await db.warning.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 5. Hide all fines
+    await db.fine.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 6. Hide all leave requests
+    await db.leaveRequest.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 7. Hide all cancellation requests
+    await db.cancellationRequest.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
     });
 
     return NextResponse.json({

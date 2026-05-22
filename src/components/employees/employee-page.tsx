@@ -75,6 +75,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useAuthStore } from '@/store/auth-store';
+import jsPDF from 'jspdf';
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -600,6 +601,227 @@ function compressImage(file: File, maxWidth = 300, quality = 0.8): Promise<strin
   });
 }
 
+// ─── Employee PDF Generator ──────────────────────────────────────────────
+
+function generateEmployeePDF(employee: Employee): jsPDF {
+  const doc = new jsPDF('p', 'mm', 'a4');
+  const pageWidth = 210;
+  const pageHeight = 297;
+
+  // Company header bar
+  doc.setFillColor(30, 58, 95);
+  doc.rect(0, 0, pageWidth, 32, 'F');
+
+  // Company name
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(18);
+  doc.setFont('helvetica', 'bold');
+  doc.text('ARABIAN SHIELD MANPOWER', 15, 14);
+
+  // Subtitle
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Workforce Management Solutions', 15, 21);
+
+  // Shield icon placeholder
+  doc.setFillColor(59, 130, 246);
+  doc.roundedRect(185, 6, 16, 20, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(14);
+  doc.setFont('helvetica', 'bold');
+  doc.text('A', 190.5, 19);
+
+  // Left column setup
+  const leftX = 15;
+  const leftWidth = 70;
+  const rightX = 95;
+  const rightWidth = 100;
+  let yPos = 40;
+
+  // Profile photo circle (left column)
+  const photoCenterX = leftX + leftWidth / 2;
+  const photoCenterY = yPos + 18;
+  const photoRadius = 15;
+
+  if (employee.photo) {
+    try {
+      doc.addImage(employee.photo, 'JPEG', photoCenterX - photoRadius, photoCenterY - photoRadius, photoRadius * 2, photoRadius * 2);
+    } catch {
+      // Draw placeholder
+      doc.setFillColor(200, 200, 200);
+      doc.circle(photoCenterX, photoCenterY, photoRadius, 'F');
+      doc.setTextColor(100, 100, 100);
+      doc.setFontSize(16);
+      doc.setFont('helvetica', 'bold');
+      const initials = employee.fullName.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+      doc.text(initials, photoCenterX, photoCenterY + 2, { align: 'center' });
+    }
+  } else {
+    doc.setFillColor(200, 200, 200);
+    doc.circle(photoCenterX, photoCenterY, photoRadius, 'F');
+    doc.setTextColor(100, 100, 100);
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    const initials = employee.fullName.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+    doc.text(initials, photoCenterX, photoCenterY + 2, { align: 'center' });
+  }
+
+  yPos = photoCenterY + photoRadius + 10;
+
+  // CONTACT section header
+  doc.setTextColor(30, 58, 95);
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.text('CONTACT', leftX, yPos);
+  yPos += 2;
+  doc.setDrawColor(30, 58, 95);
+  doc.setLineWidth(0.5);
+  doc.line(leftX, yPos, leftX + leftWidth, yPos);
+  yPos += 6;
+
+  // Contact details
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(80, 80, 80);
+
+  const contactItems = [
+    { label: 'Address', value: employee.address || 'Not provided' },
+    { label: 'Email', value: employee.email || 'Not provided' },
+    { label: 'Phone', value: employee.phone || 'Not provided' },
+    { label: 'Nationality', value: employee.nationality || 'Not provided' },
+  ];
+
+  for (const item of contactItems) {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(50, 50, 50);
+    doc.text(item.label + ':', leftX, yPos);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(80, 80, 80);
+    doc.text(item.value, leftX + 2, yPos + 4, { maxWidth: leftWidth - 4 });
+    yPos += 10;
+  }
+
+  // TRADE & SKILLS section
+  yPos += 2;
+  doc.setTextColor(30, 58, 95);
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.text('TRADE & SKILLS', leftX, yPos);
+  yPos += 2;
+  doc.line(leftX, yPos, leftX + leftWidth, yPos);
+  yPos += 6;
+
+  doc.setFontSize(8);
+  const tradeItems = [
+    { label: 'Trade', value: employee.trade || employee.position || 'Not assigned' },
+    { label: 'Team Leader', value: employee.isTeamLeader ? 'Yes' : 'No' },
+    { label: 'Supervisor', value: employee.isSupervisor ? 'Yes' : 'No' },
+    { label: 'Rating', value: '\u2605'.repeat(Math.round(employee.rating)) + '\u2606'.repeat(5 - Math.round(employee.rating)) + ` (${employee.rating.toFixed(1)})` },
+  ];
+
+  for (const item of tradeItems) {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(50, 50, 50);
+    doc.text(item.label + ':', leftX, yPos);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(80, 80, 80);
+    doc.text(item.value, leftX + 2, yPos + 4);
+    yPos += 9;
+  }
+
+  // Right column - Header bar with name
+  doc.setFillColor(30, 58, 95);
+  doc.roundedRect(rightX, 38, rightWidth, 20, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(14);
+  doc.setFont('helvetica', 'bold');
+  doc.text(employee.fullName.toUpperCase(), rightX + 5, 49);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  const subtitle = `${employee.trade || employee.position || 'N/A'} | ${employee.companyName || 'ASM'}`;
+  doc.text(subtitle, rightX + 5, 55);
+
+  let rightY = 66;
+
+  // EMPLOYEE INFORMATION section
+  doc.setTextColor(30, 58, 95);
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.text('EMPLOYEE INFORMATION', rightX, rightY);
+  rightY += 2;
+  doc.line(rightX, rightY, rightX + rightWidth, rightY);
+  rightY += 6;
+
+  // Info grid - 2 columns
+  doc.setFontSize(8);
+  const infoItems = [
+    { label: 'Employee ID', value: employee.employeeId },
+    { label: 'Date of Birth', value: employee.dateOfBirth ? new Date(employee.dateOfBirth).toLocaleDateString() : 'N/A' },
+    { label: 'Join Date', value: employee.joinDate ? new Date(employee.joinDate).toLocaleDateString() : 'N/A' },
+    { label: 'Current Site', value: employee.currentSite || 'Not assigned' },
+    { label: 'ID Status', value: employee.idStatus || 'N/A' },
+    { label: 'Passport Status', value: employee.passportStatus || 'N/A' },
+    { label: 'Company', value: employee.companyName || 'N/A' },
+    { label: 'Emergency Contact', value: employee.emergencyContact || 'N/A' },
+  ];
+
+  const colWidth = (rightWidth - 10) / 2;
+  for (let i = 0; i < infoItems.length; i++) {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const x = rightX + col * (colWidth + 5);
+    const y = rightY + row * 12;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(50, 50, 50);
+    doc.text(infoItems[i].label + ':', x, y);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(80, 80, 80);
+    doc.text(infoItems[i].value, x, y + 4);
+  }
+
+  rightY += Math.ceil(infoItems.length / 2) * 12 + 8;
+
+  // EMPLOYMENT STATUS section
+  doc.setTextColor(30, 58, 95);
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'bold');
+  doc.text('EMPLOYMENT STATUS', rightX, rightY);
+  rightY += 2;
+  doc.line(rightX, rightY, rightX + rightWidth, rightY);
+  rightY += 6;
+
+  doc.setFontSize(8);
+  const statusItems = [
+    { label: 'Status', value: employee.status === 'active' ? 'Active' : employee.status },
+    { label: 'Warnings', value: `${(employee.warnings as unknown[])?.length || 0} record(s)` },
+    { label: 'Fines', value: `${(employee.fines as unknown[])?.length || 0} record(s)` },
+    { label: 'Attendance Records', value: `${(employee.attendance as unknown[])?.length || 0} record(s)` },
+  ];
+
+  for (const item of statusItems) {
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(50, 50, 50);
+    doc.text(item.label + ':', rightX, rightY);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(80, 80, 80);
+    doc.text(item.value, rightX + 50, rightY);
+    rightY += 8;
+  }
+
+  // Footer
+  const footerY = pageHeight - 15;
+  doc.setDrawColor(200, 200, 200);
+  doc.setLineWidth(0.3);
+  doc.line(15, footerY - 3, pageWidth - 15, footerY - 3);
+  doc.setFontSize(7);
+  doc.setTextColor(150, 150, 150);
+  doc.text('Generated by ASM System - Arabian Shield Manpower', 15, footerY);
+  doc.text(new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString(), pageWidth - 15, footerY, { align: 'right' });
+
+  return doc;
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────
 
 export function EmployeePage() {
@@ -1032,13 +1254,35 @@ export function EmployeePage() {
     }
   };
 
-  const handleWhatsApp = (employee: Employee) => {
-    const phone = employee.phone?.replace(/[^0-9]/g, '');
-    if (phone) {
-      window.open(`https://wa.me/${phone}`, '_blank');
-    } else {
-      toast({ title: 'No Phone Number', description: 'This employee has no phone number on file.', variant: 'destructive' });
+  const handleShareWhatsApp = async (employee: Employee) => {
+    try {
+      const doc = generateEmployeePDF(employee);
+      const pdfBlob = doc.output('blob');
+      const file = new File([pdfBlob], 'EMPLOYEE_DATA.pdf', { type: 'application/pdf' });
+
+      // Try Web Share API first (supports file sharing to WhatsApp on mobile)
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: `${employee.fullName} - Employee Data`,
+          text: `Employee details for ${employee.fullName}`,
+        });
+      } else {
+        // Fallback: download PDF and open WhatsApp
+        doc.save('EMPLOYEE_DATA.pdf');
+        window.open('https://wa.me/?text=' + encodeURIComponent(`Employee Details: ${employee.fullName} (${employee.employeeId})`), '_blank');
+      }
+    } catch (error) {
+      console.error('PDF share error:', error);
+      // Final fallback: just download
+      const doc = generateEmployeePDF(employee);
+      doc.save('EMPLOYEE_DATA.pdf');
     }
+  };
+
+  const handleDownloadPDF = (employee: Employee) => {
+    const doc = generateEmployeePDF(employee);
+    doc.save('EMPLOYEE_DATA.pdf');
   };
 
   // ── Pagination ──
@@ -2388,17 +2632,15 @@ export function EmployeePage() {
                 <Button
                   variant="ghost"
                   className="text-slate-400 hover:text-white hover:bg-slate-700 gap-1.5"
-                  onClick={() => handleWhatsApp(viewingEmployee)}
+                  onClick={() => handleShareWhatsApp(viewingEmployee)}
                 >
                   <MessageCircle className="h-4 w-4 text-green-400" />
-                  WhatsApp
+                  Share via WhatsApp
                 </Button>
                 <Button
                   variant="ghost"
                   className="text-slate-400 hover:text-white hover:bg-slate-700 gap-1.5"
-                  onClick={() => {
-                    toast({ title: 'Coming Soon', description: 'PDF export will be available soon.' });
-                  }}
+                  onClick={() => handleDownloadPDF(viewingEmployee)}
                 >
                   <Download className="h-4 w-4" />
                   Download PDF

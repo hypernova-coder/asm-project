@@ -129,6 +129,13 @@ export async function POST(request: NextRequest) {
     });
     const tokenNumber = (maxToken?.tokenNumber ?? 0) + 1;
 
+    // Auto-increment uniformId: find max uniformId and add 1
+    const maxUniformId = await db.uniformRegistry.findFirst({
+      orderBy: { uniformId: 'desc' },
+      select: { uniformId: true },
+    });
+    const uniformId = (maxUniformId?.uniformId ?? 0) + 1;
+
     // Use provided createdAt or default to now
     const createdAtDate = body.createdAt ? new Date(body.createdAt) : new Date();
     // Calculate renewalDate = createdAt + 6 months
@@ -145,6 +152,7 @@ export async function POST(request: NextRequest) {
 
     const entry = await db.uniformRegistry.create({
       data: {
+        uniformId,
         tokenNumber,
         employeeName,
         employeeId,
