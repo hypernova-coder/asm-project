@@ -206,6 +206,7 @@ interface MergedEmployeeRow {
   standardRecordId: string | null;
   premiumRecordId: string | null;
   rateTier: 'standard' | 'premium' | 'split';
+  previousCumulativeHours: number; // Hours from previous months (aggregate - current month)
 }
 
 /* ───────── Constants ───────── */
@@ -277,6 +278,10 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
     const advance = standard?.advance || 0;
     const balanceSalary = totalSalary - deduction - advance;
 
+    // Compute previousCumulativeHours from aggregate totalWorkingHours
+    const aggregateWorkingHours = any.totalWorkingHours || 0;
+    const previousCumulativeHours = Math.max(0, aggregateWorkingHours - totalHours);
+
     result.push({
       empId: any.empId,
       empName: any.empName,
@@ -299,6 +304,7 @@ function mergeSplitEntries(entries: EmployeeSalaryData[]): MergedEmployeeRow[] {
       standardRecordId: standard?.salaryRecordId || null,
       premiumRecordId: premium?.salaryRecordId || null,
       rateTier: standard && premium ? 'split' : standard ? 'standard' : 'premium',
+      previousCumulativeHours,
     });
   }
 
@@ -1262,29 +1268,59 @@ function SiteSalarySheet({
         if (i !== index) return emp;
         const updated = { ...emp, [field]: value };
 
-        // Recalculate totalSalary and balanceSalary when relevant fields change
-        if (field === 'totalHours' || field === 'deduction' || field === 'advance') {
-          // Recalculate split allocation based on totalHours
-          const hasBonus = updated.isTeamLeader || updated.isSupervisor;
-          const lowRate = hasBonus ? 3.0 : 2.5;
-          const highRate = hasBonus ? 5.5 : 5.0;
+        if (field === 'totalHours') {
+          // Recalculate split allocation using cumulative threshold
+          const threshold = 1000;
+          const cumulativeBeforeThisSite = updated.previousCumulativeHours;
+          const remainingThreshold = threshold - cumulativeBeforeThisSite;
 
-          // Recalculate hours split: assume threshold of 1000
           const totalHrs = updated.totalHours;
-          let lowHrs = totalHrs;
-          let highHrs = 0;
-          if (totalHrs > 1000) {
-            lowHrs = 1000;
-            highHrs = totalHrs - 1000;
+
+          if (remainingThreshold <= 0) {
+            // All hours at high rate
+            updated.lowRateHours = 0;
+            updated.highRateHours = totalHrs;
+          } else if (remainingThreshold >= totalHrs) {
+            // All hours at low rate
+            updated.lowRateHours = totalHrs;
+            updated.highRateHours = 0;
+          } else {
+            // Split
+            updated.lowRateHours = remainingThreshold;
+            updated.highRateHours = totalHrs - remainingThreshold;
           }
 
-          updated.lowRateHours = lowHrs;
-          updated.highRateHours = highHrs;
-          updated.lowRate = lowRate;
-          updated.highRate = highRate;
-          updated.totalSalary = lowHrs * lowRate + highHrs * highRate;
+          updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
           updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
-          updated.rateTier = highHrs > 0 ? 'split' : 'standard';
+          updated.rateTier = updated.highRateHours > 0 ? (updated.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+        }
+
+        if (field === 'deduction' || field === 'advance') {
+          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+        }
+
+        if (field === 'lowRateHours') {
+          updated.totalHours = updated.lowRateHours + updated.highRateHours;
+          updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
+          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+          updated.rateTier = updated.highRateHours > 0 ? (updated.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+        }
+
+        if (field === 'highRateHours') {
+          updated.totalHours = updated.lowRateHours + updated.highRateHours;
+          updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
+          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+          updated.rateTier = updated.highRateHours > 0 ? (updated.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+        }
+
+        if (field === 'lowRate') {
+          updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
+          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
+        }
+
+        if (field === 'highRate') {
+          updated.totalSalary = updated.lowRateHours * updated.lowRate + updated.highRateHours * updated.highRate;
+          updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
         }
 
         return updated;
@@ -1321,6 +1357,7 @@ function SiteSalarySheet({
       standardRecordId: null,
       premiumRecordId: null,
       rateTier: 'standard',
+      previousCumulativeHours: 0,
     };
     setMergedEmployees((prev) => [...prev, newRow]);
   };
@@ -1338,37 +1375,33 @@ function SiteSalarySheet({
 
     const records: Record<string, unknown>[] = [];
     for (const emp of mergedEmployees) {
-      // Send a single record per employee per site with totalHours.
-      // The allocation engine will recalculate the split (lowRateHours/highRateHours)
-      // based on cumulative threshold across all months.
-      // We use the standard rateTier and let the allocation engine create
-      // the premium record if needed.
-      records.push({
-        salaryRecordId: emp.standardRecordId,
-        empId: emp.empId,
-        empName: emp.empName,
-        siteId: site.id,
-        siteName: site.name,
-        month: monthStr,
-        year,
-        nationality: emp.nationality,
-        trade: emp.trade,
-        employeeCode: emp.employeeCode,
-        slNo: emp.slNo,
-        totalHours: emp.totalHours,  // Full site total — allocation engine will split
-        rtPerHour: emp.lowRate,
-        totalSalary: emp.totalHours * emp.lowRate, // Temporary; allocation engine will fix
-        deduction: emp.deduction,
-        advance: emp.advance,
-        balanceSalary: (emp.totalHours * emp.lowRate) - emp.deduction - emp.advance,
-        isPaid: emp.isPaid,
-        rateTier: 'standard',
-      });
+      // Send standard record if lowRateHours > 0
+      if (emp.lowRateHours > 0 || emp.standardRecordId) {
+        records.push({
+          salaryRecordId: emp.standardRecordId,
+          empId: emp.empId,
+          empName: emp.empName,
+          siteId: site.id,
+          siteName: site.name,
+          month: monthStr,
+          year,
+          nationality: emp.nationality,
+          trade: emp.trade,
+          employeeCode: emp.employeeCode,
+          slNo: emp.slNo,
+          totalHours: emp.lowRateHours,
+          rtPerHour: emp.lowRate,
+          totalSalary: emp.lowRateHours * emp.lowRate,
+          deduction: emp.deduction,
+          advance: emp.advance,
+          balanceSalary: (emp.lowRateHours * emp.lowRate) - emp.deduction - emp.advance,
+          isPaid: emp.isPaid,
+          rateTier: 'standard',
+        });
+      }
 
-      // If there's an existing premium record, send it with 0 hours so the
-      // allocation engine knows to evaluate it. It will be soft-deleted by
-      // the engine if not needed, or updated with correct split hours.
-      if (emp.premiumRecordId) {
+      // Send premium record if highRateHours > 0 or premium record exists
+      if (emp.highRateHours > 0 || emp.premiumRecordId) {
         records.push({
           salaryRecordId: emp.premiumRecordId,
           empId: emp.empId,
@@ -1381,12 +1414,12 @@ function SiteSalarySheet({
           trade: emp.trade,
           employeeCode: emp.employeeCode,
           slNo: emp.slNo,
-          totalHours: 0,
+          totalHours: emp.highRateHours,
           rtPerHour: emp.highRate,
-          totalSalary: 0,
+          totalSalary: emp.highRateHours * emp.highRate,
           deduction: 0,
           advance: 0,
-          balanceSalary: 0,
+          balanceSalary: emp.highRateHours * emp.highRate,
           isPaid: false,
           rateTier: 'premium',
         });
@@ -1448,8 +1481,8 @@ function SiteSalarySheet({
               <TableHead className="text-slate-300 font-semibold text-xs min-w-[90px]">TRADE</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs min-w-[80px]">EMP ID</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">TOTAL HOUR</TableHead>
-              <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">2.5/3 HRS</TableHead>
-              <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">5/5.5 HRS</TableHead>
+              <TableHead className="text-slate-300 font-semibold text-xs min-w-[120px] text-right">2.5/3 HRS</TableHead>
+              <TableHead className="text-slate-300 font-semibold text-xs min-w-[120px] text-right">5/5.5 HRS</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-24 text-right">TOTAL SALARY</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">DEDUCTION</TableHead>
               <TableHead className="text-slate-300 font-semibold text-xs w-20 text-right">ADVANCE</TableHead>
@@ -1531,14 +1564,58 @@ function SiteSalarySheet({
                   )}
                 </TableCell>
                 <TableCell className="bg-slate-800/40">
-                  <span className={cn('text-sm text-right block', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                    {emp.lowRateHours > 0 ? `${emp.lowRateHours} @ ${emp.lowRate}` : '-'}
-                  </span>
+                  {editMode ? (
+                    <div className="flex items-center gap-1 justify-end">
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={emp.lowRateHours || ''}
+                        onChange={(e) => handleCellChange(index, 'lowRateHours', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[52px] px-1.5"
+                      />
+                      <span className="text-slate-500 text-xs">×</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={emp.lowRate || ''}
+                        onChange={(e) => handleCellChange(index, 'lowRate', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-[44px] px-1.5"
+                      />
+                    </div>
+                  ) : (
+                    <span className={cn('text-sm text-right block', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                      {emp.lowRateHours > 0 ? `${emp.lowRateHours} × ${emp.lowRate}` : '-'}
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="bg-slate-800/40">
-                  <span className={cn('text-sm text-right block', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
-                    {emp.highRateHours > 0 ? `${emp.highRateHours} @ ${emp.highRate}` : '-'}
-                  </span>
+                  {editMode ? (
+                    <div className="flex items-center gap-1 justify-end">
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={emp.highRateHours || ''}
+                        onChange={(e) => handleCellChange(index, 'highRateHours', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-amber-300 text-right w-[52px] px-1.5"
+                      />
+                      <span className="text-slate-500 text-xs">×</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={emp.highRate || ''}
+                        onChange={(e) => handleCellChange(index, 'highRate', parseFloat(e.target.value) || 0)}
+                        className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-amber-300 text-right w-[44px] px-1.5"
+                      />
+                    </div>
+                  ) : (
+                    <span className={cn('text-sm text-right block', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
+                      {emp.highRateHours > 0 ? `${emp.highRateHours} × ${emp.highRate}` : '-'}
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className={cn('text-sm text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
                   {formatNumber(emp.totalSalary)}

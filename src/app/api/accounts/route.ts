@@ -232,6 +232,9 @@ export async function GET(request: NextRequest) {
     // -----------------------------------------------------------------------
     // 3. Batch-fetch aggregate working-hours for every employee
     // -----------------------------------------------------------------------
+    // IMPORTANT: We compute cumulative hours from SALARY RECORDS directly
+    // instead of from TotalEmployeeWorkingHours, because TotalEmployeeWorkingHours
+    // can become inconsistent. Salary records are the source of truth.
     const allEmpIds = new Set<string>();
     for (const { rawEntries } of siteRawData) {
       for (const entry of rawEntries) {
@@ -239,49 +242,42 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const allWhRecords = await db.totalEmployeeWorkingHours.findMany({
+    // Fetch ALL salary records for these employees to compute cumulative hours
+    const allEmpSalaryRecords = await db.salaryRecord.findMany({
       where: { empId: { in: Array.from(allEmpIds) }, isDeleted: false },
     });
 
-    // Group working-hours records by empId
-    const whByEmpId = new Map<string, typeof allWhRecords>();
-    for (const rec of allWhRecords) {
-      if (!whByEmpId.has(rec.empId)) whByEmpId.set(rec.empId, []);
-      whByEmpId.get(rec.empId)!.push(rec);
+    // Group salary records by empId
+    const salaryByEmpId = new Map<string, typeof allEmpSalaryRecords>();
+    for (const sr of allEmpSalaryRecords) {
+      if (!salaryByEmpId.has(sr.empId)) salaryByEmpId.set(sr.empId, []);
+      salaryByEmpId.get(sr.empId)!.push(sr);
     }
 
-    // Build per-employee hours info
+    // Build per-employee hours info from salary records
     const employeeHoursInfo = new Map<
       string,
       {
         aggregateTotal: number;
         previousAggregate: number;
         currentMonthHours: number;
-        allRecords: typeof allWhRecords;
-        hasCustomRate: boolean;
-        latestRtPerHour: number;
       }
     >();
 
     for (const empId of allEmpIds) {
-      const records = whByEmpId.get(empId) ?? [];
-      const aggregateTotal = records.reduce((s, r) => s + r.totalWorkingHours, 0);
-      const previousAggregate = records
+      const empSalaryRecords = salaryByEmpId.get(empId) ?? [];
+      const aggregateTotal = empSalaryRecords.reduce((s, r) => s + r.totalHours, 0);
+      const previousAggregate = empSalaryRecords
         .filter(r => r.month < month)
-        .reduce((s, r) => s + r.totalWorkingHours, 0);
-      const currentMonthHours = records
+        .reduce((s, r) => s + r.totalHours, 0);
+      const currentMonthHours = empSalaryRecords
         .filter(r => r.month === month)
-        .reduce((s, r) => s + r.totalWorkingHours, 0);
-      const hasCustomRate = records.some(r => r.isCustom);
-      const latestRtPerHour = records.length > 0 ? records[records.length - 1].rtPerHour : 2.5;
+        .reduce((s, r) => s + r.totalHours, 0);
 
       employeeHoursInfo.set(empId, {
         aggregateTotal,
         previousAggregate,
         currentMonthHours,
-        allRecords: records,
-        hasCustomRate,
-        latestRtPerHour,
       });
     }
 
@@ -305,9 +301,9 @@ export async function GET(request: NextRequest) {
     // -----------------------------------------------------------------------
     // 5. Apply the basic / premium split algorithm
     //    KEY: The threshold is CUMULATIVE across all months, NOT per-month.
-    //    We use previousAggregate hours to determine remaining threshold.
-    //    For entries with existing salary records, we use them directly.
-    //    For new entries, we apply the sequential allocation algorithm.
+    //    We use previousAggregate hours from salary records to determine
+    //    remaining threshold. We ALWAYS recalculate the split from scratch
+    //    to ensure correctness, even if salary records exist.
     // -----------------------------------------------------------------------
     const employeeSplitDecisions = new Map<string, Map<string, SplitDecision[]>>();
 
@@ -333,35 +329,47 @@ export async function GET(request: NextRequest) {
         const basicRate = hasBonus ? 3.0 : 2.5;
         const premiumRate = hasBonus ? 5.5 : 5.0;
 
-        // KEY: If salary records exist, use them directly instead of recalculating split
-        if (entry.salaryRecords.length > 0) {
-          const decisions: SplitDecision[] = entry.salaryRecords.map(sr => ({
-            rateTier: (sr.rateTier === 'premium' ? 'premium' : 'standard') as 'standard' | 'premium',
-            hours: sr.totalHours,
-            rate: sr.rtPerHour,
-          }));
-          empDecisions.set(entry.siteId, decisions);
-          // Update consumedThreshold based on existing records for consistency
-          // (even though we're using saved data, we need accurate tracking for other sites)
-          const stdRecord = entry.salaryRecords.find(sr => sr.rateTier === 'standard');
-          const premRecord = entry.salaryRecords.find(sr => sr.rateTier === 'premium');
-          const stdHours = stdRecord?.totalHours ?? 0;
-          const premHours = premRecord?.totalHours ?? 0;
-          // Only count low-rate hours toward consumed threshold
-          consumedThreshold += stdHours;
-          if (consumedThreshold > threshold) consumedThreshold = threshold;
-          // If there are also premium hours, threshold is fully consumed
-          if (premHours > 0) consumedThreshold = threshold;
-          continue;
+        // Compute raw hours for this site from existing salary records
+        const siteRawHours = entry.salaryRecords.reduce((sum, sr) => sum + sr.totalHours, 0);
+
+        // ALWAYS recalculate the split based on cumulative threshold
+        // This ensures correctness even if existing records have wrong data
+        const remainingThreshold = threshold - consumedThreshold;
+        let lowRateHours = 0;
+        let highRateHours = 0;
+
+        if (siteRawHours <= 0) {
+          lowRateHours = 0;
+          highRateHours = 0;
+        } else if (remainingThreshold >= siteRawHours) {
+          // Case 1: Site fully inside remaining threshold → all hours at low rate
+          lowRateHours = siteRawHours;
+          highRateHours = 0;
+          consumedThreshold += siteRawHours;
+        } else if (remainingThreshold > 0) {
+          // Case 2: Site crosses the threshold → split
+          lowRateHours = remainingThreshold;
+          highRateHours = siteRawHours - remainingThreshold;
+          consumedThreshold = threshold;
+        } else {
+          // Case 3: Threshold already exhausted → all hours at high rate
+          lowRateHours = 0;
+          highRateHours = siteRawHours;
         }
 
-        // No salary records yet — apply sequential allocation for new entries
-        // For new entries without salary records, hours are 0 (user hasn't entered yet)
-        // Default to basic rate with 0 hours
-        const siteHours = 0;
-
         const decisions: SplitDecision[] = [];
-        decisions.push({ rateTier: 'standard', hours: siteHours, rate: basicRate });
+
+        if (lowRateHours > 0) {
+          decisions.push({ rateTier: 'standard', hours: lowRateHours, rate: basicRate });
+        }
+        if (highRateHours > 0) {
+          decisions.push({ rateTier: 'premium', hours: highRateHours, rate: premiumRate });
+        }
+
+        // If no hours at all, still add a standard entry with 0 hours
+        if (decisions.length === 0) {
+          decisions.push({ rateTier: 'standard', hours: 0, rate: basicRate });
+        }
 
         empDecisions.set(entry.siteId, decisions);
       }
@@ -371,7 +379,8 @@ export async function GET(request: NextRequest) {
 
     // -----------------------------------------------------------------------
     // 6. Build final per-site employee entries using the split decisions
-    //    KEY FIX: When salary records exist, use saved data directly.
+    //    We use the RECALCULATED split decisions for hours and rates,
+    //    but preserve deduction/advance/isPaid from existing salary records.
     // -----------------------------------------------------------------------
     const siteFinalEntries = new Map<string, FinalEmployeeEntry[]>();
 
@@ -385,21 +394,15 @@ export async function GET(request: NextRequest) {
 
         if (!decisions || !hoursInfo) continue;
 
-        const {
-          allRecords: whRecords,
-          aggregateTotal,
-          hasCustomRate,
-          latestRtPerHour,
-        } = hoursInfo;
-
+        const { aggregateTotal } = hoursInfo;
         const hasBonus = entry.isTeamLeader || entry.isSupervisor;
         const threshold = entry.hoursThreshold || 1000;
 
         for (const decision of decisions) {
-          // Skip entries with zero hours (can happen at boundary)
+          // Skip entries with zero hours AND no existing record
           if (decision.hours <= 0 && entry.salaryRecords.length === 0) continue;
 
-          // Find a matching salary record for this rateTier
+          // Find a matching salary record for this rateTier to preserve editable fields
           const matchingRecord = entry.salaryRecords.find(
             sr => sr.rateTier === decision.rateTier
           );
@@ -407,17 +410,35 @@ export async function GET(request: NextRequest) {
           let salaryRecordData: Record<string, unknown> | null = null;
 
           if (matchingRecord) {
-            // KEY FIX: Use saved salary record data directly — do NOT override with split decisions.
-            // The user may have manually edited hours/rate, and we must preserve those edits.
+            // Use the existing record as a template, but OVERRIDE with correct split values
+            const computedTotalSalary = decision.hours * decision.rate;
+            // Preserve deduction/advance from the standard record
+            const stdRecord = entry.salaryRecords.find(sr => sr.rateTier === 'standard');
+            const carryDeduction = decision.rateTier === 'standard'
+              ? (stdRecord?.deduction ?? 0)
+              : 0;
+            const carryAdvance = decision.rateTier === 'standard'
+              ? (stdRecord?.advance ?? 0)
+              : 0;
+            const carryIsPaid = decision.rateTier === 'standard'
+              ? (stdRecord?.isPaid ?? false)
+              : false;
+
             salaryRecordData = {
               ...matchingRecord,
-              // Keep all saved values: totalHours, rtPerHour, totalSalary, etc.
+              // Override with correctly calculated split values
+              totalHours: decision.hours,
+              rtPerHour: decision.rate,
+              totalSalary: computedTotalSalary,
+              deduction: carryDeduction,
+              advance: carryAdvance,
+              balanceSalary: computedTotalSalary - carryDeduction - carryAdvance,
+              isPaid: carryIsPaid,
               createdAt: matchingRecord.createdAt.toISOString(),
               updatedAt: matchingRecord.updatedAt.toISOString(),
             };
           } else if (decision.rateTier === 'standard' && entry.salaryRecords.length > 0) {
             // No "standard" record in DB yet, but other records exist.
-            // Preserve deduction / advance / isPaid from the first available record.
             const template = entry.salaryRecords.find(sr => sr.rateTier === 'standard')
               ?? entry.salaryRecords[0];
             const computedTotalSalary = decision.hours * decision.rate;
@@ -457,25 +478,18 @@ export async function GET(request: NextRequest) {
           }
 
           // Build workingHours object
-          const workingHoursObj: Record<string, unknown> =
-            whRecords.length > 0
-              ? {
-                  id: whRecords[0].id,
-                  empId: entry.empId,
-                  empName: entry.empName,
-                  totalWorkingHours: aggregateTotal,
-                  rtPerHour: hasCustomRate ? latestRtPerHour : decision.rate,
-                  isCustom: hasCustomRate,
-                  calculatedRtPerHour: decision.rate,
-                }
-              : {
-                  empId: entry.empId,
-                  empName: entry.empName,
-                  totalWorkingHours: 0,
-                  rtPerHour: decision.rate,
-                  isCustom: false,
-                  calculatedRtPerHour: decision.rate,
-                };
+          const calculatedRtPerHour = aggregateTotal >= threshold
+            ? (hasBonus ? 5.5 : 5.0)
+            : (hasBonus ? 3.0 : 2.5);
+
+          const workingHoursObj: Record<string, unknown> = {
+            empId: entry.empId,
+            empName: entry.empName,
+            totalWorkingHours: aggregateTotal,
+            rtPerHour: calculatedRtPerHour,
+            isCustom: false,
+            calculatedRtPerHour,
+          };
 
           finalEntries.push({
             empId: entry.empId,

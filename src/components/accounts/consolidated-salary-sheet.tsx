@@ -42,12 +42,13 @@ interface MergedEmployeeRow {
 
   // Hours
   totalHours: number; // Sum of standard + premium hours (editable)
-  lowRateHours: number; // From standard record (read-only, from allocation engine)
-  highRateHours: number; // From premium record (read-only, from allocation engine)
+  lowRateHours: number; // From standard record (editable)
+  highRateHours: number; // From premium record (editable)
+  previousCumulativeHours: number; // Hours from previous months (for split calculation)
 
   // Rates
-  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor
-  highRate: number; // 5.0 or 5.5 based on TL/Supervisor
+  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor (editable)
+  highRate: number; // 5.0 or 5.5 based on TL/Supervisor (editable)
 
   // Salary
   totalSalary: number; // Sum of standard + premium salary
@@ -224,6 +225,10 @@ function mergeApiEntries(
       rateTier = 'premium';
     }
 
+    // Compute previousCumulativeHours from aggregate totalWorkingHours
+    const aggregateWorkingHours = (baseEntry.workingHours?.totalWorkingHours as number) || 0;
+    const previousCumulativeHours = Math.max(0, aggregateWorkingHours - totalHours);
+
     merged.push({
       empId,
       empName: baseEntry.empName,
@@ -236,6 +241,7 @@ function mergeApiEntries(
       totalHours,
       lowRateHours,
       highRateHours,
+      previousCumulativeHours,
       lowRate: standardEntry?.salaryRecord?.rtPerHour ?? lowRate,
       highRate: premiumEntry?.salaryRecord?.rtPerHour ?? highRate,
       totalSalary,
@@ -342,16 +348,55 @@ export function ConsolidatedSalarySheet() {
         const u = { ...emp, [field]: value };
 
         // Recalculate salary fields when relevant fields change
-        if (field === 'totalHours' || field === 'deduction' || field === 'advance') {
-          // When total hours changes, proportionally distribute to low/high rate hours
-          // But we don't change lowRateHours/highRateHours since they come from allocation engine
-          // Only recalculate totalSalary and balanceSalary
-          const standardSalary = u.lowRateHours * u.lowRate;
-          const premiumSalary = u.highRateHours * u.highRate;
-          // If totalHours was edited, we need to recalculate the split proportionally
-          // But since split is from allocation engine, we just use the existing rates
-          // The allocation engine will recalculate after save
-          u.totalSalary = standardSalary + premiumSalary;
+        if (field === 'totalHours') {
+          // When totalHours changes, recalculate the split based on cumulative threshold
+          const threshold = 1000; // Default, allocation engine will use actual
+          const cumulativeBefore = 0; // Simplified; allocation engine recalculates correctly after save
+          const remainingThreshold = threshold - cumulativeBefore;
+          const totalHrs = u.totalHours;
+
+          if (remainingThreshold <= 0) {
+            u.lowRateHours = 0;
+            u.highRateHours = totalHrs;
+          } else if (remainingThreshold >= totalHrs) {
+            u.lowRateHours = totalHrs;
+            u.highRateHours = 0;
+          } else {
+            u.lowRateHours = remainingThreshold;
+            u.highRateHours = totalHrs - remainingThreshold;
+          }
+
+          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
+          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+          u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+        }
+
+        if (field === 'deduction' || field === 'advance') {
+          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
+          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+        }
+
+        if (field === 'lowRateHours') {
+          u.totalHours = u.lowRateHours + u.highRateHours;
+          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
+          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+          u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+        }
+
+        if (field === 'highRateHours') {
+          u.totalHours = u.lowRateHours + u.highRateHours;
+          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
+          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+          u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
+        }
+
+        if (field === 'lowRate') {
+          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
+          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+        }
+
+        if (field === 'highRate') {
+          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
           u.balanceSalary = u.totalSalary - u.deduction - u.advance;
         }
 
@@ -388,6 +433,7 @@ export function ConsolidatedSalarySheet() {
             totalHours: 0,
             lowRateHours: 0,
             highRateHours: 0,
+            previousCumulativeHours: 0,
             lowRate: 2.5,
             highRate: 5.0,
             totalSalary: 0,
@@ -448,39 +494,37 @@ export function ConsolidatedSalarySheet() {
       for (const site of sites) {
         const employees = siteEmployees[site.id] || [];
         for (const emp of employees) {
-          // Send a single record per employee per site with totalHours.
-          // The allocation engine will recalculate the split (lowRateHours/highRateHours)
-          // based on cumulative threshold across all months.
-          const standardRecord = {
-            salaryRecordId: emp.standardRecordId || undefined,
-            empId: emp.empId,
-            empName: emp.empName,
-            siteId: emp.siteId || site.id,
-            siteName: emp.siteName || site.name,
-            month: monthStr,
-            year: selectedYear,
-            nationality: emp.nationality,
-            trade: emp.trade,
-            employeeCode: emp.employeeCode,
-            slNo: emp.slNo,
-            totalHours: emp.totalHours, // Full site total — allocation engine will split
-            rtPerHour: emp.lowRate,
-            totalSalary: emp.totalHours * emp.lowRate, // Temporary; allocation engine will fix
-            deduction: emp.deduction,
-            advance: emp.advance,
-            balanceSalary: (emp.totalHours * emp.lowRate) - emp.deduction - emp.advance,
-            isPaid: emp.isPaid,
-            rateTier: 'standard',
-          };
-          allRecords.push(standardRecord);
-          if (emp.standardRecordId) {
-            submittedRecordIds.add(emp.standardRecordId);
+          // Send standard record if lowRateHours > 0 or record exists
+          if (emp.lowRateHours > 0 || emp.standardRecordId) {
+            const standardRecord = {
+              salaryRecordId: emp.standardRecordId || undefined,
+              empId: emp.empId,
+              empName: emp.empName,
+              siteId: emp.siteId || site.id,
+              siteName: emp.siteName || site.name,
+              month: monthStr,
+              year: selectedYear,
+              nationality: emp.nationality,
+              trade: emp.trade,
+              employeeCode: emp.employeeCode,
+              slNo: emp.slNo,
+              totalHours: emp.lowRateHours,
+              rtPerHour: emp.lowRate,
+              totalSalary: emp.lowRateHours * emp.lowRate,
+              deduction: emp.deduction,
+              advance: emp.advance,
+              balanceSalary: (emp.lowRateHours * emp.lowRate) - emp.deduction - emp.advance,
+              isPaid: emp.isPaid,
+              rateTier: 'standard',
+            };
+            allRecords.push(standardRecord);
+            if (emp.standardRecordId) {
+              submittedRecordIds.add(emp.standardRecordId);
+            }
           }
 
-          // If there's an existing premium record, send it with 0 hours.
-          // The allocation engine will either soft-delete it (if not needed)
-          // or update it with the correct split hours.
-          if (emp.premiumRecordId) {
+          // Send premium record if highRateHours > 0 or record exists
+          if (emp.highRateHours > 0 || emp.premiumRecordId) {
             const premiumRecord = {
               salaryRecordId: emp.premiumRecordId || undefined,
               empId: emp.empId,
@@ -493,12 +537,12 @@ export function ConsolidatedSalarySheet() {
               trade: emp.trade,
               employeeCode: emp.employeeCode,
               slNo: emp.slNo,
-              totalHours: 0,
+              totalHours: emp.highRateHours,
               rtPerHour: emp.highRate,
-              totalSalary: 0,
+              totalSalary: emp.highRateHours * emp.highRate,
               deduction: 0,
               advance: 0,
-              balanceSalary: 0,
+              balanceSalary: emp.highRateHours * emp.highRate,
               isPaid: false,
               rateTier: 'premium',
             };
@@ -903,18 +947,62 @@ export function ConsolidatedSalarySheet() {
                                   )}
                                 </td>
 
-                                {/* 2.5/3 HRS - Read-only (from allocation engine) */}
+                                {/* 2.5/3 HRS - Editable (hours × rate) */}
                                 <td className="py-1.5 px-2 bg-slate-800/30">
-                                  <span className={cn('text-[11px] block text-right', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                                    {emp.lowRateHours || '0'}
-                                  </span>
+                                  {editMode ? (
+                                    <div className="flex items-center gap-0.5 justify-end">
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        value={emp.lowRateHours || ''}
+                                        onChange={(e) => handleCellChange(site.id, index, 'lowRateHours', parseFloat(e.target.value) || 0)}
+                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[42px] py-0 px-1"
+                                      />
+                                      <span className="text-slate-500 text-[10px]">×</span>
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        step={0.5}
+                                        value={emp.lowRate || ''}
+                                        onChange={(e) => handleCellChange(site.id, index, 'lowRate', parseFloat(e.target.value) || 0)}
+                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[36px] py-0 px-1"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <span className={cn('text-[11px] block text-right', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                                      {emp.lowRateHours > 0 ? `${emp.lowRateHours} × ${emp.lowRate}` : '-'}
+                                    </span>
+                                  )}
                                 </td>
 
-                                {/* 5/5.5 HRS - Read-only (from allocation engine) */}
+                                {/* 5/5.5 HRS - Editable (hours × rate) */}
                                 <td className="py-1.5 px-2 bg-amber-900/10">
-                                  <span className={cn('text-[11px] block text-right', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
-                                    {emp.highRateHours || '0'}
-                                  </span>
+                                  {editMode ? (
+                                    <div className="flex items-center gap-0.5 justify-end">
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        value={emp.highRateHours || ''}
+                                        onChange={(e) => handleCellChange(site.id, index, 'highRateHours', parseFloat(e.target.value) || 0)}
+                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-amber-300 text-right w-[42px] py-0 px-1"
+                                      />
+                                      <span className="text-slate-500 text-[10px]">×</span>
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        step={0.5}
+                                        value={emp.highRate || ''}
+                                        onChange={(e) => handleCellChange(site.id, index, 'highRate', parseFloat(e.target.value) || 0)}
+                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-amber-300 text-right w-[36px] py-0 px-1"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <span className={cn('text-[11px] block text-right', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
+                                      {emp.highRateHours > 0 ? `${emp.highRateHours} × ${emp.highRate}` : '-'}
+                                    </span>
+                                  )}
                                 </td>
 
                                 {/* TOTAL SALARY - Calculated */}

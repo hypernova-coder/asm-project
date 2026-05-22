@@ -128,17 +128,23 @@ export async function allocateEmployeeHours(
     // ------------------------------------------------------------------
     // 3b. Compute previous months' cumulative hours
     // ------------------------------------------------------------------
-    const allWorkingHours = await db.totalEmployeeWorkingHours.findMany({
-      where: { empId, isDeleted: false },
+    // IMPORTANT: We compute previousCumulative from SALARY RECORDS directly
+    // rather than from TotalEmployeeWorkingHours, because TotalEmployeeWorkingHours
+    // can become inconsistent (e.g., aggregate values saved as monthly totals).
+    // Salary records are the source of truth for hours worked.
+    const previousSalaryRecords = await db.salaryRecord.findMany({
+      where: {
+        empId,
+        month: { lt: month },
+        isDeleted: false,
+      },
     });
 
-    // Previous cumulative = sum of hours from months BEFORE current month
-    const previousCumulative = allWorkingHours
-      .filter((r) => r.month < month)
-      .reduce((sum, r) => sum + r.totalWorkingHours, 0);
-
-    // The current month's record may or may not exist yet
-    const currentMonthRecord = allWorkingHours.find((r) => r.month === month);
+    // Previous cumulative = sum of ALL hours from salary records in months BEFORE current month
+    const previousCumulative = previousSalaryRecords.reduce(
+      (sum, sr) => sum + sr.totalHours,
+      0,
+    );
 
     // ------------------------------------------------------------------
     // 3c. Group by site, calculate rawHours per site
@@ -240,7 +246,12 @@ export async function allocateEmployeeHours(
 
       // --- Standard (lowRate) record ---
       if (alloc.lowRateHours > 0) {
-        const totalSalary = alloc.lowRateHours * lowRate;
+        // Preserve user-edited rate from existing record if it differs from default
+        const existingStdRate = siteData.existingStandard?.rtPerHour;
+        const effectiveLowRate = (existingStdRate && existingStdRate !== lowRate)
+          ? existingStdRate
+          : lowRate;
+        const totalSalary = alloc.lowRateHours * effectiveLowRate;
         const carryDeduction = siteData.existingStandard?.deduction ?? 0;
         const carryAdvance = siteData.existingStandard?.advance ?? 0;
         const carryIsPaid = siteData.existingStandard?.isPaid ?? false;
@@ -263,7 +274,7 @@ export async function allocateEmployeeHours(
             trade: employee.trade || '',
             employeeCode: employee.employeeId || '',
             totalHours: alloc.lowRateHours,
-            rtPerHour: lowRate,
+            rtPerHour: effectiveLowRate,
             totalSalary,
             deduction: carryDeduction,
             advance: carryAdvance,
@@ -283,7 +294,7 @@ export async function allocateEmployeeHours(
             employeeCode: employee.employeeId || '',
             slNo: 0,
             totalHours: alloc.lowRateHours,
-            rtPerHour: lowRate,
+            rtPerHour: effectiveLowRate,
             totalSalary,
             deduction: carryDeduction,
             advance: carryAdvance,
@@ -315,7 +326,12 @@ export async function allocateEmployeeHours(
 
       // --- Premium (highRate) record ---
       if (alloc.highRateHours > 0) {
-        const totalSalary = alloc.highRateHours * highRate;
+        // Preserve user-edited rate from existing record if it differs from default
+        const existingPremRate = siteData.existingPremium?.rtPerHour;
+        const effectiveHighRate = (existingPremRate && existingPremRate !== highRate)
+          ? existingPremRate
+          : highRate;
+        const totalSalary = alloc.highRateHours * effectiveHighRate;
         const carryDeduction = siteData.existingPremium?.deduction ?? 0;
         const carryAdvance = siteData.existingPremium?.advance ?? 0;
         const carryIsPaid = siteData.existingPremium?.isPaid ?? false;
@@ -338,7 +354,7 @@ export async function allocateEmployeeHours(
             trade: employee.trade || '',
             employeeCode: employee.employeeId || '',
             totalHours: alloc.highRateHours,
-            rtPerHour: highRate,
+            rtPerHour: effectiveHighRate,
             totalSalary,
             deduction: carryDeduction,
             advance: carryAdvance,
@@ -358,7 +374,7 @@ export async function allocateEmployeeHours(
             employeeCode: employee.employeeId || '',
             slNo: 0,
             totalHours: alloc.highRateHours,
-            rtPerHour: highRate,
+            rtPerHour: effectiveHighRate,
             totalSalary,
             deduction: carryDeduction,
             advance: carryAdvance,
@@ -447,19 +463,20 @@ export async function allocateEmployeeHours(
       0,
     );
 
-    // Fetch all working-hours records (all months) to compute aggregate
-    const allWorkingHours = await db.totalEmployeeWorkingHours.findMany({
+    // Compute aggregate total from salary records directly (source of truth)
+    // rather than from TotalEmployeeWorkingHours which can become stale/inconsistent
+    const allSalaryRecordsForEmp = await db.salaryRecord.findMany({
       where: { empId: allocation.empId, isDeleted: false },
     });
-
-    // Aggregate total = sum of all months except current + current month total
-    const previousAggregate = allWorkingHours
-      .filter((r) => r.month !== month)
-      .reduce((sum, r) => sum + r.totalWorkingHours, 0);
-    const aggregateTotal = previousAggregate + totalHoursFromSalary;
+    const aggregateTotal = allSalaryRecordsForEmp.reduce(
+      (sum, sr) => sum + sr.totalHours,
+      0,
+    );
 
     // Find existing record for current month to preserve isCustom / custom rate
-    const currentMonthRecord = allWorkingHours.find((r) => r.month === month);
+    const currentMonthWhRecord = await db.totalEmployeeWorkingHours.findUnique({
+      where: { empId_month: { empId: allocation.empId, month } },
+    });
 
     // Calculate rtPerHour based on aggregate and employee type
     const empInfo = await db.employee.findUnique({
@@ -484,9 +501,9 @@ export async function allocateEmployeeHours(
           ? 3.0
           : 2.5;
 
-    const isCustom = currentMonthRecord?.isCustom ?? false;
+    const isCustom = currentMonthWhRecord?.isCustom ?? false;
     const effectiveRt = isCustom
-      ? (currentMonthRecord?.rtPerHour ?? calculatedRt)
+      ? (currentMonthWhRecord?.rtPerHour ?? calculatedRt)
       : calculatedRt;
 
     await db.totalEmployeeWorkingHours.upsert({
@@ -509,6 +526,29 @@ export async function allocateEmployeeHours(
         isCustom: false,
       },
     });
+
+    // Also fix previous months' TotalEmployeeWorkingHours to ensure consistency
+    // Compute the correct monthly totals from salary records and update
+    const allEmpMonths = new Set(allSalaryRecordsForEmp.map(sr => sr.month));
+    for (const m of allEmpMonths) {
+      if (m === month) continue; // Already handled above
+      const monthTotal = allSalaryRecordsForEmp
+        .filter(sr => sr.month === m)
+        .reduce((sum, sr) => sum + sr.totalHours, 0);
+
+      await db.totalEmployeeWorkingHours.upsert({
+        where: { empId_month: { empId: allocation.empId, month: m } },
+        update: { totalWorkingHours: monthTotal, isDeleted: false },
+        create: {
+          empId: allocation.empId,
+          empName: allocation.empName,
+          month: m,
+          totalWorkingHours: monthTotal,
+          rtPerHour: 2.5,
+          isCustom: false,
+        },
+      });
+    }
   }
 
   return {
