@@ -573,16 +573,6 @@ function EmployeeDetailPage({
                     )}>
                       <td className="text-white text-sm font-medium py-2.5 px-4">
                         {row.monthName}
-                        {isSplitMonth && (
-                          <span className={cn(
-                            'ml-2 inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold whitespace-nowrap',
-                            isPremium
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                              : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          )}>
-                            {isPremium ? 'Premium' : 'Basic'}
-                          </span>
-                        )}
                       </td>
                       <td className="py-2.5 px-4 text-right">
                         {editMode ? (
@@ -1416,16 +1406,7 @@ function SiteSalarySheet({
                       ) : (
                         <span className="text-xs text-right text-white">{emp.rtPerHour}</span>
                       )}
-                      {emp.rateTier === 'standard' && (
-                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 whitespace-nowrap">
-                          Basic
-                        </span>
-                      )}
-                      {emp.rateTier === 'premium' && (
-                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 whitespace-nowrap">
-                          Premium
-                        </span>
-                      )}
+
                     </div>
                   </TableCell>
                   <TableCell className={cn('text-xs text-right font-medium', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>

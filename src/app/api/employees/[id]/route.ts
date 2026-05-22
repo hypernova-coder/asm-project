@@ -247,6 +247,49 @@ export async function PUT(
       data: data as Parameters<typeof db.employee.update>[0]['data'],
     });
 
+    // Cascade update employeeId (business ID) across all referencing tables
+    if (body.employeeId !== undefined && body.employeeId !== existing.employeeId) {
+      const newEmployeeId = body.employeeId as string;
+
+      // 1. Update SalaryRecord.employeeCode for all records of this employee
+      await db.salaryRecord.updateMany({
+        where: { empId: id, employeeCode: existing.employeeId },
+        data: { employeeCode: newEmployeeId },
+      });
+
+      // 2. Update TotalEmployeeWorkingHours.empName if fullName also changed
+      // (employeeCode is not stored here, but empName might need syncing)
+    }
+
+    // Cascade update fullName across all referencing tables
+    if (body.fullName !== undefined && body.fullName !== existing.fullName) {
+      const newFullName = body.fullName as string;
+
+      // Update empName in TotalEmployeeWorkingHours
+      await db.totalEmployeeWorkingHours.updateMany({
+        where: { empId: id },
+        data: { empName: newFullName },
+      });
+
+      // Update empName in SalaryRecord
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { empName: newFullName },
+      });
+
+      // Update empName in EmpCountSitePerMonth
+      await db.empCountSitePerMonth.updateMany({
+        where: { empId: id },
+        data: { empName: newFullName },
+      });
+
+      // Update employeeName in UniformRegistry
+      await db.uniformRegistry.updateMany({
+        where: { employeeId: id },
+        data: { employeeName: newFullName },
+      });
+    }
+
     // Track EmpCountSitePerMonth when currentSite changes
     if (body.currentSite !== undefined && body.currentSite !== existing.currentSite) {
       const now = new Date();
