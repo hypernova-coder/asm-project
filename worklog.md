@@ -357,3 +357,28 @@ Stage Summary:
 - Dialog displays employee name, EMP ID, start date, end date, and site closed date
 - Still Active employees highlighted in green; N/A values in slate/gray
 - Both active and inactive SiteCardsGrid instances receive the onViewHistory prop (button only renders for inactive sites)
+
+---
+Task ID: 14
+Agent: Main Agent
+Task: Site employee history tracking + auto-idle on deactivation
+
+Work Log:
+- Added EmpCountSitePerMonth model to Prisma schema with FK references to Employee and Site
+- Fields: id, empId, empName, siteId, siteName, month (YYYY-MM), createdDate, removedDate, updatedDate, deletedDate
+- Fixed Prisma datasource provider from postgresql to sqlite to match .env DATABASE_URL
+- Pushed schema to database with db:push
+- Updated sites API PUT handler: when site set to inactive, all employees removed from site and set to Idle, TL/Supervisor roles cleared, open EmpCountSitePerMonth records closed (removedDate set)
+- Updated employee PUT API: when currentSite changes, creates new EmpCountSitePerMonth record on site add, sets removedDate on site remove, handles transfers (close old + create new)
+- Created /api/site-history GET route: returns all history records for a site, ordered by empName asc then createdDate asc, includes employee relation for employeeId
+- Frontend: Added "View All Employees Worked Here" button on inactive site cards with amber/violet styling
+- Frontend: Added SiteEmployeeHistoryDialog component with table (SL.NO, Name, EMP ID, Start Date, End Date, Site Closed Date)
+- Consecutive rows for same employee ordered by oldest first (API ordering handles this)
+- Pushed to GitHub (commit b45f1a6)
+
+Stage Summary:
+- New EmpCountSitePerMonth table tracks full employee-site assignment history
+- Site deactivation automatically unassigns all employees and marks them Idle
+- Employee site transfers tracked with start/end dates
+- Inactive sites show "View All Employees Worked Here" button with history dialog
+- Foreign key references work correctly (Employee → siteHistory, Site → employeeHistory)
