@@ -382,3 +382,29 @@ Stage Summary:
 - Employee site transfers tracked with start/end dates
 - Inactive sites show "View All Employees Worked Here" button with history dialog
 - Foreign key references work correctly (Employee → siteHistory, Site → employeeHistory)
+---
+Task ID: 1
+Agent: main
+Task: Enhance Accounts Management with edit mode, add employee, monthly detail view, supervisor rates, and bidirectional sync
+
+Work Log:
+- Rewrote accounts-page.tsx (~1200 lines) with all new features
+- Added Edit mode toggle: fields editable only after clicking Edit button
+- Without edit mode: Excel-style display (no textboxes visible), with edit mode: show Add Row, Delete Last Row, Save, Delete per row
+- Separated total section from table with distinct visual styling
+- isPaid toggle: unpaid→paid always allowed; paid→unpaid requires edit mode enabled
+- Future months disabled (only up to current month clickable) in both accounts and employee detail views
+- Added "Add Employee" button in Manage Employee Hours page with dialog showing employees not yet in TotalEmployeeWorkingHours
+- Clicking a record in Manage Employee Hours opens full-page monthly hours detail view (EmployeeDetailPage)
+- EmployeeDetailPage has year selector and monthly hours table with all data editable
+- Rate changes in employee detail sync to salary table (bidirectional)
+- RT/HR calculation updated: Supervisor now gets same +0.5 bonus as Team Leader for both basic (2.5→3.0) and full (5.0→5.5)
+- Updated API routes: /api/accounts/working-hours with batch POST and available=true query, /api/accounts/employee-monthly for monthly CRUD
+- All API routes updated with supervisor-aware RT/HR calculation
+- Bidirectional sync: editing rate/hours in salary table updates TotalEmployeeWorkingHours and vice versa
+- Added 'accounts' permission to PERMISSION_SEEDS, SIDEBAR_MENUS, seed-permissions script, and seeded in database
+
+Stage Summary:
+- Committed as c3e44d1 and pushed to GitHub
+- All lint checks pass
+- Key new features: edit mode, add employee dialog, employee monthly detail view, supervisor rate parity, bidirectional sync, future month restriction
