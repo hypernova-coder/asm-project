@@ -55,17 +55,24 @@ export async function GET(request: NextRequest) {
       orderBy: { month: 'asc' },
     });
 
-    // Get aggregate total across all years for RT/HR calculation
-    const allRecords = await db.totalEmployeeWorkingHours.findMany({
+    // Get aggregate total across all years using SALARY RECORDS as source of truth
+    // This is consistent with the allocation engine and accounts GET route
+    const allSalaryRecords = await db.salaryRecord.findMany({
+      where: { empId, isDeleted: false },
+      select: { totalHours: true, rtPerHour: true, month: true, rateTier: true },
+    });
+    const aggregateTotalHours = allSalaryRecords.reduce((sum, r) => sum + r.totalHours, 0);
+
+    // Get custom rate info from TotalEmployeeWorkingHours (all months)
+    const allWhRecords = await db.totalEmployeeWorkingHours.findMany({
       where: { empId, isDeleted: false },
       select: { totalWorkingHours: true, rtPerHour: true, isCustom: true, month: true },
     });
-    const aggregateTotalHours = allRecords.reduce((sum, r) => sum + r.totalWorkingHours, 0);
 
     // Get the latest custom status and rate
-    const hasCustom = allRecords.some(r => r.isCustom);
-    const latestRate = allRecords.length > 0
-      ? allRecords[allRecords.length - 1].rtPerHour
+    const hasCustom = allWhRecords.some(r => r.isCustom);
+    const latestRate = allWhRecords.length > 0
+      ? allWhRecords[allWhRecords.length - 1].rtPerHour
       : 2.5;
 
     // Auto-calculate the aggregate rate
@@ -73,15 +80,30 @@ export async function GET(request: NextRequest) {
     const empThreshold = employee.hoursThreshold || 1000;
     const autoRate = aggregateTotalHours >= empThreshold ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
 
+    // Compute total hours from all years BEFORE the selected year
+    // Use SalaryRecord as source of truth (consistent with allocation engine)
+    const previousYearHours = allSalaryRecords
+      .filter(r => r.month < `${year}-01`)
+      .reduce((sum, r) => sum + r.totalHours, 0);
+
     // Build monthly data for all 12 months
+    // Use SalaryRecord as source of truth for per-month hours (sum of standard + premium)
     const monthlyData = [];
     for (let m = 0; m < 12; m++) {
       const monthStr = `${year}-${String(m + 1).padStart(2, '0')}`;
       const record = monthlyRecords.find((r) => r.month === monthStr);
 
+      // Sum hours from salary records for this month (source of truth)
+      const monthSalaryHours = allSalaryRecords
+        .filter(r => r.month === monthStr)
+        .reduce((sum, r) => sum + r.totalHours, 0);
+
+      // Use salary record hours if available, fall back to TotalEmployeeWorkingHours
+      const totalHours = monthSalaryHours > 0 ? monthSalaryHours : (record?.totalWorkingHours ?? 0);
+
       monthlyData.push({
         month: monthStr,
-        totalHours: record?.totalWorkingHours ?? 0,
+        totalHours,
         rtPerHour: record?.rtPerHour ?? (hasCustom ? latestRate : autoRate),
         recordId: record?.id || null,
       });
@@ -98,6 +120,7 @@ export async function GET(request: NextRequest) {
           rtPerHour: hasCustom ? latestRate : autoRate,
           isCustom: hasCustom,
           hoursThreshold: empThreshold,
+          previousYearHours,
         },
       },
     });

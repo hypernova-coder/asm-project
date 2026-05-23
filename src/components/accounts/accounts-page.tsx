@@ -349,6 +349,7 @@ function EmployeeDetailPage({
     rtPerHour: number;
     isCustom: boolean;
     hoursThreshold: number;
+    previousYearHours: number;
   } | null>(null);
 
   const yearOptions = useMemo(() => {
@@ -490,7 +491,7 @@ function EmployeeDetailPage({
     cumulativeHours: number;
   }> = [];
 
-  let cumulative = 0;
+  let cumulative = employeeInfo?.previousYearHours || 0;
   const threshold = employeeInfo?.hoursThreshold || 1000;
   for (let i = 0; i < 12; i++) {
     const available = isMonthAvailable(selectedYear, i);
@@ -1300,19 +1301,30 @@ function SiteSalarySheet({
         const updated = { ...emp, [field]: value };
 
         if (field === 'totalHours') {
-          // Custom rate employees: no split, all hours at the custom rate
+          // When totalHours changes, immediately save and let the allocation engine re-split
+          // The allocation engine is the source of truth for splitting — it correctly accounts
+          // for cumulative hours across ALL months AND all sites in the current month.
+          // We do an optimistic local update here, but the real split will come from the
+          // allocation engine after saving.
+          
+          // For immediate feedback, use the allocation engine's computed split data
+          // by saving the total hours as the low-rate hours temporarily
+          // (the allocation engine will correct this on save)
           if (updated.isCustomRate) {
+            // Custom rate employees: no split, all hours at the custom rate
             updated.lowRateHours = updated.totalHours;
             updated.highRateHours = 0;
             updated.totalSalary = updated.lowRateHours * updated.lowRate;
             updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
             updated.rateTier = 'standard';
           } else {
-            // Recalculate split allocation using cumulative threshold
+            // Use the allocation engine to compute the correct split
+            // by calling the computeAllocationSplit function logic inline
+            // This accounts for previous cumulative hours AND site ordering
             const threshold = updated.hoursThreshold || 1000;
-            const cumulativeBeforeThisSite = updated.previousCumulativeHours;
-            const remainingThreshold = threshold - cumulativeBeforeThisSite;
-
+            const previousCumulative = updated.previousCumulativeHours || 0;
+            const consumedThreshold = Math.min(previousCumulative, threshold);
+            const remainingThreshold = threshold - consumedThreshold;
             const totalHrs = updated.totalHours;
 
             if (remainingThreshold <= 0) {
