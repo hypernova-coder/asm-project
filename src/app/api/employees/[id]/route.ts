@@ -52,13 +52,15 @@ export async function GET(
         createdAt: a.createdAt.toISOString(),
         updatedAt: a.updatedAt.toISOString(),
       })),
-      warnings: employee.warnings.map((w: { createdAt: Date; updatedAt: Date }) => ({
+      warnings: employee.warnings.map((w: { createdAt: Date; updatedAt: Date; customDate: Date | null }) => ({
         ...w,
+        customDate: w.customDate?.toISOString() || null,
         createdAt: w.createdAt.toISOString(),
         updatedAt: w.updatedAt.toISOString(),
       })),
-      fines: employee.fines.map((f: { createdAt: Date; updatedAt: Date }) => ({
+      fines: employee.fines.map((f: { createdAt: Date; updatedAt: Date; customDate: Date | null }) => ({
         ...f,
+        customDate: f.customDate?.toISOString() || null,
         createdAt: f.createdAt.toISOString(),
         updatedAt: f.updatedAt.toISOString(),
       })),

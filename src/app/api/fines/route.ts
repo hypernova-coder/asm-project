@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
       data: {
         fines: fines.map((f) => ({
           ...f,
+          customDate: f.customDate?.toISOString() || null,
           createdAt: f.createdAt.toISOString(),
           updatedAt: f.updatedAt.toISOString(),
         })),
@@ -57,7 +58,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { employeeId, reason, amount, createdById } = body;
+    const { employeeId, reason, amount, createdById, customDate } = body;
 
     if (!employeeId || !reason || amount === undefined || !createdById) {
       return NextResponse.json(
@@ -104,6 +105,7 @@ export async function POST(request: NextRequest) {
           employeeId,
           reason,
           amount,
+          customDate: customDate ? new Date(customDate) : null,
           createdById: finalCreatedById,
         },
         include: {
@@ -146,6 +148,7 @@ export async function POST(request: NextRequest) {
         data: {
           fine: {
             ...fine,
+            customDate: fine.customDate?.toISOString() || null,
             createdAt: fine.createdAt.toISOString(),
             updatedAt: fine.updatedAt.toISOString(),
           },
