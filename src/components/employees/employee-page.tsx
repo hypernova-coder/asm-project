@@ -75,6 +75,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useAuthStore } from '@/store/auth-store';
+import { useAppStore } from '@/store/app-store';
 import jsPDF from 'jspdf';
 
 // ─── Types ───────────────────────────────────────────────────────────────
@@ -893,13 +894,15 @@ export function EmployeePage() {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Auto-activate idle filter from dashboard ──
+  const pendingIdleFilter = useAppStore((s) => s.pendingIdleFilter);
+  const setPendingIdleFilter = useAppStore((s) => s.setPendingIdleFilter);
+
   useEffect(() => {
-    const idleFlag = localStorage.getItem('asm_idle_filter');
-    if (idleFlag === '1') {
+    if (pendingIdleFilter) {
       setIdleFilter(true);
-      localStorage.removeItem('asm_idle_filter');
+      setPendingIdleFilter(false);
     }
-  }, []);
+  }, [pendingIdleFilter, setPendingIdleFilter]);
 
   // ── Auto-generate employee ID ──
   const generateAutoId = useCallback(() => {

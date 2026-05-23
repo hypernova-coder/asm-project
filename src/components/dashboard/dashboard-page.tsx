@@ -63,7 +63,7 @@ const MONTHS = [
   { value: '12', label: 'December' },
 ];
 
-const PIE_COLORS = ['#22c55e', '#f59e0b', '#64748b'];
+const PIE_COLORS = ['#22c55e', '#f59e0b'];
 
 interface AttendanceRecord {
   status: string;
@@ -131,6 +131,7 @@ export function DashboardPage() {
   const [loadingAttendance, setLoadingAttendance] = useState(true);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const setPendingIdleFilter = useAppStore((s) => s.setPendingIdleFilter);
 
   const monthNum = parseInt(month, 10);
   const yearNum = parseInt(year, 10);
@@ -275,15 +276,13 @@ export function DashboardPage() {
     return data;
   }, [attendanceRecords, month, year]);
 
-  // Compute pie chart data
+  // Compute pie chart data - With Site vs Without Site/Idle
   const pieData = useMemo(() => {
-    const active = employees.filter((e) => e.status === 'active').length;
-    const pending = employees.filter((e) => e.status === 'pending_deletion').length;
-    const idle = employees.filter((e) => e.status === 'idle').length;
+    const withSite = employees.filter((e) => e.currentSite && e.currentSite !== '' && e.currentSite !== 'Idle').length;
+    const withoutSite = employees.filter((e) => !e.currentSite || e.currentSite === '' || e.currentSite === 'Idle').length;
     const arr = [];
-    if (active > 0) arr.push({ name: 'Active', value: active });
-    if (pending > 0) arr.push({ name: 'Pending Deletion', value: pending });
-    if (idle > 0) arr.push({ name: 'Idle', value: idle });
+    if (withSite > 0) arr.push({ name: 'With Site', value: withSite });
+    if (withoutSite > 0) arr.push({ name: 'Without Site / Idle', value: withoutSite });
     if (arr.length === 0) arr.push({ name: 'No Data', value: 1 });
     return arr;
   }, [employees]);
@@ -309,7 +308,7 @@ export function DashboardPage() {
     : null;
 
   const handleIdleClick = () => {
-    localStorage.setItem('asm_idle_filter', '1');
+    setPendingIdleFilter(true);
     setCurrentView('employees');
   };
 
@@ -545,7 +544,7 @@ export function DashboardPage() {
         <Card className="bg-slate-800/50 border-slate-700/50 py-4">
           <CardHeader className="px-4">
             <CardTitle className="text-base text-white">
-              Employee Status Distribution
+              Site Assignment Distribution
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4">
