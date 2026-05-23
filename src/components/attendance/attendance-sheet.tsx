@@ -322,7 +322,7 @@ export function AttendanceSheet({ site, employees, onClose }: AttendanceSheetPro
     employees.map((emp) => ({
       id: emp.id,
       fullName: emp.fullName,
-      code: '',
+      code: emp.employeeId,
       position: emp.position || '',
       isTeamLeader: emp.isTeamLeader,
       isSupervisor: emp.position?.toLowerCase().includes('supervisor') ?? false,
