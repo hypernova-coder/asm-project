@@ -14,6 +14,7 @@ import {
   AlertCircle,
   User,
   RotateCcw,
+  CalendarDays,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -66,6 +67,7 @@ interface CancellationRequest {
   employee: Employee;
   reason: string;
   status: string;
+  customDate: string | null;
   requestedBy: { id: string; name: string; email: string };
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -268,6 +270,7 @@ export function CancellationRequestPage() {
   const [formData, setFormData] = useState({
     employeeId: '',
     reason: '',
+    customDate: '',
   });
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -356,6 +359,7 @@ export function CancellationRequestPage() {
         body: JSON.stringify({
           employeeId: formData.employeeId,
           reason: formData.reason || undefined,
+          customDate: formData.customDate || undefined,
           createdById: user.id,
         }),
       });
@@ -412,7 +416,7 @@ export function CancellationRequestPage() {
   };
 
   const resetForm = () => {
-    setFormData({ employeeId: '', reason: '' });
+    setFormData({ employeeId: '', reason: '', customDate: '' });
   };
 
   const openCreateDialog = () => {
@@ -559,7 +563,15 @@ export function CancellationRequestPage() {
                       <p className="text-sm text-slate-300">{request.requestedBy.name}</p>
                     </TableCell>
                     <TableCell>
-                      <p className="text-xs text-slate-500">{formatDate(request.createdAt)}</p>
+                      <div className="flex flex-col gap-0.5">
+                        <p className="text-xs text-slate-500">{formatDate(request.createdAt)}</p>
+                        {request.customDate && (
+                          <p className="text-xs text-amber-400/70 flex items-center gap-1">
+                            <CalendarDays className="h-3 w-3" />
+                            {formatDate(request.customDate)}
+                          </p>
+                        )}
+                      </div>
                     </TableCell>
                     {isSuperAdmin && (
                       <TableCell>
@@ -641,6 +653,17 @@ export function CancellationRequestPage() {
                 onChange={(e) => setFormData((prev) => ({ ...prev, reason: e.target.value }))}
                 placeholder="Enter the reason for cancellation..."
                 className="bg-slate-900 border-slate-600 text-white min-h-[80px]"
+              />
+            </div>
+
+            {/* Custom Date */}
+            <div className="space-y-2">
+              <Label className="text-slate-300">Date (defaults to today if empty)</Label>
+              <Input
+                type="date"
+                value={formData.customDate}
+                onChange={(e) => setFormData((prev) => ({ ...prev, customDate: e.target.value }))}
+                className="bg-slate-900 border-slate-600 text-white"
               />
             </div>
           </div>

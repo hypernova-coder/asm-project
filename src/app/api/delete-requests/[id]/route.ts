@@ -71,10 +71,60 @@ export async function PUT(
           data: { status: 'deleted' },
         });
 
-        // Mark all uniform registry records for this employee as deleted (hidden)
+        // Cascade soft-deletion to all related records
+
+        // 1. Mark all uniform registry records for this employee as deleted
         await tx.uniformRegistry.updateMany({
           where: { employeeId: existing.employeeId, isDeleted: false },
           data: { isDeleted: true },
+        });
+
+        // 2. Hide all attendance records
+        await tx.attendance.updateMany({
+          where: { employeeId: existing.employeeId, isHidden: false },
+          data: { isHidden: true },
+        });
+
+        // 3. Hide all warnings
+        await tx.warning.updateMany({
+          where: { employeeId: existing.employeeId, isHidden: false },
+          data: { isHidden: true },
+        });
+
+        // 4. Hide all fines
+        await tx.fine.updateMany({
+          where: { employeeId: existing.employeeId, isHidden: false },
+          data: { isHidden: true },
+        });
+
+        // 5. Hide all leave requests
+        await tx.leaveRequest.updateMany({
+          where: { employeeId: existing.employeeId, isHidden: false },
+          data: { isHidden: true },
+        });
+
+        // 6. Hide all cancellation requests
+        await tx.cancellationRequest.updateMany({
+          where: { employeeId: existing.employeeId, isHidden: false },
+          data: { isHidden: true },
+        });
+
+        // 7. Soft-delete all TotalEmployeeWorkingHours records
+        await tx.totalEmployeeWorkingHours.updateMany({
+          where: { empId: existing.employeeId, isDeleted: false },
+          data: { isDeleted: true },
+        });
+
+        // 8. Soft-delete all SalaryRecord entries
+        await tx.salaryRecord.updateMany({
+          where: { empId: existing.employeeId, isDeleted: false },
+          data: { isDeleted: true },
+        });
+
+        // 9. Soft-delete all EmpCountSitePerMonth records
+        await tx.empCountSitePerMonth.updateMany({
+          where: { empId: existing.employeeId, deletedDate: null },
+          data: { deletedDate: new Date() },
         });
       } else {
         // Rejected: restore employee to active

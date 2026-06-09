@@ -84,6 +84,7 @@ export async function GET(request: NextRequest) {
     const endDate = `${year}-${String(month).padStart(2, '0')}-31`;
 
     const where: Record<string, unknown> = {
+      isHidden: false,
       date: {
         gte: startDate,
         lt: endDate,

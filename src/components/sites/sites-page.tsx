@@ -23,6 +23,7 @@ import {
   Power,
   PowerOff,
   MoreHorizontal,
+  History,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -125,7 +126,23 @@ interface AllEmployee {
   trade: string | null;
 }
 
-type SubView = 'list' | 'employees';
+type SubView = 'list' | 'employees' | 'history';
+
+/* ───────── History Record type ───────── */
+interface HistoryRecord {
+  id: string;
+  empId: string;
+  empName: string;
+  employeeId: string;
+  siteId: string;
+  siteName: string;
+  month: string;
+  createdDate: string;
+  removedDate: string | null;
+  updatedDate: string;
+  deletedDate: string | null;
+  siteClosedDate: string | null;
+}
 
 /* ───────── Star Rating ───────── */
 function StarRating({ rating }: { rating: number }) {
@@ -174,6 +191,8 @@ function SiteCardsGrid({
   onEditSite,
   onToggleActive,
   onAttendanceSheet,
+  onViewHistory,
+  isInactiveTab = false,
 }: {
   sites: Site[];
   search: string;
@@ -184,6 +203,8 @@ function SiteCardsGrid({
   onEditSite: (site: Site) => void;
   onToggleActive: (site: Site) => void;
   onAttendanceSheet: (site: Site) => void;
+  onViewHistory: (site: Site) => void;
+  isInactiveTab?: boolean;
 }) {
   const filteredSites = sites.filter((s) =>
     s.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -320,24 +341,38 @@ function SiteCardsGrid({
 
             {/* Action Buttons */}
             <div className="flex flex-col gap-2">
-              <div className="flex gap-2">
+              {/* Active sites: show View Employees & Attendance buttons */}
+              {!isInactiveTab && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 gap-2 transition-all"
+                    onClick={() => onViewEmployees(site)}
+                  >
+                    <Eye className="h-4 w-4" />
+                    View Employees
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-blue-600 hover:text-white hover:border-blue-600 gap-2 transition-all shrink-0"
+                    onClick={() => onAttendanceSheet(site)}
+                    title="Attendance Sheet"
+                  >
+                    <FileSpreadsheet className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+              {/* History button - only for inactive sites */}
+              {!site.isActive && (
                 <Button
                   variant="outline"
-                  className="flex-1 bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-emerald-600 hover:text-white hover:border-emerald-600 gap-2 transition-all"
-                  onClick={() => onViewEmployees(site)}
+                  className="w-full bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-violet-600 hover:text-white hover:border-violet-600 gap-2 transition-all"
+                  onClick={() => onViewHistory(site)}
                 >
-                  <Eye className="h-4 w-4" />
-                  View Employees
+                  <History className="h-4 w-4" />
+                  View All Employees Worked Here
                 </Button>
-                <Button
-                  variant="outline"
-                  className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-blue-600 hover:text-white hover:border-blue-600 gap-2 transition-all shrink-0"
-                  onClick={() => onAttendanceSheet(site)}
-                  title="Attendance Sheet"
-                >
-                  <FileSpreadsheet className="h-4 w-4" />
-                </Button>
-              </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -459,6 +494,130 @@ function AddEmployeeCombobox({
   );
 }
 
+/* ───────── Site Employee History Full Page ───────── */
+function SiteEmployeeHistoryPage({
+  site,
+  records,
+  loading,
+  onBack,
+}: {
+  site: Site;
+  records: HistoryRecord[];
+  loading: boolean;
+  onBack: () => void;
+}) {
+  const formatDate = (dateStr: string | null) => {
+    if (!dateStr) return null;
+    try {
+      return new Date(dateStr).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Header with Back Button */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onBack}
+            className="h-9 w-9 text-slate-400 hover:text-white hover:bg-slate-700"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
+          <div>
+            <div className="flex items-center gap-2">
+              <History className="h-5 w-5 text-amber-400" />
+              <h2 className="text-xl font-bold text-white">Employees Worked at {site.name}</h2>
+            </div>
+            <p className="text-slate-400 text-sm mt-1">
+              Historical record of all employees who worked at this site.
+            </p>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          onClick={onBack}
+          className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white gap-2"
+        >
+          <ChevronLeft className="h-4 w-4" />
+          Back to Sites
+        </Button>
+      </div>
+
+      <Separator className="bg-slate-700/50" />
+
+      {/* Content */}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-8 w-8 animate-spin text-amber-400" />
+          <span className="ml-3 text-slate-400">Loading employee history...</span>
+        </div>
+      ) : records.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <Users className="h-12 w-12 text-slate-600 mb-3" />
+          <p className="text-slate-400 text-lg font-medium">No employee history found</p>
+          <p className="text-slate-500 text-sm mt-1">
+            No employees have been assigned to this site yet.
+          </p>
+        </div>
+      ) : (
+        <Card className="bg-slate-800/50 border-slate-700/50">
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-slate-700 hover:bg-transparent">
+                    <TableHead className="text-slate-400 font-semibold w-16">SL.NO</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">Name of Employee</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">EMP ID</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">Start Date</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">End Date</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">Site Closed Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {records.map((record, index) => (
+                    <TableRow key={record.id} className="border-slate-700/50 hover:bg-slate-700/30">
+                      <TableCell className="text-slate-400 text-sm">{index + 1}</TableCell>
+                      <TableCell className="text-white text-sm font-medium">{record.empName}</TableCell>
+                      <TableCell className="text-slate-300 text-sm font-mono">{record.employeeId}</TableCell>
+                      <TableCell className="text-slate-300 text-sm">
+                        {formatDate(record.createdDate) || 'N/A'}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {record.removedDate ? (
+                          <span className="text-slate-300">{formatDate(record.removedDate)}</span>
+                        ) : (
+                          <span className="text-emerald-400 font-medium">Still Active</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {record.siteClosedDate ? (
+                          <span className="text-slate-300">{formatDate(record.siteClosedDate)}</span>
+                        ) : (
+                          <span className="text-slate-500">N/A</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 /* ───────── Main Component ───────── */
 export function SitesPage() {
   // Sub view management
@@ -517,6 +676,11 @@ export function SitesPage() {
     existingSupervisor: { id: string; fullName: string } | null;
   }>({ open: false, emp: null, existingSupervisor: null });
   const [assignLoading, setAssignLoading] = useState(false);
+
+  // Employee history state
+  const [historySite, setHistorySite] = useState<Site | null>(null);
+  const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   /* ── Fetch sites ── */
   const fetchSites = useCallback(async () => {
@@ -1032,6 +1196,35 @@ export function SitesPage() {
     }
   }, []);
 
+  /* ── View employee history for inactive site ── */
+  const handleViewHistory = useCallback(async (site: Site) => {
+    setHistorySite(site);
+    setSubView('history');
+    setLoadingHistory(true);
+    setHistoryRecords([]);
+    try {
+      const res = await fetch(`/api/site-history?siteId=${site.id}`);
+      const json = await res.json();
+      if (json.success) {
+        setHistoryRecords(json.data.records || []);
+      } else {
+        toast({ title: 'Error', description: json.error || 'Failed to fetch history', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to fetch employee history', variant: 'destructive' });
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
+  /* ── Back from history to sites list ── */
+  const handleBackFromHistory = useCallback(() => {
+    setSubView('list');
+    setHistorySite(null);
+    setHistoryRecords([]);
+    setLoadingHistory(false);
+  }, []);
+
   // Current site's team leader and supervisor
   const currentTeamLeader = useMemo(() => {
     if (!viewSite) return null;
@@ -1131,6 +1324,7 @@ export function SitesPage() {
                 }}
                 onToggleActive={handleToggleActive}
                 onAttendanceSheet={handleAttendanceSheet}
+                onViewHistory={handleViewHistory}
               />
             </TabsContent>
 
@@ -1150,6 +1344,8 @@ export function SitesPage() {
                 }}
                 onToggleActive={handleToggleActive}
                 onAttendanceSheet={handleAttendanceSheet}
+                onViewHistory={handleViewHistory}
+                isInactiveTab={true}
               />
             </TabsContent>
           </Tabs>
@@ -1404,6 +1600,16 @@ export function SitesPage() {
         </div>
       )}
 
+      {/* Employee History Full Page View */}
+      {subView === 'history' && historySite && (
+        <SiteEmployeeHistoryPage
+          site={historySite}
+          records={historyRecords}
+          loading={loadingHistory}
+          onBack={handleBackFromHistory}
+        />
+      )}
+
       {/* Add Site Dialog */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
         <DialogContent className="bg-slate-800 border-slate-700 text-slate-200">
@@ -1646,6 +1852,7 @@ export function SitesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
     </div>
   );
 }

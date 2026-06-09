@@ -52,13 +52,15 @@ export async function GET(
         createdAt: a.createdAt.toISOString(),
         updatedAt: a.updatedAt.toISOString(),
       })),
-      warnings: employee.warnings.map((w: { createdAt: Date; updatedAt: Date }) => ({
+      warnings: employee.warnings.map((w: { createdAt: Date; updatedAt: Date; customDate: Date | null }) => ({
         ...w,
+        customDate: w.customDate?.toISOString() || null,
         createdAt: w.createdAt.toISOString(),
         updatedAt: w.updatedAt.toISOString(),
       })),
-      fines: employee.fines.map((f: { createdAt: Date; updatedAt: Date }) => ({
+      fines: employee.fines.map((f: { createdAt: Date; updatedAt: Date; customDate: Date | null }) => ({
         ...f,
+        customDate: f.customDate?.toISOString() || null,
         createdAt: f.createdAt.toISOString(),
         updatedAt: f.updatedAt.toISOString(),
       })),
@@ -98,12 +100,25 @@ export async function PUT(
     const updatableFields = [
       'fullName', 'nationality', 'phone', 'email', 'address',
       'emergencyContact', 'position', 'trade', 'companyName', 'passportStatus',
-      'idStatus', 'currentSite', 'photo', 'status',
+      'idStatus', 'currentSite', 'photo', 'status', 'employeeId', 'hoursThreshold',
     ];
 
     for (const field of updatableFields) {
       if (body[field] !== undefined) {
         data[field] = body[field];
+      }
+    }
+
+    // Check employeeId uniqueness if it's being changed
+    if (body.employeeId !== undefined && body.employeeId !== existing.employeeId) {
+      const duplicate = await db.employee.findUnique({
+        where: { employeeId: body.employeeId },
+      });
+      if (duplicate) {
+        return NextResponse.json(
+          { success: false, error: 'Employee ID already exists' },
+          { status: 409 }
+        );
       }
     }
 
@@ -234,6 +249,171 @@ export async function PUT(
       data: data as Parameters<typeof db.employee.update>[0]['data'],
     });
 
+    // Cascade update employeeId (business ID) across all referencing tables
+    if (body.employeeId !== undefined && body.employeeId !== existing.employeeId) {
+      const newEmployeeId = body.employeeId as string;
+
+      // 1. Update SalaryRecord.employeeCode for all records of this employee
+      await db.salaryRecord.updateMany({
+        where: { empId: id, employeeCode: existing.employeeId },
+        data: { employeeCode: newEmployeeId },
+      });
+
+      // 2. Update TotalEmployeeWorkingHours.empName if fullName also changed
+      // (employeeCode is not stored here, but empName might need syncing)
+    }
+
+    // Cascade update fullName across all referencing tables
+    if (body.fullName !== undefined && body.fullName !== existing.fullName) {
+      const newFullName = body.fullName as string;
+
+      // Update empName in TotalEmployeeWorkingHours
+      await db.totalEmployeeWorkingHours.updateMany({
+        where: { empId: id },
+        data: { empName: newFullName },
+      });
+
+      // Update empName in SalaryRecord
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { empName: newFullName },
+      });
+
+      // Update empName in EmpCountSitePerMonth
+      await db.empCountSitePerMonth.updateMany({
+        where: { empId: id },
+        data: { empName: newFullName },
+      });
+
+      // Update employeeName in UniformRegistry
+      await db.uniformRegistry.updateMany({
+        where: { employeeId: id },
+        data: { employeeName: newFullName },
+      });
+    }
+
+    // Cascade update trade and nationality across referencing tables
+    if (body.trade !== undefined && body.trade !== existing.trade) {
+      const newTrade = body.trade as string;
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { trade: newTrade },
+      });
+    }
+
+    if (body.nationality !== undefined && body.nationality !== existing.nationality) {
+      const newNationality = body.nationality as string;
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { nationality: newNationality || '' },
+      });
+    }
+
+    // Cascade update TL/Supervisor status changes to related tables
+    const tlChanged = body.isTeamLeader !== undefined && body.isTeamLeader !== existing.isTeamLeader;
+    const supChanged = body.isSupervisor !== undefined && body.isSupervisor !== existing.isSupervisor;
+    if (tlChanged || supChanged) {
+      const newIsTeamLeader = body.isTeamLeader ?? existing.isTeamLeader;
+      const newIsSupervisor = body.isSupervisor ?? existing.isSupervisor;
+      const hasBonus = newIsTeamLeader || newIsSupervisor;
+
+      // Recalculate and update rates in SalaryRecord for this employee
+      const salaryRecords = await db.salaryRecord.findMany({
+        where: { empId: id, isDeleted: false },
+      });
+
+      for (const sr of salaryRecords) {
+        const newRate = sr.rateTier === 'premium'
+          ? (hasBonus ? 5.5 : 5.0)
+          : (hasBonus ? 3.0 : 2.5);
+        const newTotalSalary = sr.totalHours * newRate;
+
+        await db.salaryRecord.update({
+          where: { id: sr.id },
+          data: {
+            rtPerHour: newRate,
+            totalSalary: newTotalSalary,
+            balanceSalary: newTotalSalary - sr.deduction - sr.advance,
+          },
+        });
+      }
+
+      // Recalculate and update rates in TotalEmployeeWorkingHours
+      const whRecords = await db.totalEmployeeWorkingHours.findMany({
+        where: { empId: id, isDeleted: false },
+      });
+
+      for (const wh of whRecords) {
+        if (!wh.isCustom) {
+          // Get aggregate total for this employee
+          const aggregateTotal = whRecords.reduce((s, r) => s + r.totalWorkingHours, 0);
+          const autoRate = aggregateTotal >= 1000
+            ? (hasBonus ? 5.5 : 5.0)
+            : (hasBonus ? 3.0 : 2.5);
+
+          await db.totalEmployeeWorkingHours.update({
+            where: { id: wh.id },
+            data: { rtPerHour: autoRate },
+          });
+        }
+      }
+    }
+
+    // Track EmpCountSitePerMonth when currentSite changes
+    if (body.currentSite !== undefined && body.currentSite !== existing.currentSite) {
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const newSite = body.currentSite; // null means removed from site
+
+      if (newSite) {
+        // Case A: Adding employee to a site (or moving to a different site)
+        const site = await db.site.findFirst({ where: { name: newSite } });
+
+        if (site) {
+          // If employee was previously at a DIFFERENT site, close old open records
+          if (existing.currentSite && existing.currentSite !== newSite) {
+            const oldSite = await db.site.findFirst({ where: { name: existing.currentSite } });
+            if (oldSite) {
+              await db.empCountSitePerMonth.updateMany({
+                where: {
+                  empId: id,
+                  siteId: oldSite.id,
+                  removedDate: null,
+                },
+                data: {
+                  removedDate: now,
+                },
+              });
+            }
+          }
+
+          // Create new EmpCountSitePerMonth record
+          await db.empCountSitePerMonth.create({
+            data: {
+              empId: employee.id,
+              empName: employee.fullName,
+              siteId: site.id,
+              siteName: site.name,
+              month,
+              createdDate: now,
+              removedDate: null,
+            },
+          });
+        }
+      } else {
+        // Case B: Removing employee from a site (currentSite set to null)
+        await db.empCountSitePerMonth.updateMany({
+          where: {
+            empId: id,
+            removedDate: null,
+          },
+          data: {
+            removedDate: now,
+          },
+        });
+      }
+    }
+
     const decrypted = decryptEmployee({
       ...employee,
       dateOfBirth: employee.dateOfBirth?.toISOString() || null,
@@ -282,10 +462,60 @@ export async function DELETE(
       data: { status: 'deleted' },
     });
 
-    // Mark all uniform registry records for this employee as deleted
+    // Cascade soft-deletion to all related records
+
+    // 1. Mark all uniform registry records for this employee as deleted
     await db.uniformRegistry.updateMany({
       where: { employeeId: id, isDeleted: false },
       data: { isDeleted: true },
+    });
+
+    // 2. Hide all attendance records
+    await db.attendance.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 3. Hide all warnings
+    await db.warning.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 4. Hide all fines
+    await db.fine.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 5. Hide all leave requests
+    await db.leaveRequest.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 6. Hide all cancellation requests
+    await db.cancellationRequest.updateMany({
+      where: { employeeId: id, isHidden: false },
+      data: { isHidden: true },
+    });
+
+    // 7. Soft-delete all TotalEmployeeWorkingHours records
+    await db.totalEmployeeWorkingHours.updateMany({
+      where: { empId: id, isDeleted: false },
+      data: { isDeleted: true },
+    });
+
+    // 8. Soft-delete all SalaryRecord entries
+    await db.salaryRecord.updateMany({
+      where: { empId: id, isDeleted: false },
+      data: { isDeleted: true },
+    });
+
+    // 9. Soft-delete all EmpCountSitePerMonth records
+    await db.empCountSitePerMonth.updateMany({
+      where: { empId: id, deletedDate: null },
+      data: { deletedDate: new Date() },
     });
 
     return NextResponse.json({
