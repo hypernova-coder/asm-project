@@ -7,9 +7,7 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status');
     const employeeId = searchParams.get('employeeId');
 
-    const where: Record<string, unknown> = {
-      isHidden: false,
-    };
+    const where: Record<string, unknown> = {};
 
     if (status && ['pending', 'approved', 'rejected'].includes(status)) {
       where.status = status;

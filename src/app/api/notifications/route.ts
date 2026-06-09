@@ -9,9 +9,7 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '20', 10);
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = {
-      isHidden: false,
-    };
+    const where: Record<string, unknown> = {};
 
     if (type && ['request', 'warning', 'fine'].includes(type)) {
       where.type = type;
@@ -25,7 +23,7 @@ export async function GET(request: NextRequest) {
         orderBy: { createdAt: 'desc' },
       }),
       db.notification.count({ where }),
-      db.notification.count({ where: { read: false, isHidden: false } }),
+      db.notification.count({ where: { read: false } }),
     ]);
 
     return NextResponse.json({

@@ -26,7 +26,6 @@ import {
 } from '@/components/ui/select';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { toast } from '@/hooks/use-toast';
-import Swal from 'sweetalert2';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/auth-store';
 
@@ -361,7 +360,6 @@ interface ListViewProps {
   loading: boolean;
   isCurrentMonthView: boolean;
   onStatusChange: (employeeId: string, date: string, status: StatusOption, overtimeHours?: number | null) => void;
-  onBulkMarkPresent: (date: string) => void;
 }
 
 function ListView({
@@ -375,7 +373,6 @@ function ListView({
   loading,
   isCurrentMonthView,
   onStatusChange,
-  onBulkMarkPresent,
 }: ListViewProps) {
   const [dropdown, setDropdown] = useState<{
     employeeId: string;
@@ -455,35 +452,16 @@ function ListView({
                 const isFri = isFriday(year, month, day);
                 const label = getDayLabel(day);
                 const recent = isRecentDay(day);
-                const dateStr = formatDate(day, monthStr, yearStr);
-                // Count how many employees already have 'present' status for this date
-                const presentCount = employees.filter((emp) => {
-                  const rec = attendanceMap.get(`${emp.id}-${dateStr}`);
-                  return rec?.status === 'present' || rec?.status === 'overtime';
-                }).length;
-                const allMarked = presentCount === employees.length && employees.length > 0;
                 return (
                   <div
                     key={day}
                     className={cn(
-                      'w-16 shrink-0 text-center py-1.5 leading-tight',
+                      'w-16 shrink-0 text-center py-3 leading-tight',
                       isFri && 'text-red-400/50',
                       recent && 'text-emerald-400 font-semibold'
                     )}
                   >
                     <span className={cn(recent && 'text-[10px] block')}>{label}</span>
-                    <button
-                      onClick={() => onBulkMarkPresent(dateStr)}
-                      className={cn(
-                        'mt-0.5 h-5 w-5 rounded text-[9px] font-bold transition-all hover:ring-1 hover:ring-green-400/50',
-                        allMarked
-                          ? 'bg-green-500/30 text-green-300'
-                          : 'bg-slate-700/60 text-slate-400 hover:bg-green-500/20 hover:text-green-400'
-                      )}
-                      title={allMarked ? `All marked present (${presentCount}/${employees.length})` : `Mark all present for ${dateStr} (${presentCount}/${employees.length})`}
-                    >
-                      P
-                    </button>
                   </div>
                 );
               })}
@@ -1146,85 +1124,6 @@ export function AttendancePage() {
     []
   );
 
-  // Handle bulk mark all present for a specific date
-  const handleBulkMarkPresent = useCallback(
-    async (date: string) => {
-      // Only mark the currently displayed (filtered) employees
-      const employeeIds = employees.map((emp) => emp.id);
-
-      // Count how many already present/overtime
-      const alreadyPresent = employees.filter((emp) => {
-        const rec = attendanceMap.get(`${emp.id}-${date}`);
-        return rec?.status === 'present' || rec?.status === 'overtime';
-      }).length;
-
-      const filterLabel = searchDebounce || selectedSite
-        ? ` (${employees.length} filtered employees${selectedSite ? ` in ${selectedSite}` : ''}${searchDebounce ? ` matching "${searchDebounce}"` : ''})`
-        : ` (${employees.length} employees)`;
-
-      const result = await Swal.fire({
-        title: 'Mark All Present',
-        html: `Mark <strong>${employees.length} displayed employees</strong> as <span class="text-green-400 font-bold">Present</span> for <strong>${date}</strong>?${filterLabel}<br/><br/><span class="text-sm text-slate-400">${alreadyPresent} employee${alreadyPresent !== 1 ? 's' : ''} already marked present. Employees with overtime will be kept as-is.</span>`,
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonColor: '#22c55e',
-        cancelButtonColor: '#64748b',
-        confirmButtonText: 'Yes, Mark All Present',
-        cancelButtonText: 'Cancel',
-        background: '#1e293b',
-        color: '#f1f5f9',
-      });
-
-      if (!result.isConfirmed) return;
-
-      try {
-        const res = await fetch('/api/attendance/bulk-mark', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date, status: 'present', employeeIds }),
-        });
-        const data = await res.json();
-
-        if (data.success) {
-          // Refresh attendance records from server
-          const monthParam = `${yearStr}-${monthStr}`;
-          const attRes = await fetch(`/api/attendance?month=${monthParam}&year=${yearStr}`);
-          const attData = await attRes.json();
-          if (attData.success) {
-            setAttendanceRecords(attData.data.records || []);
-          }
-
-          Swal.fire({
-            title: 'Done!',
-            html: `<strong>${data.data.updated}</strong> employee${data.data.updated !== 1 ? 's' : ''} marked as present.<br/><span class="text-slate-400 text-sm">${data.data.skipped} skipped (already present or overtime)</span>`,
-            icon: 'success',
-            timer: 2000,
-            showConfirmButton: false,
-            background: '#1e293b',
-            color: '#f1f5f9',
-          });
-        } else {
-          Swal.fire({
-            title: 'Error',
-            text: data.error || 'Failed to mark attendance',
-            icon: 'error',
-            background: '#1e293b',
-            color: '#f1f5f9',
-          });
-        }
-      } catch {
-        Swal.fire({
-          title: 'Error',
-          text: 'Failed to mark attendance',
-          icon: 'error',
-          background: '#1e293b',
-          color: '#f1f5f9',
-        });
-      }
-    },
-    [employees, attendanceMap, monthStr, yearStr, searchDebounce, selectedSite],
-  );
-
   // Navigation handlers
   const goToPrevMonth = () => {
     let m = month - 1;
@@ -1449,7 +1348,6 @@ export function AttendancePage() {
             loading={loadingEmployees || loadingAttendance}
             isCurrentMonthView={isCurrentMonthView}
             onStatusChange={handleStatusChange}
-            onBulkMarkPresent={handleBulkMarkPresent}
           />
         ) : (
           <CalendarView

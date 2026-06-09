@@ -98,7 +98,6 @@ interface UniformEntry {
   previousTokenId: string | null;
   createdAt: string;
   renewalDate: string;
-  employeeEntryCount?: number; // Number of entries for this employee (latestOnly mode)
   employee?: {
     id: string;
     fullName: string;
@@ -732,7 +731,6 @@ export function UniformRegistryPage() {
       const params = new URLSearchParams({
         page: String(page),
         limit: '10',
-        latestOnly: 'true',
       });
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (siteFilter && siteFilter !== 'all') params.set('siteName', siteFilter);
@@ -1208,7 +1206,7 @@ export function UniformRegistryPage() {
     return (
       <div className="flex items-center justify-between px-4 py-3 border-t border-slate-700/50">
         <p className="text-sm text-slate-400">
-          Showing {Math.min((page - 1) * 10 + 1, total)}&ndash;{Math.min(page * 10, total)} of {total} employees
+          Showing {Math.min((page - 1) * 10 + 1, total)}&ndash;{Math.min(page * 10, total)} of {total} entries
         </p>
         <div className="flex items-center gap-1">
           <Button
@@ -1294,7 +1292,7 @@ export function UniformRegistryPage() {
         <div>
           <h2 className="text-2xl font-bold text-white">Uniform Registry</h2>
           <p className="text-slate-400 mt-1">
-            Track uniform and equipment distribution. Showing latest entry per employee — click to view all entries.
+            Track uniform and equipment distribution for employees.
           </p>
         </div>
         <Button
@@ -1412,17 +1410,7 @@ export function UniformRegistryPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          <div className="flex items-center gap-1.5">
-                            <p className="text-sm font-medium text-white">{entry.employeeName}</p>
-                            {entry.employeeEntryCount && entry.employeeEntryCount > 1 && (
-                              <Badge className="bg-purple-500/15 text-purple-400 border-purple-500/25 text-[10px] px-1.5 py-0 shrink-0">
-                                {entry.employeeEntryCount} entries
-                              </Badge>
-                            )}
-                          </div>
-                          {entry.employee?.employeeId && (
-                            <p className="text-[11px] text-slate-500">{entry.employee.employeeId}</p>
-                          )}
+                          <p className="text-sm font-medium text-white">{entry.employeeName}</p>
                         </TableCell>
                         <TableCell>
                           <div>
@@ -1534,17 +1522,7 @@ export function UniformRegistryPage() {
                       </div>
                       <RenewalStatusBadge renewalDate={entry.renewalDate} />
                     </div>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <p className="text-sm font-medium text-white">{entry.employeeName}</p>
-                      {entry.employeeEntryCount && entry.employeeEntryCount > 1 && (
-                        <Badge className="bg-purple-500/15 text-purple-400 border-purple-500/25 text-[10px] px-1.5 py-0 shrink-0">
-                          {entry.employeeEntryCount} entries
-                        </Badge>
-                      )}
-                    </div>
-                    {entry.employee?.employeeId && (
-                      <p className="text-[11px] text-slate-500 mb-1">{entry.employee.employeeId}</p>
-                    )}
+                    <p className="text-sm font-medium text-white mb-1">{entry.employeeName}</p>
                     <div className="flex items-center gap-2 mb-2">
                       <Badge
                         className={cn(

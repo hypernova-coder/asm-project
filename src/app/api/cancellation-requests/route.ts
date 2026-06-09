@@ -7,9 +7,7 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status');
     const employeeId = searchParams.get('employeeId');
 
-    const where: Record<string, unknown> = {
-      isHidden: false,
-    };
+    const where: Record<string, unknown> = {};
 
     if (status && ['pending', 'approved', 'rejected'].includes(status)) {
       where.status = status;
@@ -60,7 +58,6 @@ export async function GET(request: NextRequest) {
           employee: r.employee,
           reason: r.reason || '',
           status: r.status,
-          customDate: r.customDate?.toISOString() || null,
           requestedBy: r.requestedBy,
           reviewedBy: r.reviewedBy?.name || null,
           reviewedAt: r.reviewedAt?.toISOString() || null,
@@ -81,7 +78,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { employeeId, reason, createdById, customDate } = body;
+    const { employeeId, reason, createdById } = body;
 
     if (!employeeId || !createdById) {
       return NextResponse.json(
@@ -135,7 +132,6 @@ export async function POST(request: NextRequest) {
           employeeId,
           requestedById: finalRequestedById,
           reason: reason || null,
-          customDate: customDate ? new Date(customDate) : null,
           status: 'pending',
         },
         include: {
@@ -192,7 +188,6 @@ export async function POST(request: NextRequest) {
             employee: cancellationRequest.employee,
             reason: cancellationRequest.reason || '',
             status: cancellationRequest.status,
-            customDate: cancellationRequest.customDate?.toISOString() || null,
             requestedBy: cancellationRequest.requestedBy,
             reviewedBy: null,
             reviewedAt: null,

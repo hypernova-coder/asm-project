@@ -19,7 +19,6 @@ import {
   Ban,
   KeyRound,
   LayoutDashboard,
-  Calculator,
   Shirt,
   ToggleLeft,
   ToggleRight,
@@ -166,7 +165,6 @@ const SIDEBAR_MENUS = [
   { slug: 'cancellation_requests', label: 'Cancellations', icon: Ban, group: 'workforce', alwaysVisible: false },
   { slug: 'notifications', label: 'Notifications', icon: Bell, group: 'general', alwaysVisible: false },
   { slug: 'admins', label: 'Admin Management', icon: Shield, group: 'admin', alwaysVisible: false },
-  { slug: 'accounts', label: 'Accounts', icon: Calculator, group: 'workforce', alwaysVisible: false },
 ] as const;
 
 interface PermissionItem {
