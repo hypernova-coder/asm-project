@@ -435,9 +435,8 @@ export async function GET(request: NextRequest) {
         const threshold = entry.hoursThreshold || 1000;
 
         for (const decision of decisions) {
-          // Skip entries with zero hours AND no existing record AND not tracked in EmpCountSitePerMonth
-          // (Employees auto-loaded via site activation [isManual=false] should always show up)
-          if (decision.hours <= 0 && entry.salaryRecords.length === 0 && entry.isManual) continue;
+          // Skip entries with zero hours AND no existing record
+          if (decision.hours <= 0 && entry.salaryRecords.length === 0) continue;
 
           // Find a matching salary record for this rateTier to preserve editable fields
           const matchingRecord = entry.salaryRecords.find(
@@ -652,79 +651,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: Auto-load employees for a site when it's activated for a month
-// Creates EmpCountSitePerMonth records for all employees currently assigned
-// to the site (via Employee.currentSite matching site name)
-// ---------------------------------------------------------------------------
-async function autoLoadEmployeesForSite(siteId: string, month: string) {
-  const site = await db.site.findUnique({ where: { id: siteId } });
-  if (!site) return 0;
-
-  // Find all active employees currently assigned to this site
-  const employees = await db.employee.findMany({
-    where: {
-      currentSite: site.name,
-      status: 'active',
-    },
-  });
-
-  if (employees.length === 0) return 0;
-
-  let created = 0;
-
-  // Check existing open records for this site+month to avoid duplicates
-  const existingRecords = await db.empCountSitePerMonth.findMany({
-    where: {
-      siteId: site.id,
-      month,
-      removedDate: null,
-      deletedDate: null,
-    },
-    select: { empId: true },
-  });
-  const existingEmpIds = new Set(existingRecords.map(r => r.empId));
-
-  // Create EmpCountSitePerMonth records for employees not already tracked
-  const toCreate = employees.filter(emp => !existingEmpIds.has(emp.id));
-
-  if (toCreate.length > 0) {
-    await db.empCountSitePerMonth.createMany({
-      data: toCreate.map(emp => ({
-        empId: emp.id,
-        empName: emp.fullName,
-        siteId: site.id,
-        siteName: site.name,
-        month,
-        removedDate: null,
-      })),
-    });
-    created = toCreate.length;
-  }
-
-  // Also ensure TotalEmployeeWorkingHours records exist for these employees for the month
-  // so the working hours / rate info is available in accounts
-  // Uses upsert pattern since there's a unique constraint on [empId, month]
-  for (const emp of toCreate) {
-    const hasBonus = emp.isTeamLeader || emp.isSupervisor;
-    const rtPerHour = hasBonus ? 3.0 : 2.5; // Default basic rate
-    await db.totalEmployeeWorkingHours.upsert({
-      where: { empId_month: { empId: emp.id, month } },
-      update: {},
-      create: {
-        empId: emp.id,
-        empName: emp.fullName,
-        month,
-        totalWorkingHours: 0,
-        rtPerHour,
-        isCustom: false,
-      },
-    });
-  }
-
-  return created;
-}
-
 // POST: Add sites to a specific month (SiteMonthActivation)
 export async function POST(request: NextRequest) {
   try {
@@ -747,7 +673,6 @@ export async function POST(request: NextRequest) {
     }
 
     const results = [];
-    let totalEmployeesLoaded = 0;
 
     // Handle custom site creation
     if (customSiteName && typeof customSiteName === 'string' && customSiteName.trim()) {
@@ -779,11 +704,7 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      // Auto-load employees currently assigned to this site
-      const employeesLoaded = await autoLoadEmployeesForSite(site.id, month);
-      totalEmployeesLoaded += employeesLoaded;
-
-      results.push({ siteId: site.id, siteName: site.name, activationId: activation.id, isNewSite: true, employeesLoaded });
+      results.push({ siteId: site.id, siteName: site.name, activationId: activation.id, isNewSite: true });
     }
 
     // Handle existing site activations
@@ -803,11 +724,7 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        // Auto-load employees currently assigned to this site
-        const employeesLoaded = await autoLoadEmployeesForSite(siteId, month);
-        totalEmployeesLoaded += employeesLoaded;
-
-        results.push({ siteId, siteName: site.name, activationId: activation.id, isNewSite: false, employeesLoaded });
+        results.push({ siteId, siteName: site.name, activationId: activation.id, isNewSite: false });
       }
     }
 
@@ -816,7 +733,6 @@ export async function POST(request: NextRequest) {
       data: {
         activated: results.length,
         results,
-        totalEmployeesLoaded,
       },
     });
   } catch (error: unknown) {

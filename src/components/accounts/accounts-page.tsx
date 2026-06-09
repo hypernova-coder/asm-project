@@ -1949,9 +1949,7 @@ function AddNewSitesDialog({
       });
       const json = await res.json();
       if (json.success) {
-        const employeesLoaded = json.data.totalEmployeesLoaded || 0;
-        const empMsg = employeesLoaded > 0 ? ` • ${employeesLoaded} employee(s) auto-loaded` : '';
-        toast({ title: 'Sites Added', description: `${json.data.activated} site(s) activated for ${MONTH_FULL[month]} ${year}${empMsg}.` });
+        toast({ title: 'Sites Added', description: `${json.data.activated} site(s) activated for ${MONTH_FULL[month]} ${year}.` });
         onAdded();
         onOpenChange(false);
       } else {
