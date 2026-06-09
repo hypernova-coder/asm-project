@@ -200,3 +200,30 @@ Stage Summary:
 - All 7 configurable menus have toggle switches per admin
 - Always-on menus shown with green "Always On" badge (non-toggleable)
 - Visual feedback: Eye/EyeOff icons, blue highlight when granted, dimmed when revoked
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: Add Accounts and Consolidated Salary Sheet pages, push to GitHub
+
+Work Log:
+- Analyzed existing project structure: AppView types, sidebar navigation, Prisma schema
+- Created API routes: /api/salary-records (GET/POST/PUT), /api/salary-records/[id] (PUT/DELETE), /api/working-hours (GET/POST), /api/accounts (GET)
+- Built Accounts page component with site filter, month/year selectors, salary table with inline editing, Generate Salary button, paid/unpaid toggle
+- Built Consolidated Salary Sheet page with 7 summary cards, expandable site rows, employee-level details, grand totals
+- Added 'consolidated_salary' to AppView type in app-store.ts
+- Added Calculator icon import and nav items for Accounts and Consolidated Salary in app-sidebar.tsx
+- Imported ConsolidatedSalaryPage in page.tsx and added routing case
+- Added both views to RESTRICTED_VIEWS for permission control
+- Fixed accounts API route: currentSite stores site name not ID
+- Updated salary-records GET to support both site-specific and consolidated (no siteId) queries with site summaries and totals
+- Verified all APIs return correct data via curl tests
+- Lint passes cleanly
+- Committed and pushed to GitHub (bcea78e)
+
+Stage Summary:
+- Accounts page: Full salary management per site/month with inline editing, Generate Salary from attendance, rate tier support
+- Consolidated Salary Sheet: Aggregated view across all sites with expandable rows and grand totals
+- API routes support both individual and consolidated salary queries
+- Both pages integrated into sidebar, routing, and permission system
+- Code pushed to GitHub successfully
