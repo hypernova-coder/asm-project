@@ -4,14 +4,8 @@ const fs = require('fs');
 
 console.log('=== ASM Railway Startup ===');
 
-// Step 0: Switch to PostgreSQL provider for Railway
-console.log('Switching Prisma to PostgreSQL provider...');
-try {
-  execSync('node scripts/switch-db.js postgresql', { stdio: 'inherit' });
-  console.log('Successfully switched to PostgreSQL provider');
-} catch (e) {
-  console.error('Warning: switch-db failed (schema may already be postgresql):', e.message);
-}
+// Step 0: PostgreSQL is the default provider (no switching needed)
+console.log('Using PostgreSQL provider (default)');
 
 // Step 1: Push database schema
 console.log('Pushing database schema to PostgreSQL...');

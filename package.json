@@ -3,13 +3,12 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "node scripts/switch-db.js postgresql && npx prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && node scripts/switch-db.js sqlite",
+    "dev": "bash scripts/start-pg.sh && DATABASE_URL=postgres://z@localhost:5432/myproject next dev -p 3000 2>&1 | tee dev.log",
+    "build": "npx prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "node railway-start.js",
     "lint": "eslint .",
     "postinstall": "npx prisma generate",
-    "db:push": "prisma db push",
-    "db:push:pg": "node scripts/switch-db.js postgresql && prisma db push && node scripts/switch-db.js sqlite",
+    "db:push": "DATABASE_URL=postgres://z@localhost:5432/myproject prisma db push",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset"
