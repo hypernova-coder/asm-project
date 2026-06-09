@@ -67,6 +67,7 @@ interface MergedEmployeeRow {
 
   // Custom rate flag
   isCustomRate: boolean; // Whether the employee has a custom rate override
+  customHourlyRate: number | null; // Custom hourly rate from API if applicable
 
   // Site info for save
   siteId: string;
@@ -131,6 +132,7 @@ interface ApiEmployeeEntry {
     calculatedRtPerHour: number;
     previousCumulativeHours: number;
     hoursThreshold: number;
+    customHourlyRate?: number | null;
   };
 }
 
@@ -239,6 +241,10 @@ function mergeApiEntries(
     // Detect custom rate: if the low rate differs from default and workingHours says custom
     const isCustomRate = (baseEntry.workingHours?.isCustom as boolean) ?? false;
 
+    // Extract customHourlyRate from API if available
+    const customHourlyRate: number | null =
+      (baseEntry.workingHours?.customHourlyRate as number | null | undefined) ?? null;
+
     merged.push({
       empId,
       empName: baseEntry.empName,
@@ -264,6 +270,7 @@ function mergeApiEntries(
       premiumRecordId: premiumEntry?.salaryRecord?.id ?? null,
       rateTier,
       isCustomRate,
+      customHourlyRate,
       siteId,
       siteName,
     });
@@ -503,6 +510,7 @@ export function ConsolidatedSalarySheet() {
             premiumRecordId: null,
             rateTier: 'standard' as const,
             isCustomRate: false,
+            customHourlyRate: null,
             siteId,
             siteName: site?.name || '',
           },
@@ -670,6 +678,9 @@ export function ConsolidatedSalarySheet() {
   const grandTotals = useMemo(() => {
     let totalHours = 0;
     let totalSalary = 0;
+    let totalBaseAmt = 0;
+    let totalPremiumAmt = 0;
+    let totalGrossTotal = 0;
     let totalDeductions = 0;
     let totalAdvances = 0;
     let totalBalance = 0;
@@ -679,13 +690,16 @@ export function ConsolidatedSalarySheet() {
       const employees = siteEmployees[site.id] || [];
       totalHours += employees.reduce((s, e) => s + e.totalHours, 0);
       totalSalary += employees.reduce((s, e) => s + e.totalSalary, 0);
+      totalBaseAmt += employees.reduce((s, e) => s + (e.lowRateHours * e.lowRate), 0);
+      totalPremiumAmt += employees.reduce((s, e) => s + (e.highRateHours * e.highRate), 0);
       totalDeductions += employees.reduce((s, e) => s + e.deduction, 0);
       totalAdvances += employees.reduce((s, e) => s + e.advance, 0);
       totalBalance += employees.reduce((s, e) => s + e.balanceSalary, 0);
       totalEmployees += employees.length;
     }
+    totalGrossTotal = totalBaseAmt + totalPremiumAmt;
 
-    return { totalHours, totalSalary, totalDeductions, totalAdvances, totalBalance, totalEmployees };
+    return { totalHours, totalSalary, totalBaseAmt, totalPremiumAmt, totalGrossTotal, totalDeductions, totalAdvances, totalBalance, totalEmployees };
   }, [sites, siteEmployees]);
 
   // ── Column header for low-rate (shows 2.5/3) ──
@@ -857,6 +871,9 @@ export function ConsolidatedSalarySheet() {
               const siteTotalSalary = employees.reduce((s, e) => s + e.totalSalary, 0);
               const siteTotalLowRateHours = employees.reduce((s, e) => s + e.lowRateHours, 0);
               const siteTotalHighRateHours = employees.reduce((s, e) => s + e.highRateHours, 0);
+              const siteTotalBaseAmt = employees.reduce((s, e) => s + (e.lowRateHours * e.lowRate), 0);
+              const siteTotalPremiumAmt = employees.reduce((s, e) => s + (e.highRateHours * e.highRate), 0);
+              const siteTotalGrossTotal = siteTotalBaseAmt + siteTotalPremiumAmt;
               const siteTotalDeduction = employees.reduce((s, e) => s + e.deduction, 0);
               const siteTotalAdvance = employees.reduce((s, e) => s + e.advance, 0);
               const siteTotalBalance = employees.reduce((s, e) => s + e.balanceSalary, 0);
@@ -886,7 +903,7 @@ export function ConsolidatedSalarySheet() {
 
                   {/* Salary Table */}
                   <div className="overflow-x-auto border border-t-0 border-slate-700/50 rounded-b-lg">
-                    <table className="w-full border-collapse min-w-[1200px]">
+                    <table className="w-full border-collapse min-w-[1600px]">
                       <thead>
                         <tr className="bg-slate-800/90 border-b border-slate-700/50">
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-center whitespace-nowrap" style={{width: '40px'}}>SL</th>
@@ -897,6 +914,10 @@ export function ConsolidatedSalarySheet() {
                           <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>TOTAL HRS</th>
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-slate-800/50" style={{minWidth: '85px'}}>{lowRateHeader}</th>
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-amber-900/20" style={{minWidth: '85px'}}>{highRateHeader}</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-slate-800/50" style={{minWidth: '95px'}}>BASE AMT</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-amber-900/10" style={{minWidth: '95px'}}>PREMIUM AMT</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-violet-900/10" style={{minWidth: '90px'}}>CUSTOM RATE</th>
+                          <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-emerald-900/10" style={{minWidth: '110px'}}>GROSS TOTAL</th>
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '110px'}}>TOTAL SALARY</th>
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>DEDUCT</th>
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>ADVANCE</th>
@@ -908,7 +929,7 @@ export function ConsolidatedSalarySheet() {
                       <tbody>
                         {employees.length === 0 ? (
                           <tr>
-                            <td colSpan={editMode ? 14 : 13} className="text-center text-slate-500 py-6 text-xs">
+                            <td colSpan={editMode ? 18 : 17} className="text-center text-slate-500 py-6 text-xs">
                               No employees for this site.
                             </td>
                           </tr>
@@ -1064,6 +1085,30 @@ export function ConsolidatedSalarySheet() {
                                   )}
                                 </td>
 
+                                {/* BASE AMT - Calculated (lowRateHours × lowRate) */}
+                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2 bg-slate-800/20', (emp.lowRateHours * emp.lowRate) > 0 ? 'text-slate-300' : 'text-slate-600')}>
+                                  {formatNumber(emp.lowRateHours * emp.lowRate)}
+                                </td>
+
+                                {/* PREMIUM AMT - Calculated (highRateHours × highRate) */}
+                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2 bg-amber-900/5', (emp.highRateHours * emp.highRate) > 0 ? 'text-amber-300' : 'text-slate-600')}>
+                                  {formatNumber(emp.highRateHours * emp.highRate)}
+                                </td>
+
+                                {/* CUSTOM RATE - Show custom rate or "—" */}
+                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2 bg-violet-900/5', emp.isCustomRate ? 'text-violet-300' : 'text-slate-600')}>
+                                  {emp.isCustomRate
+                                    ? (emp.customHourlyRate != null
+                                        ? formatNumber(emp.customHourlyRate)
+                                        : formatNumber(emp.lowRate))
+                                    : '—'}
+                                </td>
+
+                                {/* GROSS TOTAL - Calculated (BASE AMT + PREMIUM AMT) */}
+                                <td className={cn('text-[11px] text-right font-semibold py-1.5 px-2 bg-emerald-900/5', (emp.lowRateHours * emp.lowRate + emp.highRateHours * emp.highRate) > 0 ? 'text-emerald-400' : 'text-slate-600')}>
+                                  {formatNumber(emp.lowRateHours * emp.lowRate + emp.highRateHours * emp.highRate)}
+                                </td>
+
                                 {/* TOTAL SALARY - Calculated */}
                                 <td className={cn('text-[11px] text-right font-medium py-1.5 px-2', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
                                   {formatNumber(emp.totalSalary)}
@@ -1162,6 +1207,18 @@ export function ConsolidatedSalarySheet() {
                           <td className="text-[11px] text-amber-300 font-bold py-2 px-2 text-right bg-amber-900/10">
                             {formatNumber(siteTotalHighRateHours)}
                           </td>
+                          <td className="text-[11px] text-slate-300 font-bold py-2 px-2 text-right bg-slate-800/20">
+                            {formatNumber(siteTotalBaseAmt)}
+                          </td>
+                          <td className="text-[11px] text-amber-300 font-bold py-2 px-2 text-right bg-amber-900/5">
+                            {formatNumber(siteTotalPremiumAmt)}
+                          </td>
+                          <td className="text-[11px] text-slate-600 font-bold py-2 px-2 text-right bg-violet-900/5">
+                            —
+                          </td>
+                          <td className="text-[11px] text-emerald-400 font-bold py-2 px-2 text-right bg-emerald-900/5">
+                            {formatNumber(siteTotalGrossTotal)}
+                          </td>
                           <td className="text-[11px] text-emerald-400 font-bold py-2 px-2 text-right">
                             {formatNumber(siteTotalSalary)} AED
                           </td>
@@ -1201,7 +1258,7 @@ export function ConsolidatedSalarySheet() {
 
             {/* Grand Total Bar */}
             <div className="mt-4 bg-slate-800/60 border border-slate-700/50 rounded-lg px-4 py-3">
-              <div className="grid grid-cols-2 sm:grid-cols-6 gap-4 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-4 text-xs">
                 <div>
                   <div className="text-slate-500 mb-0.5">Sites</div>
                   <div className="text-white font-bold text-sm">{sites.length}</div>
@@ -1215,8 +1272,20 @@ export function ConsolidatedSalarySheet() {
                   <div className="text-white font-bold text-sm">{formatNumber(grandTotals.totalHours)}</div>
                 </div>
                 <div>
+                  <div className="text-slate-500 mb-0.5">Base Amount</div>
+                  <div className="text-slate-300 font-bold text-sm">{formatNumber(grandTotals.totalBaseAmt)} AED</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 mb-0.5">Premium Amount</div>
+                  <div className="text-amber-300 font-bold text-sm">{formatNumber(grandTotals.totalPremiumAmt)} AED</div>
+                </div>
+                <div>
+                  <div className="text-slate-500 mb-0.5">Gross Total</div>
+                  <div className="text-emerald-400 font-bold text-sm">{formatNumber(grandTotals.totalGrossTotal)} AED</div>
+                </div>
+                <div>
                   <div className="text-slate-500 mb-0.5">Total Salary</div>
-                  <div className="text-emerald-400 font-bold text-sm">{formatNumber(grandTotals.totalSalary)} AED</div>
+                  <div className="text-white font-bold text-sm">{formatNumber(grandTotals.totalSalary)} AED</div>
                 </div>
                 <div>
                   <div className="text-slate-500 mb-0.5">Total Deductions</div>

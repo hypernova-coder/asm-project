@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
             currentSite: true,
             trade: true,
             nationality: true,
+            customHourlyRate: true,
           },
         },
       },
@@ -171,14 +172,44 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get all active employees at this site
-    const employees = await db.employee.findMany({
+    // Get all active employees at this site via currentSite assignment
+    const currentSiteEmployees = await db.employee.findMany({
       where: {
         currentSite: site.name,
         status: 'active',
       },
       orderBy: { employeeId: 'asc' },
     });
+
+    // Also get employees assigned to this site via EmpCountSitePerMonth for the specific month
+    // This captures employees who were at the site in that month even if they've since moved
+    const siteMonthRecords = await db.empCountSitePerMonth.findMany({
+      where: {
+        siteId,
+        month,
+        deletedDate: null,
+      },
+      select: { empId: true },
+    });
+    const empIdsFromHistory = siteMonthRecords.map(r => r.empId);
+
+    // Merge both sources: currentSite employees + history employees for this month
+    const allEmpIds = new Set(currentSiteEmployees.map(e => e.id));
+    // Fetch any history employees not already in the currentSite list
+    const historyOnlyIds = empIdsFromHistory.filter(id => !allEmpIds.has(id));
+
+    let historyEmployees: typeof currentSiteEmployees = [];
+    if (historyOnlyIds.length > 0) {
+      historyEmployees = await db.employee.findMany({
+        where: {
+          id: { in: historyOnlyIds },
+          status: 'active',
+        },
+        orderBy: { employeeId: 'asc' },
+      });
+    }
+
+    const employees = [...currentSiteEmployees, ...historyEmployees];
 
     if (employees.length === 0) {
       return NextResponse.json(

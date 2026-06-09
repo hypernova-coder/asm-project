@@ -34,6 +34,8 @@ export async function GET(request: NextRequest) {
         isTeamLeader: true,
         isSupervisor: true,
         hoursThreshold: true,
+        customHourlyRate: true,
+        role: true,
       },
     });
 
@@ -101,7 +103,10 @@ export async function GET(request: NextRequest) {
     // Auto-calculate the aggregate rate
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
     const empThreshold = employee.hoursThreshold || 1000;
-    const autoRate = aggregateTotalHours >= empThreshold ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5);
+    // If employee has a customHourlyRate, use it directly
+    const autoRate = employee.customHourlyRate != null
+      ? employee.customHourlyRate
+      : (aggregateTotalHours >= empThreshold ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5));
 
     // Build monthly data for all 12 months
     // Use SalaryRecord as source of truth for per-month hours (sum of standard + premium)
@@ -143,6 +148,7 @@ export async function GET(request: NextRequest) {
           hoursThreshold: empThreshold,
           previousCumulativeHours,
           previousYearHours: previousCumulativeHours,
+          customHourlyRate: employee.customHourlyRate,
         },
       },
     });

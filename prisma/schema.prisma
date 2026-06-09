@@ -68,6 +68,8 @@ model Employee {
   teamLeaderSiteId String?
   isSupervisor     Boolean   @default(false)
   supervisorSiteId String?
+  role             String    @default("Standard") // "Standard", "Team Leader", "Supervisor" - derived from isTeamLeader/isSupervisor but also directly settable
+  customHourlyRate Float?    // Nullable - if set, overrides standard tier rates for this employee
   hoursThreshold   Int       @default(1000) // Hours threshold for rate switching (basic vs premium)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt

@@ -274,6 +274,8 @@ export async function POST(request: NextRequest) {
       teamLeaderSiteId: isTeamLeader ? teamLeaderSiteId : null,
       isSupervisor,
       supervisorSiteId: isSupervisor ? supervisorSiteId : null,
+      role: isSupervisor ? 'Supervisor' : (isTeamLeader ? 'Team Leader' : (body.role || 'Standard')),
+      customHourlyRate: body.customHourlyRate != null ? body.customHourlyRate : null,
     };
 
     if (body.passportNumber) {

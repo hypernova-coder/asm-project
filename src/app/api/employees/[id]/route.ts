@@ -221,6 +221,20 @@ export async function PUT(
       data.supervisorSiteId = body.supervisorSiteId;
     }
 
+    // Handle role and customHourlyRate fields
+    if (body.role !== undefined) {
+      data.role = body.role;
+    } else if (body.isTeamLeader !== undefined || body.isSupervisor !== undefined) {
+      // Auto-derive role from isTeamLeader/isSupervisor
+      const isTL = body.isTeamLeader !== undefined ? body.isTeamLeader : existing.isTeamLeader;
+      const isSup = body.isSupervisor !== undefined ? body.isSupervisor : existing.isSupervisor;
+      data.role = isSup ? 'Supervisor' : (isTL ? 'Team Leader' : 'Standard');
+    }
+
+    if (body.customHourlyRate !== undefined) {
+      data.customHourlyRate = body.customHourlyRate;
+    }
+
     // Encrypt sensitive fields
     if (body.passportNumber !== undefined) {
       data.passportNumber = body.passportNumber ? encrypt(body.passportNumber) : null;

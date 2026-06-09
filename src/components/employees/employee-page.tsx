@@ -42,6 +42,7 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   XCircle,
+  DollarSign,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -79,6 +80,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useAuthStore } from '@/store/auth-store';
+import { useAppStore } from '@/store/app-store';
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -807,6 +809,7 @@ export function EmployeePage() {
     teamLeaderSiteId: '',
     isSupervisor: false,
     supervisorSiteId: '',
+    customHourlyRate: '' as string,
   });
   const [formPhoto, setFormPhoto] = useState<string | null>(null);
   const [showNewSiteInput, setShowNewSiteInput] = useState(false);
@@ -969,6 +972,7 @@ export function EmployeePage() {
       teamLeaderSiteId: '',
       isSupervisor: false,
       supervisorSiteId: '',
+      customHourlyRate: '',
     });
     setFormTab('personal');
     setShowNewSiteInput(false);
@@ -1002,6 +1006,7 @@ export function EmployeePage() {
       teamLeaderSiteId: employee.teamLeaderSiteId || '',
       isSupervisor: employee.isSupervisor || false,
       supervisorSiteId: employee.supervisorSiteId || '',
+      customHourlyRate: (employee as Record<string, unknown>).customHourlyRate != null ? String((employee as Record<string, unknown>).customHourlyRate) : '',
     });
     setFormTab('personal');
     setShowNewSiteInput(false);
@@ -1103,6 +1108,7 @@ export function EmployeePage() {
         teamLeaderSiteId: formData.isTeamLeader ? (formData.teamLeaderSiteId || null) : null,
         isSupervisor: formData.isSupervisor,
         supervisorSiteId: formData.isSupervisor ? (formData.supervisorSiteId || null) : null,
+        customHourlyRate: formData.customHourlyRate ? parseFloat(formData.customHourlyRate) : null,
       };
       // Clear empty strings (but keep booleans)
       Object.keys(payload).forEach((key) => {
@@ -1669,6 +1675,18 @@ export function EmployeePage() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            className="h-8 w-8 text-slate-400 hover:text-violet-400 hover:bg-violet-500/10"
+                            onClick={() => {
+                              useAppStore.getState().setSelectedEmployeeId(emp.id);
+                              useAppStore.getState().setCurrentView('employee_hours_ledger');
+                            }}
+                            title="Hours Ledger"
+                          >
+                            <Clock className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             className="h-8 w-8 text-slate-400 hover:text-amber-400 hover:bg-amber-500/10"
                             onClick={() => openEditDialog(emp)}
                             title="Edit"
@@ -2197,6 +2215,31 @@ export function EmployeePage() {
                       <p className="text-xs text-slate-500">Select the site this employee supervises.</p>
                     </div>
                   )}
+                </div>
+
+                <Separator className="bg-slate-700/50" />
+
+                {/* Custom Hourly Rate Override */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-slate-300 flex items-center gap-2">
+                    <DollarSign className="h-4 w-4 text-violet-400" />
+                    Custom Hourly Rate
+                  </h4>
+                  <div className="p-3 rounded-lg bg-slate-900/50 border border-slate-700/50">
+                    <Label className="text-slate-300 text-sm">Custom Rate Override (AED/hr)</Label>
+                    <p className="text-xs text-slate-500 mb-2">
+                      If set, this overrides the standard tier rates (2.5/3.0/5.0/5.5) for this employee across all calculations.
+                    </p>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      placeholder="Leave empty to use standard rates"
+                      value={formData.customHourlyRate}
+                      onChange={(e) => handleFormChange('customHourlyRate', e.target.value)}
+                      className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500"
+                    />
+                  </div>
                 </div>
 
                 <Separator className="bg-slate-700/50" />

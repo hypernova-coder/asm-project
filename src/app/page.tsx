@@ -19,6 +19,7 @@ import { CancellationRequestPage } from '@/components/cancellation-requests/canc
 import { UniformRegistryPage } from '@/components/uniform-registry/uniform-registry-page';
 import { AccountsPage } from '@/components/accounts/accounts-page';
 import { ConsolidatedSalaryPage } from '@/components/consolidated-salary/consolidated-salary-page';
+import { EmployeeHoursLedger } from '@/components/employees/employee-hours-ledger';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -55,10 +56,10 @@ function LoadingScreen() {
 const ALWAYS_VISIBLE_VIEWS: AppView[] = ['dashboard', 'uniform_registry', 'profile'];
 
 // Views that only super_admin can access by default (admin needs explicit permission)
-const RESTRICTED_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'accounts', 'consolidated_salary', 'leave_requests', 'cancellation_requests', 'notifications', 'admins'];
+const RESTRICTED_VIEWS: AppView[] = ['employees', 'sites', 'attendance', 'accounts', 'consolidated_salary', 'employee_hours_ledger', 'leave_requests', 'cancellation_requests', 'notifications', 'admins'];
 
 function MainLayout() {
-  const { currentView, setCurrentView } = useAppStore();
+  const { currentView, setCurrentView, selectedEmployeeId, setSelectedEmployeeId } = useAppStore();
   const { user } = useAuthStore();
   const isMobile = useIsMobile();
   const [adminPermissions, setAdminPermissions] = useState<string[]>([]);
@@ -103,6 +104,11 @@ function MainLayout() {
     return () => clearInterval(interval);
   }, [user]);
 
+  // Map sub-views to their parent permission slug
+  const VIEW_PERMISSION_MAP: Record<string, string> = {
+    employee_hours_ledger: 'employees', // Uses employees permission
+  };
+
   // Dynamic view permission check
   const isViewAllowed = useCallback((view: AppView): boolean => {
     if (!user) return false;
@@ -110,7 +116,10 @@ function MainLayout() {
     // Admin: always visible views are allowed
     if (ALWAYS_VISIBLE_VIEWS.includes(view)) return true;
     // Admin: restricted views need explicit permission
-    if (RESTRICTED_VIEWS.includes(view)) return adminPermissions.includes(view);
+    if (RESTRICTED_VIEWS.includes(view)) {
+      const permSlug = VIEW_PERMISSION_MAP[view] || view;
+      return adminPermissions.includes(permSlug);
+    }
     return false;
   }, [user, adminPermissions]);
 
@@ -150,6 +159,16 @@ function MainLayout() {
         return <NotificationPage />;
       case 'admins':
         return <AdminPage />;
+      case 'employee_hours_ledger':
+        return selectedEmployeeId ? (
+          <EmployeeHoursLedger
+            employeeId={selectedEmployeeId}
+            onBack={() => {
+              setSelectedEmployeeId(null);
+              setCurrentView('employees');
+            }}
+          />
+        ) : <EmployeePage />;
       case 'profile':
         return <ProfilePage />;
       default:

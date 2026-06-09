@@ -12,9 +12,10 @@ import {
   FileText,
   CheckCircle2,
   XCircle,
-  Sparkles,
   ArrowDownToLine,
   RefreshCw,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -67,6 +68,7 @@ interface SalaryRecord {
   balanceSalary: number;
   isPaid: boolean;
   rateTier: string;
+  customHourlyRate: number | null;
 }
 
 /* ───────── constants ───────── */
@@ -295,6 +297,133 @@ function EditableCell({ value, recordId, field, onSave }: EditableCellProps) {
   );
 }
 
+/* ───────── Custom Rate Cell ───────── */
+
+interface CustomRateCellProps {
+  empId: string;
+  customHourlyRate: number | null;
+  currentRtPerHour: number;
+  monthParam: string;
+  onSave: (empId: string, customRate: number | null) => Promise<void>;
+}
+
+function CustomRateCell({ empId, customHourlyRate, currentRtPerHour, monthParam, onSave }: CustomRateCellProps) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(
+    customHourlyRate != null ? String(customHourlyRate) : ''
+  );
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  // Sync edit value when external data changes
+  useEffect(() => {
+    if (!editing) {
+      setEditValue(customHourlyRate != null ? String(customHourlyRate) : '');
+    }
+  }, [customHourlyRate, editing]);
+
+  const handleSave = useCallback(async () => {
+    const trimmed = editValue.trim();
+
+    // If empty or cleared, remove the custom rate
+    if (trimmed === '' || trimmed === '0') {
+      setSaving(true);
+      try {
+        await onSave(empId, null);
+        setEditing(false);
+      } catch {
+        // Keep editing on error
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    const numVal = parseFloat(trimmed);
+    if (isNaN(numVal) || numVal < 0) {
+      toast({ title: 'Invalid rate', description: 'Please enter a valid positive number', variant: 'destructive' });
+      return;
+    }
+
+    if (customHourlyRate != null && numVal === customHourlyRate) {
+      setEditing(false);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(empId, numVal);
+      setEditing(false);
+    } catch {
+      // Keep editing on error
+    } finally {
+      setSaving(false);
+    }
+  }, [editValue, customHourlyRate, empId, onSave]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSave();
+    } else if (e.key === 'Escape') {
+      setEditValue(customHourlyRate != null ? String(customHourlyRate) : '');
+      setEditing(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <Input
+          ref={inputRef}
+          type="number"
+          min="0"
+          step="0.1"
+          placeholder="Rate"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onBlur={handleSave}
+          onKeyDown={handleKeyDown}
+          disabled={saving}
+          className="h-7 w-20 bg-slate-900 border-violet-500/50 text-white text-xs px-2 py-1"
+        />
+        {saving ? (
+          <Loader2 className="h-3 w-3 animate-spin text-violet-400" />
+        ) : (
+          <Check className="h-3 w-3 text-violet-400" />
+        )}
+      </div>
+    );
+  }
+
+  const hasCustom = customHourlyRate != null && customHourlyRate > 0;
+
+  return (
+    <button
+      onClick={() => {
+        setEditValue(customHourlyRate != null ? String(customHourlyRate) : '');
+        setEditing(true);
+      }}
+      className={cn(
+        'flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors cursor-pointer',
+        hasCustom
+          ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 border border-violet-500/20'
+          : 'text-slate-500 hover:bg-slate-700/50 hover:text-slate-300 border border-transparent'
+      )}
+      title={hasCustom ? `Custom: ${customHourlyRate!.toFixed(2)} SAR/hr – Click to edit` : 'Click to set custom rate'}
+    >
+      <Pencil className="h-3 w-3 shrink-0" />
+      <span>{hasCustom ? customHourlyRate!.toFixed(2) : 'Set'}</span>
+    </button>
+  );
+}
+
 /* ───────── Main Component ───────── */
 
 export function AccountsPage() {
@@ -361,7 +490,12 @@ export function AccountsPage() {
       const res = await fetch(`/api/salary-records?${params.toString()}`);
       const data = await res.json();
       if (data.success) {
-        const records = data.data.records || [];
+        const rawRecords = data.data.records || [];
+        // Map customHourlyRate from employee relation into each salary record
+        const records = rawRecords.map((r: Record<string, unknown>) => ({
+          ...r,
+          customHourlyRate: (r.employee as Record<string, unknown>)?.customHourlyRate ?? null,
+        }));
         setSalaryRecords(records);
 
         // Auto-generate salary records if none exist for this site+month (only once)
@@ -499,6 +633,65 @@ export function AccountsPage() {
       }
     },
     []
+  );
+
+  // Set custom hourly rate for an employee
+  const handleSetCustomRate = useCallback(
+    async (empId: string, customRate: number | null) => {
+      try {
+        // 1. Update employee's customHourlyRate
+        const empRes = await fetch(`/api/employees/${empId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customHourlyRate: customRate }),
+        });
+        const empData = await empRes.json();
+        if (!empData.success) {
+          toast({ title: 'Error', description: empData.error || 'Failed to update custom rate', variant: 'destructive' });
+          throw new Error('Employee update failed');
+        }
+
+        // 2. Update TotalEmployeeWorkingHours for the current month to mark as custom
+        const whRes = await fetch('/api/accounts/working-hours', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            empId,
+            month: monthParam,
+            isCustom: customRate != null,
+            rtPerHour: customRate ?? undefined,
+          }),
+        });
+        if (!whRes.ok) {
+          console.warn('Working hours update returned non-ok status');
+        }
+
+        // 3. Re-trigger the allocation engine for this month+year
+        try {
+          await fetch('/api/accounts/allocate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ month: monthParam, year: parseInt(year, 10) }),
+          });
+        } catch {
+          // Allocation engine failure shouldn't block the user
+        }
+
+        // 4. Refresh salary records
+        await fetchSalaryRecords();
+
+        toast({
+          title: customRate != null ? 'Custom Rate Set' : 'Custom Rate Removed',
+          description: customRate != null
+            ? `Hourly rate override set to ${customRate.toFixed(2)} SAR`
+            : 'Rate reverted to standard tier calculation',
+        });
+      } catch {
+        toast({ title: 'Error', description: 'Failed to set custom rate', variant: 'destructive' });
+        throw new Error('Custom rate update failed');
+      }
+    },
+    [monthParam, year, fetchSalaryRecords]
   );
 
   // Toggle paid status
@@ -789,6 +982,7 @@ export function AccountsPage() {
                     <TableHead className="text-slate-400 font-semibold text-xs">Trade</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-right">Total Hrs</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs">Rate/Hr</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs text-center">Custom Rate</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-right">Total Salary</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs">Deduction</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs">Advance</TableHead>
@@ -820,6 +1014,15 @@ export function AccountsPage() {
                           recordId={record.id}
                           field="rtPerHour"
                           onSave={handleUpdateRecord}
+                        />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <CustomRateCell
+                          empId={record.empId}
+                          customHourlyRate={record.customHourlyRate}
+                          currentRtPerHour={record.rtPerHour}
+                          monthParam={monthParam}
+                          onSave={handleSetCustomRate}
                         />
                       </TableCell>
                       <TableCell className="text-emerald-400 text-xs text-right font-mono font-semibold">
@@ -889,6 +1092,7 @@ export function AccountsPage() {
                       {totals.totalHours.toFixed(1)}
                     </TableCell>
                     <TableCell className="text-slate-400 text-xs">—</TableCell>
+                    <TableCell className="text-slate-400 text-xs">—</TableCell>
                     <TableCell className="text-emerald-400 text-xs text-right font-mono font-bold">
                       {totals.totalSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </TableCell>
@@ -904,6 +1108,7 @@ export function AccountsPage() {
                     )}>
                       {totals.balanceSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </TableCell>
+                    <TableCell className="text-slate-400 text-xs">—</TableCell>
                     <TableCell className="text-slate-400 text-xs">—</TableCell>
                     <TableCell className="text-center">
                       <span className="text-[10px] text-slate-400">

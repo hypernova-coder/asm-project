@@ -23,6 +23,9 @@ const HEADER_MAP: Record<string, string[]> = {
   idNumber: ['id number', 'id no', 'identity number', 'id_number', 'id_no', 'identity_number', 'identity no', 'national id', 'nationalid'],
   idStatus: ['id status', 'id_status'],
   currentSite: ['site', 'current site', 'work site', 'current_site', 'work_site', 'project site', 'project'],
+  employeeId: ['employee id', 'employee_id', 'custom id', 'custom_id', 'emp id', 'emp_id', 'emp code', 'empcode', 'employee code', 'employee_code', 'id'],
+  role: ['role', 'employee role', 'employee_role', 'employee type', 'employee_type'],
+  customHourlyRate: ['custom rate', 'custom_rate', 'hourly rate', 'hourly_rate', 'custom hourly rate', 'custom_hourly_rate', 'rate'],
 };
 
 const ALLOWED_EXTENSIONS = ['.txt', '.csv', '.xlsx', '.xls', '.pdf', '.docx', '.doc'];
@@ -364,13 +367,57 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // Generate unique employeeId
-        const employeeId = await generateEmployeeId();
+        // Handle custom ID from file: if employee_id/custom_id is provided, use it;
+        // otherwise auto-generate
+        const customIdRaw = parseString(mappedData.employeeId);
+        let employeeId: string;
 
-        // Check for duplicate employeeId (safety net)
-        const existing = await db.employee.findUnique({ where: { employeeId } });
-        if (existing) {
-          errors.push({ row: rowNumber, message: `Generated employee ID ${employeeId} already exists` });
+        if (customIdRaw) {
+          // Strip spaces from custom ID
+          employeeId = customIdRaw.replace(/\s+/g, '');
+
+          // Validate: check if this custom ID already exists in the system
+          const existingWithId = await db.employee.findUnique({ where: { employeeId } });
+          if (existingWithId) {
+            errors.push({ row: rowNumber, message: `Custom employee ID "${employeeId}" already exists in the system (employee: ${existingWithId.fullName})` });
+            continue;
+          }
+        } else {
+          // Auto-generate employeeId
+          employeeId = await generateEmployeeId();
+
+          // Safety net check for generated ID
+          const existing = await db.employee.findUnique({ where: { employeeId } });
+          if (existing) {
+            errors.push({ row: rowNumber, message: `Generated employee ID ${employeeId} already exists` });
+            continue;
+          }
+        }
+
+        // Parse role from file, derive from trade if not provided
+        const roleRaw = parseString(mappedData.role);
+        let isTeamLeader = false;
+        let isSupervisor = false;
+        let role = 'Standard';
+
+        if (roleRaw) {
+          const roleLower = roleRaw.toLowerCase().trim();
+          if (roleLower.includes('supervisor') || roleLower.includes('sup')) {
+            isSupervisor = true;
+            role = 'Supervisor';
+          } else if (roleLower.includes('team leader') || roleLower.includes('team leader') || roleLower.includes('tl') || roleLower.includes('leader')) {
+            isTeamLeader = true;
+            role = 'Team Leader';
+          } else {
+            role = roleRaw;
+          }
+        }
+
+        // Parse custom hourly rate
+        const customHourlyRateRaw = parseString(mappedData.customHourlyRate);
+        const customHourlyRate = customHourlyRateRaw ? parseFloat(customHourlyRateRaw) : null;
+        if (customHourlyRateRaw && (isNaN(customHourlyRate!) || customHourlyRate! < 0)) {
+          errors.push({ row: rowNumber, message: `Invalid custom hourly rate: "${customHourlyRateRaw}"` });
           continue;
         }
 
@@ -393,6 +440,10 @@ export async function POST(request: NextRequest) {
           currentSite: parseString(mappedData.currentSite),
           rating: 5,
           status: 'active',
+          isTeamLeader,
+          isSupervisor,
+          role,
+          customHourlyRate,
         };
 
         // Encrypt sensitive fields

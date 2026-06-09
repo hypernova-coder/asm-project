@@ -114,6 +114,8 @@ export async function allocateEmployeeHours(
         hoursThreshold: true,
         nationality: true,
         trade: true,
+        customHourlyRate: true,
+        role: true,
       },
     });
 
@@ -128,13 +130,19 @@ export async function allocateEmployeeHours(
     // ------------------------------------------------------------------
     // 3a2. Check if employee has a custom rate override
     // ------------------------------------------------------------------
-    // If isCustom is true, the employee's rate is manually set and should
-    // be used everywhere instead of the calculated low/high rate split.
+    // Priority: 1) Employee.customHourlyRate (set directly on employee)
+    //           2) TotalEmployeeWorkingHours.isCustom + rtPerHour (legacy)
+    //           3) Standard tier rates
+    const employeeCustomRate = employee.customHourlyRate;
     const currentMonthWhRecord = await db.totalEmployeeWorkingHours.findUnique({
       where: { empId_month: { empId, month } },
     });
-    const isCustomRate = currentMonthWhRecord?.isCustom ?? false;
-    const customRate = currentMonthWhRecord?.rtPerHour ?? lowRate;
+    const isCustomRate = employeeCustomRate !== null && employeeCustomRate !== undefined
+      ? true
+      : (currentMonthWhRecord?.isCustom ?? false);
+    const customRate = employeeCustomRate !== null && employeeCustomRate !== undefined
+      ? employeeCustomRate
+      : (currentMonthWhRecord?.rtPerHour ?? lowRate);
 
     // ------------------------------------------------------------------
     // 3b. Compute previous months' cumulative hours
@@ -143,6 +151,10 @@ export async function allocateEmployeeHours(
     // rather than from TotalEmployeeWorkingHours, because TotalEmployeeWorkingHours
     // can become inconsistent (e.g., aggregate values saved as monthly totals).
     // Salary records are the source of truth for hours worked.
+    //
+    // CRITICAL: This is CUMULATIVE ACROSS ALL YEARS, not per-year.
+    // String comparison "2024-12" < "2025-01" is correct for YYYY-MM format,
+    // so month: { lt: month } correctly includes all prior months across years.
     const previousSalaryRecords = await db.salaryRecord.findMany({
       where: {
         empId,
@@ -152,6 +164,7 @@ export async function allocateEmployeeHours(
     });
 
     // Previous cumulative = sum of ALL hours from salary records in months BEFORE current month
+    // This spans ALL years, not just the current year.
     const previousCumulative = previousSalaryRecords.reduce(
       (sum, sr) => sum + sr.totalHours,
       0,
@@ -608,8 +621,9 @@ export function computeAllocationSplit(params: {
   isSupervisor: boolean;
   isCustomRate?: boolean;
   customRate?: number;
+  customHourlyRate?: number | null;
 }): SiteAllocation[] {
-  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate, customRate } = params;
+  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate, customRate, customHourlyRate } = params;
   const hasBonus = isTeamLeader || isSupervisor;
   const lowRate = hasBonus ? 3.0 : 2.5;
   const highRate = hasBonus ? 5.5 : 5.0;
@@ -624,15 +638,18 @@ export function computeAllocationSplit(params: {
 
   for (const site of sortedSites) {
     // If custom rate is set, no split — all hours at the custom rate
-    if (isCustomRate && customRate) {
+    // Priority: customHourlyRate > customRate > standard tiers
+    const effectiveCustomRate = customHourlyRate != null ? customHourlyRate : customRate;
+    const effectiveIsCustom = isCustomRate || customHourlyRate != null;
+    if (effectiveIsCustom && effectiveCustomRate) {
       siteAllocations.push({
         siteId: site.siteId,
         siteName: site.siteName,
         rawHours: site.rawHours,
         lowRateHours: site.rawHours,
         highRateHours: 0,
-        lowRate: customRate,
-        highRate: customRate,
+        lowRate: effectiveCustomRate,
+        highRate: effectiveCustomRate,
       });
       continue;
     }

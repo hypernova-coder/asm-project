@@ -100,6 +100,8 @@ export async function GET(request: NextRequest) {
         hoursThreshold: true,
         nationality: true,
         trade: true,
+        customHourlyRate: true,
+        role: true,
       },
     });
     const employeeMap = new Map(employees.map((e) => [e.id, e]));
@@ -213,12 +215,17 @@ export async function GET(request: NextRequest) {
         const threshold = emp?.hoursThreshold || 1000;
         const previousCumulativeHours = cumulativeHoursMap.get(eId) || 0;
         const aggregateTotal = aggregateHoursMap.get(eId) || 0;
+        const employeeCustomRate = emp?.customHourlyRate ?? null;
 
         // Get working hours info
         const empWhRecords = whByEmp.get(eId) || [];
         const currentMonthWh = empWhRecords.find((wh) => wh.month === month);
-        const isCustom = currentMonthWh?.isCustom ?? empWhRecords.some((wh) => wh.isCustom);
-        const customRtPerHour = currentMonthWh?.rtPerHour ?? (empWhRecords.length > 0 ? empWhRecords[empWhRecords.length - 1].rtPerHour : 2.5);
+        const isCustom = employeeCustomRate != null
+          ? true
+          : (currentMonthWh?.isCustom ?? empWhRecords.some((wh) => wh.isCustom));
+        const customRtPerHour = employeeCustomRate != null
+          ? employeeCustomRate
+          : (currentMonthWh?.rtPerHour ?? (empWhRecords.length > 0 ? empWhRecords[empWhRecords.length - 1].rtPerHour : 2.5));
 
         // Calculate rtPerHour based on aggregate total
         const calculatedRtPerHour = isCustom
@@ -256,6 +263,7 @@ export async function GET(request: NextRequest) {
               calculatedRtPerHour,
               previousCumulativeHours,
               hoursThreshold: threshold,
+              customHourlyRate: employeeCustomRate,
             },
           });
         }
