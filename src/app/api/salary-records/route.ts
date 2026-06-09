@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { allocateEmployeeHours } from '@/lib/allocation-engine';
 
 // GET /api/salary-records?siteId=xxx&month=YYYY-MM&year=YYYY
 // If siteId is not provided, returns all records for the month (for consolidated view)
@@ -186,7 +187,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Delete any existing salary records for this site+month (soft delete)
+    // Soft-delete existing salary records for this site+month
     await db.salaryRecord.updateMany({
       where: {
         siteId,
@@ -237,21 +238,8 @@ export async function POST(request: NextRequest) {
       attendanceHoursMap.set(att.employeeId, existing);
     }
 
-    // Calculate cumulative hours for rate tier determination
-    const allWorkingHours = await db.totalEmployeeWorkingHours.findMany({
-      where: { isDeleted: false },
-      orderBy: { month: 'asc' },
-    });
-
-    // Map of empId -> total cumulative hours up to but not including this month
-    const cumulativeHoursMap = new Map<string, number>();
-    for (const wh of allWorkingHours) {
-      if (wh.month < month) {
-        cumulativeHoursMap.set(wh.empId, (cumulativeHoursMap.get(wh.empId) || 0) + wh.totalWorkingHours);
-      }
-    }
-
-    // Create salary records
+    // Create salary records with standard rate tier initially
+    // The allocation engine will re-split them into standard/premium based on cumulative hours
     let created = 0;
     let slNo = 1;
 
@@ -261,28 +249,17 @@ export async function POST(request: NextRequest) {
       const attData = attendanceHoursMap.get(emp.id);
 
       let totalHours = 0;
-      let rtPerHour = 2.5; // default rate
 
       if (whData) {
         totalHours = whData.totalWorkingHours;
-        rtPerHour = whData.rtPerHour;
       } else if (attData) {
         // Estimate: each present day = 8 hours + overtime hours
         totalHours = attData.presentDays * 8 + attData.overtimeHours;
       }
 
-      // Determine rate tier based on cumulative hours
-      const cumulativeHours = cumulativeHoursMap.get(emp.id) || 0;
-      const totalCumulative = cumulativeHours + totalHours;
-      const rateTier = totalCumulative > emp.hoursThreshold ? 'premium' : 'standard';
-
-      // Adjust rate based on tier if not custom
-      if (!whData?.isCustom) {
-        if (rateTier === 'premium') {
-          // Premium rate: could be higher (e.g., 3.5 instead of 2.5)
-          rtPerHour = Math.max(rtPerHour, 3.5);
-        }
-      }
+      // Determine rate based on employee type
+      const hasBonus = emp.isTeamLeader || emp.isSupervisor;
+      const rtPerHour = hasBonus ? 3.0 : 2.5;
 
       const totalSalary = totalHours * rtPerHour;
       const deduction = 0;
@@ -308,12 +285,21 @@ export async function POST(request: NextRequest) {
           advance,
           balanceSalary,
           isPaid: false,
-          rateTier,
+          rateTier: 'standard',
         },
       });
 
       created++;
       slNo++;
+    }
+
+    // Run the allocation engine to properly split hours into standard/premium rate tiers
+    // This ensures the cumulative hours threshold is applied correctly across years
+    try {
+      await allocateEmployeeHours(month, year);
+    } catch (allocError) {
+      console.error('[salary-records POST] Allocation engine error:', allocError);
+      // Don't fail the request, just log the error - records are still created
     }
 
     return NextResponse.json({

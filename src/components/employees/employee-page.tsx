@@ -145,6 +145,148 @@ const COMMON_TRADES = [
   'Surveyor', 'Heavy Equipment Operator',
 ];
 
+// ─── Company Names (for dropdown) ─────────────────────────────────────────
+
+const COMPANY_NAMES = [
+  'JSER ALNUHAS CONCRETE CARPENTER CONT',
+  'HADEQAT AL RAMAQIA SANITARY CONT',
+  'JSER AL HAYAT WATERPROOFING AND INSULATION CONT',
+  'AL DARAA AL ARABI PLASTER & TILES CONT',
+  'ARABIAN SHIELD A/C. UNITS FIX CONT',
+  'NASEEM AL SHATEE A/C UNIT FIX CONT',
+  'COLORFUL TRACK PAINTS CONT',
+];
+
+// ─── Searchable Company Name Dropdown ──────────────────────────────────────
+
+interface SearchableCompanySelectProps {
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function SearchableCompanySelect({
+  value,
+  onChange,
+}: SearchableCompanySelectProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Include the current value if it's not in the predefined list (for existing data)
+  const allOptions = useMemo(() => {
+    if (value && !COMPANY_NAMES.includes(value)) {
+      return [...COMPANY_NAMES, value];
+    }
+    return COMPANY_NAMES;
+  }, [value]);
+
+  const filtered = search
+    ? allOptions.filter((c) =>
+        c.toLowerCase().includes(search.toLowerCase())
+      )
+    : allOptions;
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch('');
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (open && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [open]);
+
+  const handleSelect = (company: string) => {
+    onChange(company);
+    setOpen(false);
+    setSearch('');
+  };
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <div className="relative">
+        <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-2 w-full h-10 rounded-lg border border-slate-600 bg-slate-900 px-3 pl-10 text-sm text-white hover:bg-slate-800 transition-colors text-left"
+        >
+          <span className="truncate flex-1">{value || 'Select company name'}</span>
+          {value && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange('');
+              }}
+              className="text-slate-400 hover:text-white shrink-0"
+            >
+              <X className="h-3.5 w-3.5" />
+            </span>
+          )}
+        </button>
+      </div>
+
+      {open && (
+        <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 overflow-hidden">
+          <div className="p-2 border-b border-slate-700">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search company..."
+                className="w-full h-8 pl-8 pr-3 bg-slate-900 border border-slate-600 rounded-md text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-4 text-center text-sm text-slate-500">
+                No matching companies found.
+              </div>
+            ) : (
+              filtered.map((company) => (
+                <button
+                  key={company}
+                  type="button"
+                  onClick={() => handleSelect(company)}
+                  className={`flex items-center gap-2 w-full px-3 py-2 text-sm text-left transition-colors hover:bg-slate-700/50 ${
+                    value === company ? 'bg-slate-700/70 text-white' : 'text-slate-300'
+                  }`}
+                >
+                  <Building2 className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  <span className="truncate">{company}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Searchable Nationality Dropdown ─────────────────────────────────────
 
 interface SearchableNationalitySelectProps {
@@ -1884,11 +2026,9 @@ export function EmployeePage() {
 
                   <div className="space-y-2">
                     <Label className="text-slate-300 text-sm">Company Name</Label>
-                    <Input
-                      placeholder="Company / Contractor name"
+                    <SearchableCompanySelect
                       value={formData.companyName}
-                      onChange={(e) => handleFormChange('companyName', e.target.value)}
-                      className="bg-slate-900 border-slate-600 text-white placeholder:text-slate-500"
+                      onChange={(value) => handleFormChange('companyName', value)}
                     />
                   </div>
 

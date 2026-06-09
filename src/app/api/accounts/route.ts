@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
-// GET /api/accounts?siteId=...&month=YYYY-MM&year=...
+// GET /api/accounts
+// Mode 1: Per-site query (siteId + month required) → returns salary records for that site
+// Mode 2: Consolidated query (month required, no siteId) → returns all sites with employees
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
@@ -9,88 +11,282 @@ export async function GET(request: NextRequest) {
     const month = searchParams.get('month'); // YYYY-MM
     const year = searchParams.get('year');
 
-    if (!siteId || !month) {
+    if (!month) {
       return NextResponse.json(
-        { success: false, error: 'siteId and month (YYYY-MM) query parameters are required' },
+        { success: false, error: 'month (YYYY-MM) query parameter is required' },
         { status: 400 }
       );
     }
 
     const yearNum = year ? parseInt(year, 10) : parseInt(month.split('-')[0], 10);
 
-    // Fetch site info
-    const site = await db.site.findUnique({
-      where: { id: siteId },
-      select: {
-        id: true,
-        name: true,
-        clientName: true,
-      },
-    });
+    // ─── Mode 1: Per-site query ───
+    if (siteId) {
+      const site = await db.site.findUnique({
+        where: { id: siteId },
+        select: { id: true, name: true, clientName: true },
+      });
 
-    if (!site) {
-      return NextResponse.json(
-        { success: false, error: 'Site not found' },
-        { status: 404 }
-      );
+      if (!site) {
+        return NextResponse.json(
+          { success: false, error: 'Site not found' },
+          { status: 404 }
+        );
+      }
+
+      const salaryRecords = await db.salaryRecord.findMany({
+        where: { siteId, month, year: yearNum, isDeleted: false },
+        orderBy: [{ slNo: 'asc' }, { empName: 'asc' }],
+      });
+
+      const totalEmployees = await db.employee.count({
+        where: { currentSite: site.name, status: { not: 'deleted' } },
+      });
+
+      const totalHours = salaryRecords.reduce((sum, r) => sum + r.totalHours, 0);
+      const totalSalary = salaryRecords.reduce((sum, r) => sum + r.totalSalary, 0);
+      const totalDeductions = salaryRecords.reduce((sum, r) => sum + r.deduction, 0);
+      const totalAdvances = salaryRecords.reduce((sum, r) => sum + r.advance, 0);
+      const totalBalance = salaryRecords.reduce((sum, r) => sum + r.balanceSalary, 0);
+      const totalPaid = salaryRecords.filter((r) => r.isPaid).length;
+      const totalUnpaid = salaryRecords.filter((r) => !r.isPaid).length;
+
+      return NextResponse.json({
+        success: true,
+        data: {
+          site: { id: site.id, name: site.name, clientName: site.clientName },
+          totals: {
+            totalEmployees,
+            totalSalaryRecords: salaryRecords.length,
+            totalHours,
+            totalSalary,
+            totalDeductions,
+            totalAdvances,
+            totalBalance,
+            totalPaid,
+            totalUnpaid,
+          },
+          salaryRecords: salaryRecords.map((r) => ({
+            ...r,
+            createdAt: r.createdAt.toISOString(),
+            updatedAt: r.updatedAt.toISOString(),
+          })),
+        },
+      });
     }
 
-    // Fetch all non-deleted salary records for the site+month
-    const salaryRecords = await db.salaryRecord.findMany({
-      where: {
-        siteId,
-        month,
-        year: yearNum,
-        isDeleted: false,
-      },
+    // ─── Mode 2: Consolidated query (no siteId) ───
+    // Returns all sites with their employees for the given month
+    // This is used by the Consolidated Salary Sheet
+
+    // Fetch all non-deleted salary records for this month+year
+    const allSalaryRecords = await db.salaryRecord.findMany({
+      where: { month, year: yearNum, isDeleted: false },
       orderBy: [{ slNo: 'asc' }, { empName: 'asc' }],
     });
 
-    // Count employees at this site (currentSite stores the site name, not ID)
-    const totalEmployees = await db.employee.count({
-      where: {
-        currentSite: site.name,
-        status: { not: 'deleted' },
+    // Get all unique empIds from salary records
+    const empIds = [...new Set(allSalaryRecords.map((r) => r.empId))];
+
+    // Fetch employee details for all employees in salary records
+    const employees = await db.employee.findMany({
+      where: { id: { in: empIds } },
+      select: {
+        id: true,
+        fullName: true,
+        employeeId: true,
+        isTeamLeader: true,
+        isSupervisor: true,
+        hoursThreshold: true,
+        nationality: true,
+        trade: true,
       },
     });
+    const employeeMap = new Map(employees.map((e) => [e.id, e]));
 
-    // Calculate aggregated totals
-    const totalHours = salaryRecords.reduce((sum, r) => sum + r.totalHours, 0);
-    const totalSalary = salaryRecords.reduce((sum, r) => sum + r.totalSalary, 0);
-    const totalDeductions = salaryRecords.reduce((sum, r) => sum + r.deduction, 0);
-    const totalAdvances = salaryRecords.reduce((sum, r) => sum + r.advance, 0);
-    const totalBalance = salaryRecords.reduce((sum, r) => sum + r.balanceSalary, 0);
-    const totalPaid = salaryRecords.filter((r) => r.isPaid).length;
-    const totalUnpaid = salaryRecords.filter((r) => !r.isPaid).length;
+    // Fetch ALL salary records for these employees (for cumulative hours calculation)
+    // Use salary records as the source of truth (consistent with allocation engine)
+    const allEmpSalaryRecords = empIds.length > 0
+      ? await db.salaryRecord.findMany({
+          where: { empId: { in: empIds }, isDeleted: false },
+          select: { empId: true, totalHours: true, month: true },
+        })
+      : [];
+
+    // Compute previousCumulativeHours for each employee
+    // previousCumulative = sum of totalHours from salary records in months BEFORE the current month
+    const cumulativeHoursMap = new Map<string, number>();
+    for (const sr of allEmpSalaryRecords) {
+      if (sr.month < month) {
+        cumulativeHoursMap.set(sr.empId, (cumulativeHoursMap.get(sr.empId) || 0) + sr.totalHours);
+      }
+    }
+
+    // Also compute aggregate total for each employee (all months)
+    const aggregateHoursMap = new Map<string, number>();
+    for (const sr of allEmpSalaryRecords) {
+      aggregateHoursMap.set(sr.empId, (aggregateHoursMap.get(sr.empId) || 0) + sr.totalHours);
+    }
+
+    // Fetch TotalEmployeeWorkingHours for custom rate info
+    const workingHoursRecords = empIds.length > 0
+      ? await db.totalEmployeeWorkingHours.findMany({
+          where: { empId: { in: empIds }, isDeleted: false },
+          select: {
+            empId: true,
+            totalWorkingHours: true,
+            rtPerHour: true,
+            isCustom: true,
+            month: true,
+          },
+        })
+      : [];
+
+    // Group working hours by empId
+    const whByEmp = new Map<string, typeof workingHoursRecords>();
+    for (const wh of workingHoursRecords) {
+      if (!whByEmp.has(wh.empId)) whByEmp.set(wh.empId, []);
+      whByEmp.get(wh.empId)!.push(wh);
+    }
+
+    // Group salary records by siteId
+    const siteMap = new Map<string, {
+      siteId: string;
+      siteName: string;
+      records: typeof allSalaryRecords;
+    }>();
+
+    for (const record of allSalaryRecords) {
+      if (!siteMap.has(record.siteId)) {
+        siteMap.set(record.siteId, { siteId: record.siteId, siteName: record.siteName, records: [] });
+      }
+      siteMap.get(record.siteId)!.records.push(record);
+    }
+
+    // Fetch site info for all sites in the results
+    const siteIds = Array.from(siteMap.keys());
+    const sites = siteIds.length > 0
+      ? await db.site.findMany({
+          where: { id: { in: siteIds } },
+          select: { id: true, name: true, clientName: true, projectName: true },
+        })
+      : [];
+    const siteInfoMap = new Map(sites.map((s) => [s.id, s]));
+
+    // Build the response
+    const siteResults = [];
+    for (const [sId, sData] of siteMap) {
+      const siteInfo = siteInfoMap.get(sId);
+      const employeeEntries: Array<{
+        empId: string;
+        empName: string;
+        employeeCode: string;
+        nationality: string;
+        trade: string;
+        isTeamLeader: boolean;
+        isSupervisor: boolean;
+        rateTier: 'standard' | 'premium';
+        salaryRecord: (typeof allSalaryRecords)[0] | null;
+        workingHours: {
+          id?: string;
+          empId: string;
+          empName: string;
+          totalWorkingHours: number;
+          rtPerHour: number;
+          isCustom: boolean;
+          calculatedRtPerHour: number;
+          previousCumulativeHours: number;
+          hoursThreshold: number;
+        };
+      }> = [];
+
+      // Group records by empId within this site
+      const empRecordsMap = new Map<string, typeof sData.records>();
+      for (const rec of sData.records) {
+        if (!empRecordsMap.has(rec.empId)) empRecordsMap.set(rec.empId, []);
+        empRecordsMap.get(rec.empId)!.push(rec);
+      }
+
+      for (const [eId, eRecords] of empRecordsMap) {
+        const emp = employeeMap.get(eId);
+        const hasBonus = emp?.isTeamLeader || emp?.isSupervisor || false;
+        const threshold = emp?.hoursThreshold || 1000;
+        const previousCumulativeHours = cumulativeHoursMap.get(eId) || 0;
+        const aggregateTotal = aggregateHoursMap.get(eId) || 0;
+
+        // Get working hours info
+        const empWhRecords = whByEmp.get(eId) || [];
+        const currentMonthWh = empWhRecords.find((wh) => wh.month === month);
+        const isCustom = currentMonthWh?.isCustom ?? empWhRecords.some((wh) => wh.isCustom);
+        const customRtPerHour = currentMonthWh?.rtPerHour ?? (empWhRecords.length > 0 ? empWhRecords[empWhRecords.length - 1].rtPerHour : 2.5);
+
+        // Calculate rtPerHour based on aggregate total
+        const calculatedRtPerHour = isCustom
+          ? customRtPerHour
+          : aggregateTotal >= threshold
+            ? (hasBonus ? 5.5 : 5.0)
+            : (hasBonus ? 3.0 : 2.5);
+
+        // Get current month total working hours from TotalEmployeeWorkingHours
+        const totalWorkingHours = currentMonthWh?.totalWorkingHours ?? eRecords.reduce((sum, r) => sum + r.totalHours, 0);
+
+        // For each rate tier, create an entry
+        for (const rec of eRecords) {
+          employeeEntries.push({
+            empId: eId,
+            empName: rec.empName,
+            employeeCode: rec.employeeCode,
+            nationality: rec.nationality,
+            trade: rec.trade,
+            isTeamLeader: emp?.isTeamLeader ?? false,
+            isSupervisor: emp?.isSupervisor ?? false,
+            rateTier: rec.rateTier as 'standard' | 'premium',
+            salaryRecord: {
+              ...rec,
+              createdAt: rec.createdAt.toISOString(),
+              updatedAt: rec.updatedAt.toISOString(),
+            },
+            workingHours: {
+              id: currentMonthWh?.id,
+              empId: eId,
+              empName: rec.empName,
+              totalWorkingHours,
+              rtPerHour: isCustom ? customRtPerHour : calculatedRtPerHour,
+              isCustom,
+              calculatedRtPerHour,
+              previousCumulativeHours,
+              hoursThreshold: threshold,
+            },
+          });
+        }
+      }
+
+      // Calculate site totals
+      const siteSalaryRecords = sData.records;
+      siteResults.push({
+        site: {
+          id: sId,
+          name: siteInfo?.name || sData.siteName,
+          clientName: siteInfo?.clientName || null,
+          projectName: siteInfo?.projectName || null,
+        },
+        employeeCount: new Set(siteSalaryRecords.map((r) => r.empId)).size,
+        totalHours: siteSalaryRecords.reduce((sum, r) => sum + r.totalHours, 0),
+        totalSalary: siteSalaryRecords.reduce((sum, r) => sum + r.totalSalary, 0),
+        totalDeductions: siteSalaryRecords.reduce((sum, r) => sum + r.deduction, 0),
+        totalAdvances: siteSalaryRecords.reduce((sum, r) => sum + r.advance, 0),
+        totalBalanceSalary: siteSalaryRecords.reduce((sum, r) => sum + r.balanceSalary, 0),
+        employees: employeeEntries,
+      });
+    }
 
     return NextResponse.json({
       success: true,
-      data: {
-        site: {
-          id: site.id,
-          name: site.name,
-          clientName: site.clientName,
-        },
-        totals: {
-          totalEmployees,
-          totalSalaryRecords: salaryRecords.length,
-          totalHours,
-          totalSalary,
-          totalDeductions,
-          totalAdvances,
-          totalBalance,
-          totalPaid,
-          totalUnpaid,
-        },
-        salaryRecords: salaryRecords.map((r) => ({
-          ...r,
-          createdAt: r.createdAt.toISOString(),
-          updatedAt: r.updatedAt.toISOString(),
-        })),
-      },
+      data: { sites: siteResults },
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[accounts GET] Error:', message);
     return NextResponse.json(
       { success: false, error: message },
       { status: 500 }

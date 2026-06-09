@@ -14,6 +14,7 @@ import {
   XCircle,
   Sparkles,
   ArrowDownToLine,
+  RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -309,6 +310,7 @@ export function AccountsPage() {
   const [salaryRecords, setSalaryRecords] = useState<SalaryRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const autoGenerateAttempted = useRef(false);
 
   const yearOptions = useMemo(() => {
     const currentYear = now.getFullYear();
@@ -359,7 +361,14 @@ export function AccountsPage() {
       const res = await fetch(`/api/salary-records?${params.toString()}`);
       const data = await res.json();
       if (data.success) {
-        setSalaryRecords(data.data.records || []);
+        const records = data.data.records || [];
+        setSalaryRecords(records);
+
+        // Auto-generate salary records if none exist for this site+month (only once)
+        if (records.length === 0 && !autoGenerateAttempted.current) {
+          autoGenerateAttempted.current = true;
+          await autoGenerateSalary();
+        }
       } else {
         setSalaryRecords([]);
       }
@@ -371,6 +380,47 @@ export function AccountsPage() {
     }
   }, [selectedSiteId, month, year, monthParam]);
 
+  // Auto-generate salary records when site is selected
+  const autoGenerateSalary = useCallback(async () => {
+    if (!selectedSiteId || !selectedSiteName) return;
+    setGenerating(true);
+    try {
+      const res = await fetch('/api/salary-records', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          siteId: selectedSiteId,
+          siteName: selectedSiteName,
+          month: monthParam,
+          year: parseInt(year, 10),
+          generateFromAttendance: true,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.data.created > 0) {
+        toast({
+          title: 'Salary Records Auto-Generated',
+          description: data.data.message || `${data.data.created} records created`,
+        });
+        // Re-fetch to get the newly created records
+        const params = new URLSearchParams({
+          siteId: selectedSiteId,
+          month: monthParam,
+          year: year,
+        });
+        const refetch = await fetch(`/api/salary-records?${params.toString()}`);
+        const refetchData = await refetch.json();
+        if (refetchData.success) {
+          setSalaryRecords(refetchData.data.records || []);
+        }
+      }
+    } catch {
+      // Silent fail for auto-generate
+    } finally {
+      setGenerating(false);
+    }
+  }, [selectedSiteId, selectedSiteName, monthParam, year]);
+
   useEffect(() => {
     if (selectedSiteId) {
       fetchSalaryRecords();
@@ -379,7 +429,7 @@ export function AccountsPage() {
     }
   }, [selectedSiteId, month, year, fetchSalaryRecords]);
 
-  // Generate salary records
+  // Generate salary records manually (re-generate)
   const handleGenerate = useCallback(async () => {
     if (!selectedSiteId || !selectedSiteName) {
       toast({ title: 'Select Site', description: 'Please select a site first', variant: 'destructive' });
@@ -492,6 +542,7 @@ export function AccountsPage() {
   const handleSiteChange = useCallback((siteId: string, siteName: string) => {
     setSelectedSiteId(siteId);
     setSelectedSiteName(siteName);
+    autoGenerateAttempted.current = false;
   }, []);
 
   // Compute totals
@@ -564,7 +615,7 @@ export function AccountsPage() {
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Select a Site</h3>
             <p className="text-sm text-slate-400 max-w-md">
-              Choose a site from the dropdown above to view and manage salary records for that site.
+              Choose a site from the dropdown above to view and manage salary records for that site. Employees will be auto-loaded.
             </p>
           </CardContent>
         </Card>
@@ -626,12 +677,22 @@ export function AccountsPage() {
             {generating ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Sparkles className="h-4 w-4" />
+              <RefreshCw className="h-4 w-4" />
             )}
-            Generate Salary
+            Re-Generate
           </Button>
         </div>
       </div>
+
+      {/* Auto-generating indicator */}
+      {generating && (
+        <Card className="bg-emerald-500/10 border-emerald-500/30">
+          <CardContent className="flex items-center gap-3 py-3">
+            <Loader2 className="h-5 w-5 animate-spin text-emerald-400" />
+            <span className="text-emerald-300 text-sm">Auto-generating salary records from employee data...</span>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Summary Cards */}
       {salaryRecords.length > 0 && (
@@ -713,7 +774,7 @@ export function AccountsPage() {
               </div>
               <h3 className="text-base font-semibold text-white mb-1">No salary records</h3>
               <p className="text-sm text-slate-500 max-w-sm">
-                Generate salary records from attendance data by clicking the &quot;Generate Salary&quot; button above.
+                Generate salary records from attendance data by clicking the &quot;Re-Generate&quot; button above.
               </p>
             </div>
           ) : (
