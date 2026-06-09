@@ -50,5 +50,28 @@ test
 prompt
 
 server.log
+
 # Skills directory
-/skills/
+/skills/*.deb
+
+# Database files
+*.db
+db/
+
+# SQLite packages
+*.deb
+
+# Dev scripts & artifacts
+.zscripts/
+agent-ctx/
+debug-screenshot.png
+scripts/switch-db.js
+scripts/migrate-sqlite-to-pg.ts
+scripts/migrate-remaining.ts
+scripts/keep-dev-alive.sh
+
+# Railway fix patches (dev artifacts)
+railway-fix-patches/
+
+# Worklog
+worklog.md
