@@ -15,6 +15,8 @@ import {
   FileText,
   Ban,
   Shirt,
+  DollarSign,
+  Calculator,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -54,6 +56,8 @@ const navItems: NavItem[] = [
   { id: 'employees', label: 'Employees', icon: Users, permissionSlug: 'employees', roles: ['super_admin'] },
   { id: 'sites', label: 'Sites', icon: Building2, permissionSlug: 'sites', roles: ['super_admin'] },
   { id: 'attendance', label: 'Attendance', icon: Calendar, permissionSlug: 'attendance', roles: ['super_admin'] },
+  { id: 'accounts', label: 'Accounts', icon: DollarSign, permissionSlug: 'accounts', roles: ['super_admin'] },
+  { id: 'consolidated_salary', label: 'Consolidated Salary', icon: Calculator, permissionSlug: 'consolidated_salary', roles: ['super_admin'] },
   { id: 'uniform_registry', label: 'Uniform Registry', icon: Shirt, permissionSlug: 'uniform_registry' },
   { id: 'leave_requests', label: 'Leave Requests', icon: FileText, permissionSlug: 'leave_requests', roles: ['super_admin'] },
   { id: 'cancellation_requests', label: 'Cancellations', icon: Ban, permissionSlug: 'cancellation_requests', roles: ['super_admin'] },
