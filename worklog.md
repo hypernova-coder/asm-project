@@ -227,3 +227,27 @@ Stage Summary:
 - API routes support both individual and consolidated salary queries
 - Both pages integrated into sidebar, routing, and permission system
 - Code pushed to GitHub successfully
+---
+Task ID: 1
+Agent: Main Agent
+Task: Implement company name dropdown, fix accounts auto-load, fix cumulative hours, fix salary splitting, push to GitHub
+
+Work Log:
+- Added SearchableCompanySelect component with 7 specific company names to employee-page.tsx
+- Replaced plain text Input for company name with searchable dropdown
+- Preserved existing data by including non-matching company names in the dropdown options
+- Fixed /api/accounts route to support both per-site queries (with siteId) and consolidated queries (without siteId)
+- Added previousCumulativeHours computation from salary records (source of truth) in accounts API
+- Updated accounts page to auto-load employees when a site is selected (auto-generates salary records)
+- Fixed salary-records POST to use allocation engine for proper standard/premium rate splitting
+- Fixed employee-monthly API to compute cumulative hours across years using salary records
+- Added withinYearCumulative tracking for per-month cumulative display
+- Updated start-pg.sh to properly initialize and start PostgreSQL
+- All changes committed and pushed to GitHub
+
+Stage Summary:
+- Company name dropdown with 7 specific companies: JSER ALNUHAS, HADEQAT AL RAMAQIA, JSER AL HAYAT, AL DARAA AL ARABI, ARABIAN SHIELD, NASEEM AL SHATEE, COLORFUL TRACK
+- Accounts page auto-generates salary records when a site is selected
+- Cumulative hours now correctly computed across years (e.g., Dec 2025 hours carry to Jan 2026)
+- Salary splitting uses the allocation engine for proper standard/premium rate tier determination
+- Code pushed to GitHub at https://github.com/hypernova-coder/asm-project
