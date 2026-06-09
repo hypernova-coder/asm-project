@@ -38,6 +38,10 @@ import {
   Crown,
   Filter,
   UserX,
+  FileUp,
+  FileSpreadsheet,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -668,6 +672,18 @@ export function EmployeePage() {
   const [isCreatingSite, setIsCreatingSite] = useState(false);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
 
+  // Batch Add state
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+  const [batchFile, setBatchFile] = useState<File | null>(null);
+  const [isBatchUploading, setIsBatchUploading] = useState(false);
+  const [batchResult, setBatchResult] = useState<{
+    total: number;
+    created: number;
+    failed: number;
+    errors: { row: number; message: string }[];
+  } | null>(null);
+  const batchFileInputRef = useRef<HTMLInputElement>(null);
+
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Auto-activate idle filter from dashboard ──
@@ -1041,6 +1057,63 @@ export function EmployeePage() {
     }
   };
 
+  // ── Batch Add Handlers ──
+  const openBatchDialog = () => {
+    setBatchFile(null);
+    setBatchResult(null);
+    setBatchDialogOpen(true);
+  };
+
+  const handleBatchFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      const allowed = ['txt', 'csv', 'xlsx', 'xls', 'pdf', 'docx', 'doc'];
+      if (!ext || !allowed.includes(ext)) {
+        toast({
+          title: 'Invalid File Type',
+          description: `Supported formats: ${allowed.join(', ')}`,
+          variant: 'destructive',
+        });
+        return;
+      }
+      setBatchFile(file);
+      setBatchResult(null);
+    }
+  };
+
+  const handleBatchUpload = async () => {
+    if (!batchFile) return;
+    setIsBatchUploading(true);
+    setBatchResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', batchFile);
+      const res = await fetch('/api/employees/batch-upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const json = await res.json();
+      if (json.success) {
+        setBatchResult(json.data);
+        if (json.data.created > 0) {
+          fetchEmployees();
+        }
+        toast({
+          title: 'Batch Upload Complete',
+          description: `${json.data.created} of ${json.data.total} employees added successfully.${json.data.failed > 0 ? ` ${json.data.failed} failed.` : ''}`,
+          variant: json.data.failed > 0 ? 'destructive' : 'default',
+        });
+      } else {
+        toast({ title: 'Upload Error', description: json.error || 'Failed to process file', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to upload file. Please try again.', variant: 'destructive' });
+    } finally {
+      setIsBatchUploading(false);
+    }
+  };
+
   // ── Pagination ──
   const renderPagination = () => {
     if (totalPages <= 1) return null;
@@ -1140,13 +1213,23 @@ export function EmployeePage() {
             Manage your workforce, add new employees, and view profiles.
           </p>
         </div>
-        <Button
-          onClick={openAddDialog}
-          className="bg-blue-500 hover:bg-blue-600 text-white gap-2 self-start"
-        >
-          <Plus className="h-4 w-4" />
-          Add Employee
-        </Button>
+        <div className="flex gap-2 self-start">
+          <Button
+            onClick={openAddDialog}
+            className="bg-blue-500 hover:bg-blue-600 text-white gap-2"
+          >
+            <Plus className="h-4 w-4" />
+            Add Employee
+          </Button>
+          <Button
+            onClick={openBatchDialog}
+            variant="outline"
+            className="border-blue-500/50 text-blue-400 hover:bg-blue-500/10 gap-2"
+          >
+            <FileUp className="h-4 w-4" />
+            Batch Add
+          </Button>
+        </div>
       </div>
 
       {/* Search & Filters */}
@@ -2482,6 +2565,145 @@ export function EmployeePage() {
                 user?.role === 'super_admin' ? 'Delete Employee' : 'Request Deletion'
               )}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Batch Add Dialog */}
+      <Dialog open={batchDialogOpen} onOpenChange={(open) => { setBatchDialogOpen(open); if (!open) { setBatchFile(null); setBatchResult(null); } }}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-white max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-white">
+              <FileSpreadsheet className="h-5 w-5 text-blue-400" />
+              Batch Add Employees
+            </DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Upload a file with employee details. Supported formats: CSV, TXT, Excel, PDF, Word.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {/* File Upload Area */}
+            <div
+              className="border-2 border-dashed border-slate-600 rounded-xl p-6 text-center hover:border-blue-500/50 transition-colors cursor-pointer"
+              onClick={() => batchFileInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const file = e.dataTransfer.files?.[0];
+                if (file) {
+                  const ext = file.name.split('.').pop()?.toLowerCase();
+                  const allowed = ['txt', 'csv', 'xlsx', 'xls', 'pdf', 'docx', 'doc'];
+                  if (!ext || !allowed.includes(ext)) {
+                    toast({ title: 'Invalid File Type', description: `Supported: ${allowed.join(', ')}`, variant: 'destructive' });
+                    return;
+                  }
+                  setBatchFile(file);
+                  setBatchResult(null);
+                }
+              }}
+            >
+              <input
+                ref={batchFileInputRef}
+                type="file"
+                accept=".txt,.csv,.xlsx,.xls,.pdf,.docx,.doc"
+                className="hidden"
+                onChange={handleBatchFileSelect}
+              />
+              {batchFile ? (
+                <div className="space-y-2">
+                  <FileSpreadsheet className="h-10 w-10 text-blue-400 mx-auto" />
+                  <p className="text-sm font-medium text-white">{batchFile.name}</p>
+                  <p className="text-xs text-slate-400">{(batchFile.size / 1024).toFixed(1)} KB</p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-slate-400 hover:text-red-400"
+                    onClick={(e) => { e.stopPropagation(); setBatchFile(null); setBatchResult(null); }}
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    Remove
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <FileUp className="h-10 w-10 text-slate-500 mx-auto" />
+                  <p className="text-sm text-slate-400">
+                    <span className="text-blue-400 font-medium">Click to upload</span> or drag and drop
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    CSV, TXT, Excel (.xlsx/.xls), PDF, Word (.docx/.doc)
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Supported Headers Info */}
+            <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50">
+              <p className="text-xs font-medium text-slate-300 mb-1.5">Expected column headers:</p>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Full Name (required), Nationality, Date of Birth, Phone, Email, Trade/Position, Join Date,
+                Company Name, Passport Number, Passport Status, ID Number, ID Status, Current Site, Address, Emergency Contact
+              </p>
+            </div>
+
+            {/* Results */}
+            {batchResult && (
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700/50 space-y-3">
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle2 className="h-4 w-4 text-green-400" />
+                    <span className="text-sm text-green-400 font-medium">{batchResult.created} added</span>
+                  </div>
+                  {batchResult.failed > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <XCircle className="h-4 w-4 text-red-400" />
+                      <span className="text-sm text-red-400 font-medium">{batchResult.failed} failed</span>
+                    </div>
+                  )}
+                  <span className="text-xs text-slate-500">of {batchResult.total} total</span>
+                </div>
+                {batchResult.errors.length > 0 && (
+                  <div className="max-h-32 overflow-y-auto space-y-1">
+                    {batchResult.errors.map((err, i) => (
+                      <p key={i} className="text-xs text-red-400/80">
+                        Row {err.row}: {err.message}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => { setBatchDialogOpen(false); setBatchFile(null); setBatchResult(null); }}
+              className="text-slate-400 hover:text-white"
+            >
+              {batchResult ? 'Close' : 'Cancel'}
+            </Button>
+            {!batchResult && (
+              <Button
+                onClick={handleBatchUpload}
+                disabled={!batchFile || isBatchUploading}
+                className="bg-blue-500 hover:bg-blue-600 text-white gap-2"
+              >
+                {isBatchUploading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4" />
+                    Upload & Add
+                  </>
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

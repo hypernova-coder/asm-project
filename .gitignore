@@ -75,3 +75,6 @@ railway-fix-patches/
 
 # Worklog
 worklog.md
+
+# pdf-parse test directory (workaround for its import bug)
+/test/
