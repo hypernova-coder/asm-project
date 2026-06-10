@@ -135,6 +135,8 @@ export async function allocateEmployeeHours(
 
     const threshold = employee.hoursThreshold || 1000;
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
+    const employeeCustomRate = employee.customHourlyRate;
+
     // Direct hourly rates (PRD v2.0 — no divisors):
     // Standard: 2.5 (below threshold) / 5.0 (above threshold)
     // TL/Supervisor: 3.0 (below threshold) / 5.5 (above threshold)
@@ -152,7 +154,6 @@ export async function allocateEmployeeHours(
     // Priority: 1) Employee.customHourlyRate (set directly on employee)
     //           2) TotalEmployeeWorkingHours.isCustom + rtPerHour (legacy)
     //           3) Standard tier rates
-    const employeeCustomRate = employee.customHourlyRate;
     const currentMonthWhRecord = await db.totalEmployeeWorkingHours.findUnique({
       where: { empId_month: { empId, month } },
     });
@@ -647,7 +648,7 @@ export function computeAllocationSplit(params: {
   customRate?: number;
   customHourlyRate?: number | null;
 }): SiteAllocation[] {
-  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate, customRate, customHourlyRate } = params;
+  const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate = false, customRate = 2.5, customHourlyRate = null } = params;
   const hasBonus = isTeamLeader || isSupervisor;
   // Direct hourly rates (PRD v2.0 — no divisors)
   const effectiveCustomRate = customHourlyRate != null ? customHourlyRate : customRate;
