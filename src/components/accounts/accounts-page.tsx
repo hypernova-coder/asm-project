@@ -1261,11 +1261,28 @@ export function AccountsPage() {
                                   )}
                                 </td>
 
-                                {/* Salary (DHS) - Total Salary before deductions */}
+                                {/* Salary (DHS) - hours × rate = salary format */}
                                 <td className="py-1.5 px-2 text-right bg-emerald-900/5">
-                                  <span className="text-[11px] text-emerald-300 font-mono font-semibold">
-                                    {formatNumber(emp.totalSalary)}
-                                  </span>
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span className="text-[9px] text-slate-500 font-mono">
+                                      {emp.isCustomRate ? (
+                                        `${formatNumber(emp.totalHours)} × ${formatNumber(emp.lowRate)}`
+                                      ) : emp.rateTier === 'split' ? (
+                                        <>
+                                          <span className="text-emerald-500">{formatNumber(emp.lowRateHours)} × {formatNumber(emp.lowRate)}</span>
+                                          {' + '}
+                                          <span className="text-amber-500">{formatNumber(emp.highRateHours)} × {formatNumber(emp.highRate)}</span>
+                                        </>
+                                      ) : emp.rateTier === 'premium' ? (
+                                        `${formatNumber(emp.highRateHours)} × ${formatNumber(emp.highRate)}`
+                                      ) : (
+                                        `${formatNumber(emp.lowRateHours)} × ${formatNumber(emp.lowRate)}`
+                                      )}
+                                    </span>
+                                    <span className="text-[11px] text-emerald-300 font-mono font-semibold">
+                                      = {formatNumber(emp.totalSalary)}
+                                    </span>
+                                  </div>
                                 </td>
 
                                 {/* Advance */}

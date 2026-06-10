@@ -270,6 +270,110 @@ export async function PUT(
       data: data as Parameters<typeof db.employee.update>[0]['data'],
     });
 
+    // ── When currentSite changes, create/update EmpCountSitePerMonth for the current month ──
+    if (body.currentSite !== undefined && body.currentSite !== existing.currentSite) {
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+      // If employee was removed from a site (currentSite set to null)
+      if (!body.currentSite && existing.currentSite) {
+        // Find the old site and set removedDate on EmpCountSitePerMonth
+        const oldSite = await db.site.findFirst({
+          where: { name: existing.currentSite },
+          select: { id: true, name: true },
+        });
+        if (oldSite) {
+          // Set removedDate on any active records for this employee at the old site
+          await db.empCountSitePerMonth.updateMany({
+            where: {
+              empId: id,
+              siteId: oldSite.id,
+              removedDate: null,
+              deletedDate: null,
+            },
+            data: { removedDate: now },
+          });
+        }
+      }
+
+      // If employee is assigned to a new site
+      if (body.currentSite) {
+        const newSite = await db.site.findFirst({
+          where: { name: body.currentSite },
+          select: { id: true, name: true },
+        });
+        if (newSite) {
+          // Check if there's already an active record for this employee at this site for this month
+          const existingRecord = await db.empCountSitePerMonth.findUnique({
+            where: {
+              empId_siteId_month: {
+                empId: id,
+                siteId: newSite.id,
+                month: currentMonth,
+              },
+            },
+          });
+
+          if (existingRecord) {
+            // Update existing record - clear removedDate if it was set
+            await db.empCountSitePerMonth.update({
+              where: { id: existingRecord.id },
+              data: {
+                removedDate: null,
+                deletedDate: null,
+                empName: employee.fullName,
+                siteName: newSite.name,
+              },
+            });
+          } else {
+            // Create new record
+            await db.empCountSitePerMonth.create({
+              data: {
+                empId: id,
+                empName: employee.fullName,
+                siteId: newSite.id,
+                siteName: newSite.name,
+                month: currentMonth,
+              },
+            });
+          }
+
+          // Also create a WorkLog entry with 0 hours if none exists for this month
+          // This ensures the employee shows up in the hours ledger
+          const existingWorkLog = await db.workLog.findUnique({
+            where: {
+              employeeId_siteId_year_month: {
+                employeeId: id,
+                siteId: newSite.id,
+                year: now.getFullYear(),
+                month: now.getMonth() + 1,
+              },
+            },
+          });
+
+          if (!existingWorkLog) {
+            await db.workLog.create({
+              data: {
+                employeeId: id,
+                siteId: newSite.id,
+                year: now.getFullYear(),
+                month: now.getMonth() + 1,
+                hoursWorked: 0,
+                allowances: 0,
+                deductions: 0,
+              },
+            });
+          } else if (existingWorkLog.deletedAt) {
+            // Un-soft-delete if it was previously deleted
+            await db.workLog.update({
+              where: { logId: existingWorkLog.logId },
+              data: { deletedAt: null },
+            });
+          }
+        }
+      }
+    }
+
     // If employeeId was updated, also update employeeCode in salary records
     if (body.employeeId && body.employeeId !== existing.employeeId) {
       await db.salaryRecord.updateMany({

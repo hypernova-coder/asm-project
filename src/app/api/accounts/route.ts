@@ -167,9 +167,19 @@ export async function GET(request: NextRequest) {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // ALSO include sites/employees from EmpCountSitePerMonth that have
-    // NO salary records yet (so they still show up in the accounts view)
+    // ALSO include sites/employees from:
+    //   1. EmpCountSitePerMonth (filtered: exclude same-day add/remove)
+    //   2. Employees whose currentSite matches a site (for the current month)
     // ─────────────────────────────────────────────────────────────────
+
+    // Helper: check if createdDate and removedDate are the same calendar day
+    function isSameDayAddRemove(created: Date, removed: Date | null): boolean {
+      if (!removed) return false;
+      return created.getFullYear() === removed.getFullYear()
+        && created.getMonth() === removed.getMonth()
+        && created.getDate() === removed.getDate();
+    }
+
     const empCountRecords = await db.empCountSitePerMonth.findMany({
       where: {
         month,
@@ -180,22 +190,84 @@ export async function GET(request: NextRequest) {
         empName: true,
         siteId: true,
         siteName: true,
+        createdDate: true,
+        removedDate: true,
       },
     });
 
+    // Filter out same-day add/remove (employee added and removed from site on the same day)
+    const validEmpCountRecords = empCountRecords.filter(
+      (r) => !isSameDayAddRemove(r.createdDate, r.removedDate)
+    );
+
+    // Also get employees whose currentSite matches a site for the current month
+    const currentMonthStr = month; // YYYY-MM
+    const currentYearNum = parseInt(month.split('-')[0], 10);
+    const currentMonthNum = parseInt(month.split('-')[1], 10);
+    const now = new Date();
+    const isCurrentMonth = now.getFullYear() === currentYearNum && (now.getMonth() + 1) === currentMonthNum;
+
+    // Get all active employees with a currentSite set
+    const employeesWithSite = isCurrentMonth
+      ? await db.employee.findMany({
+          where: {
+            currentSite: { not: null, notIn: ['', 'Idle'] },
+            status: { not: 'deleted' },
+          },
+          select: {
+            id: true,
+            fullName: true,
+            employeeId: true,
+            currentSite: true,
+            isTeamLeader: true,
+            isSupervisor: true,
+            hoursThreshold: true,
+            nationality: true,
+            trade: true,
+            customHourlyRate: true,
+            role: true,
+          },
+        })
+      : [];
+
+    // Build a map of site name -> site info for currentSite matching
+    const allSites = await db.site.findMany({
+      select: { id: true, name: true, clientName: true, projectName: true },
+    });
+    const siteByNameMap = new Map(allSites.map((s) => [s.name, s]));
+
+    // Add employees with currentSite to siteMap if not already present
+    for (const emp of employeesWithSite) {
+      const site = siteByNameMap.get(emp.currentSite || '');
+      if (!site) continue;
+
+      // Add site to siteMap if not present
+      if (!siteMap.has(site.id)) {
+        siteMap.set(site.id, { siteId: site.id, siteName: site.name, records: [] });
+      }
+
+      // Add employee info to employeeMap if not present
+      if (!employeeMap.has(emp.id)) {
+        employeeMap.set(emp.id, emp);
+      }
+    }
+
     // Add empCount sites to siteMap if not already present
-    for (const ecr of empCountRecords) {
+    for (const ecr of validEmpCountRecords) {
       if (!siteMap.has(ecr.siteId)) {
         siteMap.set(ecr.siteId, { siteId: ecr.siteId, siteName: ecr.siteName, records: [] });
       }
     }
 
-    // Collect empIds from empCount that aren't in salaryRecords
+    // Collect empIds from empCount and currentSite that aren't in salaryRecords
     const salaryEmpIds = new Set(allSalaryRecords.map((r) => r.empId));
-    const missingEmpIds = empCountRecords
+    const missingEmpIdsFromEmpCount = validEmpCountRecords
       .map((r) => r.empId)
-      .filter((id) => !salaryEmpIds.has(id))
-      .filter((id, idx, arr) => arr.indexOf(id) === idx); // unique
+      .filter((id) => !salaryEmpIds.has(id));
+    const missingEmpIdsFromCurrentSite = employeesWithSite
+      .map((e) => e.id)
+      .filter((id) => !salaryEmpIds.has(id));
+    const missingEmpIds = [...new Set([...missingEmpIdsFromEmpCount, ...missingEmpIdsFromCurrentSite])];
 
     // Fetch employee details for missing employees
     let missingEmployeesMap = new Map<string, typeof employees[0]>();
@@ -256,7 +328,7 @@ export async function GET(request: NextRequest) {
 
     // Group empCount records by siteId -> empIds for stub entries
     const empCountBySite = new Map<string, { empId: string; empName: string; siteName: string }[]>();
-    for (const ecr of empCountRecords) {
+    for (const ecr of validEmpCountRecords) {
       // Only include if NOT already in salary records for this site
       const siteSalaryEmpIds = new Set(
         (siteMap.get(ecr.siteId)?.records || []).map((r) => r.empId)
@@ -266,7 +338,31 @@ export async function GET(request: NextRequest) {
       if (!empCountBySite.has(ecr.siteId)) {
         empCountBySite.set(ecr.siteId, []);
       }
-      empCountBySite.get(ecr.siteId)!.push({ empId: ecr.empId, empName: ecr.empName, siteName: ecr.siteName });
+      // Avoid duplicates
+      const existing = empCountBySite.get(ecr.siteId)!;
+      if (!existing.some((e) => e.empId === ecr.empId)) {
+        existing.push({ empId: ecr.empId, empName: ecr.empName, siteName: ecr.siteName });
+      }
+    }
+
+    // Also add employees from currentSite that aren't in salary records or empCount
+    for (const emp of employeesWithSite) {
+      const site = siteByNameMap.get(emp.currentSite || '');
+      if (!site) continue;
+
+      const siteSalaryEmpIds = new Set(
+        (siteMap.get(site.id)?.records || []).map((r) => r.empId)
+      );
+      if (siteSalaryEmpIds.has(emp.id)) continue;
+
+      // Also skip if already in empCountBySite
+      const existingStubs = empCountBySite.get(site.id) || [];
+      if (existingStubs.some((e) => e.empId === emp.id)) continue;
+
+      if (!empCountBySite.has(site.id)) {
+        empCountBySite.set(site.id, []);
+      }
+      empCountBySite.get(site.id)!.push({ empId: emp.id, empName: emp.fullName, siteName: site.name });
     }
 
     // Fetch site info for all sites in the results

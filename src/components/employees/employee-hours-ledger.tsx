@@ -1010,7 +1010,28 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                           {dataRow && dataRow.aboveHours > 0 ? dataRow.aboveHours.toFixed(1) : '—'}
                         </TableCell>
                         <TableCell className={`text-right font-mono text-slate-400 py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
-                          {dataRow && dataRow.totalSalary > 0 ? formatCurrency(dataRow.totalSalary) : '—'}
+                          {dataRow && dataRow.totalSalary > 0 ? (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span className="text-[9px] text-slate-500 font-mono">
+                                {dataRow.isCustom ? (
+                                  `${dataRow.hoursWorked.toFixed(1)} × ${dataRow.lowRate.toFixed(1)}`
+                                ) : dataRow.aboveHours > 0 && dataRow.belowHours > 0 ? (
+                                  <>
+                                    <span className="text-emerald-500">{dataRow.belowHours.toFixed(1)} × {dataRow.lowRate.toFixed(1)}</span>
+                                    {' + '}
+                                    <span className="text-amber-500">{dataRow.aboveHours.toFixed(1)} × {dataRow.highRate.toFixed(1)}</span>
+                                  </>
+                                ) : dataRow.aboveHours > 0 ? (
+                                  `${dataRow.aboveHours.toFixed(1)} × ${dataRow.highRate.toFixed(1)}`
+                                ) : (
+                                  `${dataRow.belowHours.toFixed(1)} × ${dataRow.lowRate.toFixed(1)}`
+                                )}
+                              </span>
+                              <span className="text-emerald-400">
+                                = {formatCurrency(dataRow.totalSalary)}
+                              </span>
+                            </div>
+                          ) : '—'}
                         </TableCell>
                       </TableRow>
                     );
@@ -1078,7 +1099,28 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                           {row.aboveHours > 0 ? row.aboveHours.toFixed(1) : '—'}
                         </TableCell>
                         <TableCell className="text-right font-mono text-slate-200">
-                          {row.totalSalary > 0 ? formatCurrency(row.totalSalary) : '—'}
+                          {row.totalSalary > 0 ? (
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span className="text-[9px] text-slate-500 font-mono">
+                                {row.isCustom ? (
+                                  `${row.hoursWorked.toFixed(1)} × ${row.lowRate.toFixed(1)}`
+                                ) : row.aboveHours > 0 && row.belowHours > 0 ? (
+                                  <>
+                                    <span className="text-emerald-500">{row.belowHours.toFixed(1)} × {row.lowRate.toFixed(1)}</span>
+                                    {' + '}
+                                    <span className="text-amber-500">{row.aboveHours.toFixed(1)} × {row.highRate.toFixed(1)}</span>
+                                  </>
+                                ) : row.aboveHours > 0 ? (
+                                  `${row.aboveHours.toFixed(1)} × ${row.highRate.toFixed(1)}`
+                                ) : (
+                                  `${row.belowHours.toFixed(1)} × ${row.lowRate.toFixed(1)}`
+                                )}
+                              </span>
+                              <span className="text-emerald-400">
+                                = {formatCurrency(row.totalSalary)}
+                              </span>
+                            </div>
+                          ) : '—'}
                         </TableCell>
                       </TableRow>
                     );

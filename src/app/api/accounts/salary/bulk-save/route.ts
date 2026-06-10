@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { allocateEmployeeHours, type AllocationResult } from '@/lib/allocation-engine';
+import { recalcEmployeeFromMonth } from '@/lib/recalculation';
 
 // ---------------------------------------------------------------------------
 // POST /api/accounts/salary/bulk-save
@@ -326,6 +327,78 @@ export async function POST(request: NextRequest) {
               deletedDate: null,
             },
           });
+        }
+      }
+
+      // ── Sync WorkLog entries so the employee hours ledger reflects accounts data ──
+      // Group saved records by (empId, siteId, month, year) to compute total hours per employee-site-month
+      const workLogSyncMap = new Map<string, { empId: string; siteId: string; year: number; month: number; totalHours: number }>();
+      for (const record of savedRecords) {
+        const key = `${record.empId}|${record.siteId}|${record.month}|${record.year}`;
+        const existing = workLogSyncMap.get(key);
+        if (existing) {
+          existing.totalHours += record.totalHours ?? 0;
+        } else {
+          workLogSyncMap.set(key, {
+            empId: record.empId,
+            siteId: record.siteId,
+            year: record.year,
+            month: parseInt(record.month.split('-')[1], 10),
+            totalHours: record.totalHours ?? 0,
+          });
+        }
+      }
+
+      // Upsert WorkLog entries for each employee-site-month combination
+      for (const [, syncEntry] of workLogSyncMap) {
+        try {
+          await db.workLog.upsert({
+            where: {
+              employeeId_siteId_year_month: {
+                employeeId: syncEntry.empId,
+                siteId: syncEntry.siteId,
+                year: syncEntry.year,
+                month: syncEntry.month,
+              },
+            },
+            update: {
+              hoursWorked: syncEntry.totalHours,
+              deletedAt: null, // un-soft-delete if previously deleted
+            },
+            create: {
+              employeeId: syncEntry.empId,
+              siteId: syncEntry.siteId,
+              year: syncEntry.year,
+              month: syncEntry.month,
+              hoursWorked: syncEntry.totalHours,
+              allowances: 0,
+              deductions: 0,
+            },
+          });
+        } catch (workLogError: unknown) {
+          console.error('[bulk-save] WorkLog sync failed for employee:', syncEntry.empId, workLogError);
+          // Don't fail the whole operation if WorkLog sync fails
+        }
+      }
+
+      // Also trigger recalculation for all affected employees so ledger data stays consistent
+      const affectedEmpIdsForRecalc = new Set(savedRecords.map((r) => r.empId));
+      for (const empId of affectedEmpIdsForRecalc) {
+        try {
+          // Get earliest month for this employee from saved records
+          const empRecords = savedRecords.filter((r) => r.empId === empId);
+          const earliestRecord = empRecords.reduce((earliest, r) => {
+            const rDate = r.month + '-' + r.year;
+            const eDate = earliest.month + '-' + earliest.year;
+            return rDate < eDate ? r : earliest;
+          }, empRecords[0]);
+
+          if (earliestRecord) {
+            await recalcEmployeeFromMonth(empId, earliestRecord.year, parseInt(earliestRecord.month.split('-')[1], 10));
+          }
+        } catch (recalcError: unknown) {
+          console.error('[bulk-save] Recalculation failed for employee:', empId, recalcError);
+          // Don't fail the whole operation if recalc fails
         }
       }
 

@@ -738,7 +738,26 @@ export function ConsolidatedSalaryPage() {
                                             {formatHours(emp.aboveThresholdHours)}
                                           </TableCell>
                                           <TableCell className="text-emerald-400/80 text-xs text-right font-medium bg-emerald-900/5">
-                                            {formatCurrency(emp.grossSalary)}
+                                            <div className="flex flex-col items-end gap-0.5">
+                                              <span className="text-[9px] text-slate-500 font-mono">
+                                                {emp.customHourlyRate !== null && emp.customHourlyRate > 0 ? (
+                                                  `${formatHours(emp.totalHours)} × ${emp.customHourlyRate}`
+                                                ) : emp.rateTier === 'split' ? (
+                                                  <>
+                                                    <span className="text-emerald-500">{formatHours(emp.belowThresholdHours)} × {(emp.isTeamLeader || emp.isSupervisor) ? '3.0' : '2.5'}</span>
+                                                    {' + '}
+                                                    <span className="text-amber-500">{formatHours(emp.aboveThresholdHours)} × {(emp.isTeamLeader || emp.isSupervisor) ? '5.5' : '5.0'}</span>
+                                                  </>
+                                                ) : emp.rateTier === 'premium' ? (
+                                                  `${formatHours(emp.aboveThresholdHours)} × ${(emp.isTeamLeader || emp.isSupervisor) ? '5.5' : '5.0'}`
+                                                ) : (
+                                                  `${formatHours(emp.belowThresholdHours)} × ${(emp.isTeamLeader || emp.isSupervisor) ? '3.0' : '2.5'}`
+                                                )}
+                                              </span>
+                                              <span className="font-mono">
+                                                = {formatCurrency(emp.grossSalary)}
+                                              </span>
+                                            </div>
                                           </TableCell>
                                           <TableCell className="text-amber-400/80 text-xs text-right">
                                             {formatCurrency(emp.advance)}

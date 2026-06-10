@@ -352,6 +352,7 @@ model EmpCountSitePerMonth {
   employee Employee @relation(fields: [empId], references: [id], onDelete: Cascade)
   site     Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
 
+  @@unique([empId, siteId, month])
   @@index([empId])
   @@index([siteId])
   @@index([month])
