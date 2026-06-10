@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { encrypt, decrypt } from '@/lib/crypto';
+import { recalcEmployeeFull } from '@/lib/recalculation';
 
 function decryptEmployee(employee: Record<string, unknown>) {
   if (employee.passportNumber) {
@@ -98,7 +99,7 @@ export async function PUT(
     const updatableFields = [
       'fullName', 'nationality', 'phone', 'email', 'address',
       'emergencyContact', 'position', 'trade', 'companyName', 'passportStatus',
-      'idStatus', 'currentSite', 'photo', 'status', 'employeeId',
+      'idStatus', 'currentSite', 'photo', 'status', 'employeeId', 'hoursThreshold',
     ];
 
     for (const field of updatableFields) {
@@ -275,6 +276,24 @@ export async function PUT(
         where: { empId: id },
         data: { employeeCode: body.employeeId },
       });
+    }
+
+    // Trigger full recalculation if role, customHourlyRate, hoursThreshold, isTeamLeader, or isSupervisor changed
+    const needsRecalc =
+      (body.role !== undefined && body.role !== existing.role) ||
+      (body.customHourlyRate !== undefined && body.customHourlyRate !== existing.customHourlyRate) ||
+      (body.hoursThreshold !== undefined && body.hoursThreshold !== existing.hoursThreshold) ||
+      (body.isTeamLeader !== undefined && body.isTeamLeader !== existing.isTeamLeader) ||
+      (body.isSupervisor !== undefined && body.isSupervisor !== existing.isSupervisor);
+
+    let recalcResult = null;
+    if (needsRecalc) {
+      try {
+        recalcResult = await recalcEmployeeFull(id);
+      } catch (recalcError: unknown) {
+        console.error('[employee PUT] Recalculation failed:', recalcError);
+        // Don't fail the main update if recalc fails
+      }
     }
 
     const decrypted = decryptEmployee({

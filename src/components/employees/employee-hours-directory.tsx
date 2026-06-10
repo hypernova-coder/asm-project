@@ -349,34 +349,35 @@ export function EmployeeHoursDirectory() {
     }
   }, [changedRowIds, editableRows, toast, fetchData]);
 
+  // ── Compute effective rate from direct rate table (PRD v2.0) ──
+  const getEffectiveRate = (emp: EmployeeHoursSummary): number => {
+    if (emp.customHourlyRate != null) return emp.customHourlyRate;
+    const hasBonus = emp.isTeamLeader || emp.isSupervisor;
+    const lowRate = hasBonus ? 3.0 : 2.5;
+    const highRate = hasBonus ? 5.5 : 5.0;
+    return emp.thresholdStatus === 'above' ? highRate : lowRate;
+  };
+
   // ── Rate badge ──
   const RateBadge = ({ emp }: { emp: EmployeeHoursSummary }) => {
+    const rate = getEffectiveRate(emp);
+    const display = emp.customHourlyRate != null
+      ? `Custom (${emp.customHourlyRate})`
+      : String(rate);
+
+    // Color coding: 2.5/3.0 = emerald (below threshold), 5.0/5.5 = amber (above threshold), custom = violet
+    let badgeClass: string;
     if (emp.customHourlyRate != null) {
-      return (
-        <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25 text-[10px] px-1.5 py-0 h-5 font-mono">
-          Custom
-        </Badge>
-      );
+      badgeClass = 'bg-violet-500/15 text-violet-400 border-violet-500/25';
+    } else if (emp.thresholdStatus === 'above') {
+      badgeClass = 'bg-amber-500/15 text-amber-400 border-amber-500/25';
+    } else {
+      badgeClass = 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25';
     }
-    const isAbove = emp.thresholdStatus === 'above';
-    if (emp.isTeamLeader || emp.isSupervisor) {
-      return (
-        <Badge className={`text-[10px] px-1.5 py-0 h-5 font-mono ${
-          isAbove
-            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
-            : 'bg-amber-500/15 text-amber-400 border-amber-500/25'
-        }`}>
-          {isAbove ? '0.91' : '0.83'}
-        </Badge>
-      );
-    }
+
     return (
-      <Badge className={`text-[10px] px-1.5 py-0 h-5 font-mono ${
-        isAbove
-          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
-          : 'bg-slate-500/15 text-slate-400 border-slate-500/25'
-      }`}>
-        {isAbove ? '5.0' : '2.5'}
+      <Badge className={`text-[10px] px-1.5 py-0 h-5 font-mono ${badgeClass}`}>
+        {display}
       </Badge>
     );
   };
@@ -566,10 +567,10 @@ export function EmployeeHoursDirectory() {
                 </SelectTrigger>
                 <SelectContent className="bg-slate-800 border-slate-700">
                   <SelectItem value="all">All Rates</SelectItem>
-                  <SelectItem value="2.5">2.5 (Std Basic)</SelectItem>
-                  <SelectItem value="5.0">5.0 (Std Full)</SelectItem>
-                  <SelectItem value="0.83">0.83 (TL Basic)</SelectItem>
-                  <SelectItem value="0.91">0.91 (TL Full)</SelectItem>
+                  <SelectItem value="2.5">2.5 (Std Below)</SelectItem>
+                  <SelectItem value="3.0">3.0 (TL Below)</SelectItem>
+                  <SelectItem value="5.0">5.0 (Std Above)</SelectItem>
+                  <SelectItem value="5.5">5.5 (TL Above)</SelectItem>
                   <SelectItem value="Custom">Custom</SelectItem>
                 </SelectContent>
               </Select>
@@ -650,7 +651,7 @@ export function EmployeeHoursDirectory() {
                       onClick={() => !isEditMode && handleSort('rate')}
                       disabled={isEditMode}
                     >
-                      Rate <SortIcon field="rate" />
+                      Effective Rate <SortIcon field="rate" />
                     </button>
                   </TableHead>
                   <TableHead className={`text-slate-400 font-medium text-right ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
@@ -827,16 +828,34 @@ export function EmployeeHoursDirectory() {
                           {formatHours(emp.cumulativeHours)}
                         </span>
                       </TableCell>
-                      <TableCell className="text-center">
-                        {emp.thresholdStatus === 'above' ? (
-                          <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/25 text-[10px] px-1.5 py-0 h-5">
-                            &ge; {emp.hoursThreshold}h
-                          </Badge>
-                        ) : (
-                          <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/25 text-[10px] px-1.5 py-0 h-5">
-                            &lt; {emp.hoursThreshold}h
-                          </Badge>
-                        )}
+                      <TableCell className="text-center min-w-[140px]">
+                        <div className="flex flex-col items-center gap-1">
+                          {emp.thresholdStatus === 'above' ? (
+                            <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/25 text-[10px] px-1.5 py-0 h-5">
+                              &ge; {emp.hoursThreshold}h
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/25 text-[10px] px-1.5 py-0 h-5">
+                              &lt; {emp.hoursThreshold}h
+                            </Badge>
+                          )}
+                          {/* Progress bar toward threshold */}
+                          <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${
+                                emp.thresholdStatus === 'above'
+                                  ? 'bg-amber-400'
+                                  : 'bg-emerald-400'
+                              }`}
+                              style={{
+                                width: `${Math.min(100, (emp.cumulativeHours / emp.hoursThreshold) * 100)}%`,
+                              }}
+                            />
+                          </div>
+                          <span className="text-[9px] text-slate-500">
+                            {Math.min(100, Math.round((emp.cumulativeHours / emp.hoursThreshold) * 100))}% of {emp.hoursThreshold}h
+                          </span>
+                        </div>
                       </TableCell>
                       <TableCell>
                         <ChevronRight className="h-4 w-4 text-slate-500" />

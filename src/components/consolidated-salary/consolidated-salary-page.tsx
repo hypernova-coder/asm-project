@@ -54,12 +54,10 @@ const MONTHS = [
   { value: '12', label: 'December' },
 ];
 
-const RATE_BELOW = 2.5;
-const RATE_ABOVE = 5.0;
-const DIVISOR_STANDARD_BELOW = 1.0;
-const DIVISOR_STANDARD_ABOVE = 1.0;
-const DIVISOR_TL_BELOW = 3.0;
-const DIVISOR_TL_ABOVE = 5.5;
+const RATE_STANDARD_BELOW = 2.5;
+const RATE_STANDARD_ABOVE = 5.0;
+const RATE_TL_BELOW = 3.0;
+const RATE_TL_ABOVE = 5.5;
 
 /* ───────── types ───────── */
 interface SalaryRecord {
@@ -171,7 +169,7 @@ function formatHours(hours: number): string {
   });
 }
 
-/** Compute gross salary using divisor-based formula */
+/** Compute gross salary using direct hourly rates (PRD v2.0 — no divisors) */
 function computeGrossSalary(
   belowHours: number,
   aboveHours: number,
@@ -184,12 +182,12 @@ function computeGrossSalary(
     return { gross, belowComponent: belowHours * customHourlyRate, aboveComponent: aboveHours * customHourlyRate };
   }
 
-  const hasBonus = isTeamLeader || isSupervisor;
-  const lowDivisor = hasBonus ? DIVISOR_TL_BELOW : DIVISOR_STANDARD_BELOW;
-  const highDivisor = hasBonus ? DIVISOR_TL_ABOVE : DIVISOR_STANDARD_ABOVE;
+  const isLeader = isTeamLeader || isSupervisor;
+  const lowRate = isLeader ? RATE_TL_BELOW : RATE_STANDARD_BELOW;
+  const highRate = isLeader ? RATE_TL_ABOVE : RATE_STANDARD_ABOVE;
 
-  const belowComponent = (belowHours * RATE_BELOW) / lowDivisor;
-  const aboveComponent = (aboveHours * RATE_ABOVE) / highDivisor;
+  const belowComponent = belowHours * lowRate;
+  const aboveComponent = aboveHours * highRate;
   const gross = belowComponent + aboveComponent;
 
   return { gross, belowComponent, aboveComponent };
@@ -462,7 +460,7 @@ export function ConsolidatedSalaryPage() {
       bgColor: 'bg-emerald-500/10',
       format: 'currency',
       loading,
-      subtitle: `Divisor-based`,
+      subtitle: `Direct rates`,
     },
     {
       title: 'Total Deductions',
@@ -518,7 +516,7 @@ export function ConsolidatedSalaryPage() {
             <p className="text-emerald-400 font-medium text-sm">{monthLabel} {year}</p>
           </div>
           <p className="text-slate-400 mt-1">
-            Aggregated salary overview with threshold split &bull; Divisor-based formula
+            Aggregated salary overview with threshold split &bull; Direct rate formula
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -689,19 +687,16 @@ export function ConsolidatedSalaryPage() {
                                     <TableHeader>
                                       <TableRow className="border-slate-700/30 hover:bg-transparent">
                                         <TableHead className="text-slate-500 font-medium text-xs">#</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs">Employee ID</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs">Emp Code</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs">Name</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs">Site</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs">Role</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-cyan-900/10">Below Threshold Hrs</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-amber-900/10">Above Threshold Hrs</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs">Trade</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs text-right">Total Hrs</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Below Salary</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Above Salary</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-emerald-900/10">Gross Salary</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Deduction</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-cyan-900/10">Rate 2.5/3.0</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-amber-900/10">Rate 5.0/5.5</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-emerald-900/10">Salary (DHS)</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs text-right">Advance</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Balance</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Deduction</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Total Salary</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs text-center">Status</TableHead>
                                       </TableRow>
                                     </TableHeader>
@@ -731,16 +726,10 @@ export function ConsolidatedSalaryPage() {
                                             </div>
                                           </TableCell>
                                           <TableCell className="text-slate-400 text-xs">
-                                            {emp.siteName}
+                                            {emp.trade}
                                           </TableCell>
-                                          <TableCell className="text-xs">
-                                            {emp.isSupervisor ? (
-                                              <span className="text-orange-400">Supervisor</span>
-                                            ) : emp.isTeamLeader ? (
-                                              <span className="text-sky-400">TL</span>
-                                            ) : (
-                                              <span className="text-slate-500">Standard</span>
-                                            )}
+                                          <TableCell className="text-slate-300 text-xs text-right font-medium">
+                                            {formatHours(emp.totalHours)}
                                           </TableCell>
                                           <TableCell className="text-cyan-400/80 text-xs text-right bg-cyan-900/5">
                                             {formatHours(emp.belowThresholdHours)}
@@ -748,23 +737,14 @@ export function ConsolidatedSalaryPage() {
                                           <TableCell className="text-amber-400/80 text-xs text-right bg-amber-900/5">
                                             {formatHours(emp.aboveThresholdHours)}
                                           </TableCell>
-                                          <TableCell className="text-slate-300 text-xs text-right font-medium">
-                                            {formatHours(emp.totalHours)}
-                                          </TableCell>
-                                          <TableCell className="text-cyan-400/60 text-xs text-right">
-                                            {formatCurrency(emp.belowSalaryComponent)}
-                                          </TableCell>
-                                          <TableCell className="text-amber-400/60 text-xs text-right">
-                                            {formatCurrency(emp.aboveSalaryComponent)}
-                                          </TableCell>
                                           <TableCell className="text-emerald-400/80 text-xs text-right font-medium bg-emerald-900/5">
                                             {formatCurrency(emp.grossSalary)}
                                           </TableCell>
-                                          <TableCell className="text-red-400/80 text-xs text-right">
-                                            {formatCurrency(emp.deduction)}
-                                          </TableCell>
                                           <TableCell className="text-amber-400/80 text-xs text-right">
                                             {formatCurrency(emp.advance)}
+                                          </TableCell>
+                                          <TableCell className="text-red-400/80 text-xs text-right">
+                                            {formatCurrency(emp.deduction)}
                                           </TableCell>
                                           <TableCell className={cn(
                                             'text-xs text-right font-medium',
@@ -791,8 +771,13 @@ export function ConsolidatedSalaryPage() {
                                       {/* Site employee totals */}
                                       {(mergedEmployeesBySite[site.siteId] || []).length > 0 && (
                                         <TableRow className="border-slate-600/50 bg-slate-800/40 hover:bg-slate-800/40">
-                                          <TableCell colSpan={5} className="text-slate-300 text-xs font-bold text-right pr-4">
+                                          <TableCell colSpan={4} className="text-slate-300 text-xs font-bold text-right pr-4">
                                             Site Employee Total
+                                          </TableCell>
+                                          <TableCell className="text-slate-200 text-xs text-right font-bold">
+                                            {formatHours(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.totalHours, 0)
+                                            )}
                                           </TableCell>
                                           <TableCell className="text-cyan-400 text-xs text-right font-bold bg-cyan-900/5">
                                             {formatHours(
@@ -804,34 +789,19 @@ export function ConsolidatedSalaryPage() {
                                               (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.aboveThresholdHours, 0)
                                             )}
                                           </TableCell>
-                                          <TableCell className="text-slate-200 text-xs text-right font-bold">
-                                            {formatHours(
-                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.totalHours, 0)
-                                            )}
-                                          </TableCell>
-                                          <TableCell className="text-cyan-400/70 text-xs text-right font-bold">
-                                            {formatCurrency(
-                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.belowSalaryComponent, 0)
-                                            )}
-                                          </TableCell>
-                                          <TableCell className="text-amber-400/70 text-xs text-right font-bold">
-                                            {formatCurrency(
-                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.aboveSalaryComponent, 0)
-                                            )}
-                                          </TableCell>
                                           <TableCell className="text-emerald-400 text-xs text-right font-bold bg-emerald-900/5">
                                             {formatCurrency(
                                               (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.grossSalary, 0)
                                             )}
                                           </TableCell>
-                                          <TableCell className="text-red-400 text-xs text-right font-bold">
-                                            {formatCurrency(
-                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.deduction, 0)
-                                            )}
-                                          </TableCell>
                                           <TableCell className="text-amber-400 text-xs text-right font-bold">
                                             {formatCurrency(
                                               (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.advance, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-red-400 text-xs text-right font-bold">
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.deduction, 0)
                                             )}
                                           </TableCell>
                                           <TableCell className={cn(
@@ -851,13 +821,13 @@ export function ConsolidatedSalaryPage() {
                                   </Table>
                                 </div>
 
-                                {/* Divisor formula reference */}
+                                {/* Direct rate formula reference */}
                                 <div className="mt-3 flex flex-wrap gap-3 text-[10px] text-slate-500">
                                   <span className="bg-slate-800/50 px-2 py-1 rounded border border-slate-700/30">
-                                    Standard: (below_hrs x 2.5)/1.0 + (above_hrs x 5.0)/1.0
+                                    Standard: below_hrs × 2.5 + above_hrs × 5.0
                                   </span>
                                   <span className="bg-slate-800/50 px-2 py-1 rounded border border-slate-700/30">
-                                    TL/Supervisor: (below_hrs x 2.5)/3.0 + (above_hrs x 5.0)/5.5
+                                    TL/Supervisor: below_hrs × 3.0 + above_hrs × 5.5
                                   </span>
                                   <span className="bg-violet-900/20 px-2 py-1 rounded border border-violet-700/30 text-violet-400">
                                     CR = Custom Rate override

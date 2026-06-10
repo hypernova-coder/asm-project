@@ -225,8 +225,17 @@ function mergeApiEntries(
 
     const baseEntry = standardEntry || premiumEntry || empEntries[0];
     const hasBonus = baseEntry.isTeamLeader || baseEntry.isSupervisor;
-    const lowRate = hasBonus ? 3.0 : 2.5;
-    const highRate = hasBonus ? 5.5 : 5.0;
+
+    // Extract custom rate info BEFORE computing rates (PRD v2.0 — direct hourly rates)
+    const previousCumulativeHours = (baseEntry.workingHours?.previousCumulativeHours as number) || 0;
+    const hoursThreshold = (baseEntry.workingHours?.hoursThreshold as number) || 1000;
+    const isCustomRate = (baseEntry.workingHours?.isCustom as boolean) ?? false;
+    const customHourlyRate: number | null =
+      (baseEntry.workingHours?.customHourlyRate as number | null | undefined) ?? null;
+
+    // Direct hourly rates — custom overrides both tiers
+    const lowRate = customHourlyRate ?? (hasBonus ? 3.0 : 2.5);
+    const highRate = customHourlyRate ?? (hasBonus ? 5.5 : 5.0);
 
     const lowRateHours = standardEntry?.salaryRecord?.totalHours ?? 0;
     const highRateHours = premiumEntry?.salaryRecord?.totalHours ?? 0;
@@ -247,12 +256,6 @@ function mergeApiEntries(
       rateTier = 'premium';
     }
 
-    const previousCumulativeHours = (baseEntry.workingHours?.previousCumulativeHours as number) || 0;
-    const hoursThreshold = (baseEntry.workingHours?.hoursThreshold as number) || 1000;
-    const isCustomRate = (baseEntry.workingHours?.isCustom as boolean) ?? false;
-    const customHourlyRate: number | null =
-      (baseEntry.workingHours?.customHourlyRate as number | null | undefined) ?? null;
-
     merged.push({
       empId,
       empName: baseEntry.empName,
@@ -267,8 +270,8 @@ function mergeApiEntries(
       highRateHours,
       previousCumulativeHours,
       hoursThreshold,
-      lowRate: standardEntry?.salaryRecord?.rtPerHour ?? lowRate,
-      highRate: premiumEntry?.salaryRecord?.rtPerHour ?? highRate,
+      lowRate: customHourlyRate ?? standardEntry?.salaryRecord?.rtPerHour ?? lowRate,
+      highRate: customHourlyRate ?? premiumEntry?.salaryRecord?.rtPerHour ?? highRate,
       totalSalary,
       deduction,
       advance,
@@ -757,6 +760,7 @@ export function AccountsPage() {
 
   const tradeDisplay = (emp: MergedEmployeeRow) => {
     let trade = emp.trade;
+    if (emp.isCustomRate) trade = `${trade}/CR`;
     if (emp.isSupervisor) trade = `${trade}/SUPV`;
     if (emp.isTeamLeader) trade = `${trade}/TL`;
     return trade;
@@ -789,8 +793,8 @@ export function AccountsPage() {
   }, [sites, siteEmployees]);
 
   // ── Column headers ──
-  const lowRateHeader = 'Rate 2.5/3';
-  const highRateHeader = 'Rate 5/5.5';
+  const lowRateHeader = 'Rate 2.5/3.0';
+  const highRateHeader = 'Rate 5.0/5.5';
 
   // ── Editable cell component ──
   const EditableCell = ({ value, onChange, className, type = 'number' }: {
@@ -1223,7 +1227,7 @@ export function AccountsPage() {
                                   />
                                 </td>
 
-                                {/* Rate 2.5/3 - Low Rate Hours */}
+                                {/* Rate 2.5/3.0 - Low Rate Hours */}
                                 <td className="py-1.5 px-2 text-right bg-cyan-900/5">
                                   {emp.isCustomRate ? (
                                     <span className="text-[11px] text-violet-300 font-mono">
@@ -1241,7 +1245,7 @@ export function AccountsPage() {
                                   )}
                                 </td>
 
-                                {/* Rate 5/5.5 - High Rate Hours */}
+                                {/* Rate 5.0/5.5 - High Rate Hours */}
                                 <td className="py-1.5 px-2 text-right bg-amber-900/5">
                                   {emp.isCustomRate ? (
                                     <span className="text-[11px] text-slate-600 font-mono">-</span>

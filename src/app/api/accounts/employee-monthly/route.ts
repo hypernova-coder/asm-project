@@ -104,15 +104,17 @@ export async function GET(request: NextRequest) {
       ? allWhRecords[allWhRecords.length - 1].rtPerHour
       : 2.5;
 
-    // Auto-calculate the aggregate rate (divisor-based formula)
+    // Auto-calculate the aggregate rate (direct rates — no divisors)
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
     const empThreshold = employee.hoursThreshold || 1000;
-    const lowDivisor = hasBonus ? 3.0 : 1.0;
-    const highDivisor = hasBonus ? 5.5 : 1.0;
-    // If employee has a customHourlyRate, use it directly
-    const autoRate = employee.customHourlyRate != null
+    // Direct hourly rates (PRD v2.0)
+    const lowRate = employee.customHourlyRate != null
       ? employee.customHourlyRate
-      : (aggregateTotalHours >= empThreshold ? (5.0 / highDivisor) : (2.5 / lowDivisor));
+      : (hasBonus ? 3.0 : 2.5);
+    const highRate = employee.customHourlyRate != null
+      ? employee.customHourlyRate
+      : (hasBonus ? 5.5 : 5.0);
+    const autoRate = aggregateTotalHours >= empThreshold ? highRate : lowRate;
 
     // Build monthly data for all 12 months
     // Use SalaryRecord as source of truth for per-month hours (sum of standard + premium)

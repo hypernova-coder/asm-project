@@ -135,13 +135,16 @@ export async function allocateEmployeeHours(
 
     const threshold = employee.hoursThreshold || 1000;
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
-    // Divisor-based formula: effective rate = tier rate / divisor
-    // Tier rates are always 2.5 (below threshold) and 5.0 (above threshold)
-    // Divisors: Standard = 1.0/1.0, TL/Supervisor = 3.0/5.5
-    const lowDivisor = hasBonus ? 3.0 : 1.0;
-    const highDivisor = hasBonus ? 5.5 : 1.0;
-    const lowRate = 2.5 / lowDivisor;   // Standard: 2.5, TL/Sup: 0.8333
-    const highRate = 5.0 / highDivisor;  // Standard: 5.0, TL/Sup: 0.9091
+    // Direct hourly rates (PRD v2.0 — no divisors):
+    // Standard: 2.5 (below threshold) / 5.0 (above threshold)
+    // TL/Supervisor: 3.0 (below threshold) / 5.5 (above threshold)
+    // Custom: employee.customHourlyRate overrides both
+    const lowRate = employeeCustomRate !== null && employeeCustomRate !== undefined
+      ? employeeCustomRate
+      : (hasBonus ? 3.0 : 2.5);
+    const highRate = employeeCustomRate !== null && employeeCustomRate !== undefined
+      ? employeeCustomRate
+      : (hasBonus ? 5.5 : 5.0);
 
     // ------------------------------------------------------------------
     // 3a2. Check if employee has a custom rate override
@@ -557,13 +560,19 @@ export async function allocateEmployeeHours(
       empInfo?.isTeamLeader || empInfo?.isSupervisor || false;
     const empThreshold = empInfo?.hoursThreshold || 1000;
 
-    // Divisor-based formula: effective rate = tier rate / divisor
-    const lowDivisor = empHasBonus ? 3.0 : 1.0;
-    const highDivisor = empHasBonus ? 5.5 : 1.0;
+    // Direct hourly rates (PRD v2.0 — no divisors)
+    const employeeCustomRateCheck = await db.employee.findUnique({
+      where: { id: allocation.empId },
+      select: { customHourlyRate: true },
+    });
+    const empCustomRate = employeeCustomRateCheck?.customHourlyRate;
+    
     const calculatedRt =
-      aggregateTotal >= empThreshold
-        ? 5.0 / highDivisor  // Standard: 5.0, TL/Sup: 0.9091
-        : 2.5 / lowDivisor;  // Standard: 2.5, TL/Sup: 0.8333
+      empCustomRate !== null && empCustomRate !== undefined
+        ? empCustomRate
+        : (aggregateTotal >= empThreshold
+          ? (empHasBonus ? 5.5 : 5.0)
+          : (empHasBonus ? 3.0 : 2.5));
 
     const isCustom = currentMonthWhRecord?.isCustom ?? false;
     const effectiveRt = isCustom
@@ -640,11 +649,15 @@ export function computeAllocationSplit(params: {
 }): SiteAllocation[] {
   const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate, customRate, customHourlyRate } = params;
   const hasBonus = isTeamLeader || isSupervisor;
-  // Divisor-based formula: effective rate = tier rate / divisor
-  const lowDivisor = hasBonus ? 3.0 : 1.0;
-  const highDivisor = hasBonus ? 5.5 : 1.0;
-  const lowRate = 2.5 / lowDivisor;   // Standard: 2.5, TL/Sup: 0.8333
-  const highRate = 5.0 / highDivisor;  // Standard: 5.0, TL/Sup: 0.9091
+  // Direct hourly rates (PRD v2.0 — no divisors)
+  const effectiveCustomRate = customHourlyRate != null ? customHourlyRate : customRate;
+  const effectiveIsCustom = isCustomRate || customHourlyRate != null;
+  const lowRate = effectiveIsCustom && effectiveCustomRate
+    ? effectiveCustomRate
+    : (hasBonus ? 3.0 : 2.5);
+  const highRate = effectiveIsCustom && effectiveCustomRate
+    ? effectiveCustomRate
+    : (hasBonus ? 5.5 : 5.0);
 
   let consumedThreshold = Math.min(previousCumulative, threshold);
   const siteAllocations: SiteAllocation[] = [];
@@ -656,9 +669,6 @@ export function computeAllocationSplit(params: {
 
   for (const site of sortedSites) {
     // If custom rate is set, no split — all hours at the custom rate
-    // Priority: customHourlyRate > customRate > standard tiers
-    const effectiveCustomRate = customHourlyRate != null ? customHourlyRate : customRate;
-    const effectiveIsCustom = isCustomRate || customHourlyRate != null;
     if (effectiveIsCustom && effectiveCustomRate) {
       siteAllocations.push({
         siteId: site.siteId,

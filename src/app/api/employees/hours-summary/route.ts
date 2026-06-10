@@ -74,8 +74,13 @@ export async function GET(request: NextRequest) {
       const cumulativeHours = cumulativeHoursMap.get(emp.id) || 0;
       const hasBonus = emp.isTeamLeader || emp.isSupervisor;
       const threshold = emp.hoursThreshold || 1000;
-      const lowDivisor = hasBonus ? 3.0 : 1.0;
-      const highDivisor = hasBonus ? 5.5 : 1.0;
+
+      // Direct rates (PRD v2.0 — NO divisors)
+      // Standard: 2.5 below threshold, 5.0 at/above
+      // TL/Supervisor: 3.0 below threshold, 5.5 at/above
+      // Custom: overrides both
+      const lowRate = hasBonus ? 3.0 : 2.5;
+      const highRate = hasBonus ? 5.5 : 5.0;
 
       // Effective rate based on cumulative hours and custom rate
       let effectiveRate: number;
@@ -84,11 +89,11 @@ export async function GET(request: NextRequest) {
         effectiveRate = emp.customHourlyRate;
         rateLabel = 'Custom';
       } else if (cumulativeHours >= threshold) {
-        effectiveRate = 5.0 / highDivisor;
-        rateLabel = hasBonus ? '0.91' : '5.0';
+        effectiveRate = highRate;
+        rateLabel = String(highRate);
       } else {
-        effectiveRate = 2.5 / lowDivisor;
-        rateLabel = hasBonus ? '0.83' : '2.5';
+        effectiveRate = lowRate;
+        rateLabel = String(lowRate);
       }
 
       // Resolve current site: prefer latest deployment, fallback to employee.currentSite
@@ -132,8 +137,8 @@ export async function GET(request: NextRequest) {
         if (rateFilter === 'Custom') return emp.customHourlyRate != null;
         if (rateFilter === '2.5') return emp.customHourlyRate == null && !emp.isTeamLeader && !emp.isSupervisor && emp.thresholdStatus === 'below';
         if (rateFilter === '5.0') return emp.customHourlyRate == null && !emp.isTeamLeader && !emp.isSupervisor && emp.thresholdStatus === 'above';
-        if (rateFilter === '0.83') return emp.customHourlyRate == null && (emp.isTeamLeader || emp.isSupervisor) && emp.thresholdStatus === 'below';
-        if (rateFilter === '0.91') return emp.customHourlyRate == null && (emp.isTeamLeader || emp.isSupervisor) && emp.thresholdStatus === 'above';
+        if (rateFilter === '3.0') return emp.customHourlyRate == null && (emp.isTeamLeader || emp.isSupervisor) && emp.thresholdStatus === 'below';
+        if (rateFilter === '5.5') return emp.customHourlyRate == null && (emp.isTeamLeader || emp.isSupervisor) && emp.thresholdStatus === 'above';
         return true;
       });
     }

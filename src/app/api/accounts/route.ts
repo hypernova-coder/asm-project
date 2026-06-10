@@ -241,14 +241,18 @@ export async function GET(request: NextRequest) {
           ? employeeCustomRate
           : (currentMonthWh?.rtPerHour ?? (empWhRecords.length > 0 ? empWhRecords[empWhRecords.length - 1].rtPerHour : 2.5));
 
-        // Calculate rtPerHour based on aggregate total (divisor-based formula)
-        const lowDivisor = hasBonus ? 3.0 : 1.0;
-        const highDivisor = hasBonus ? 5.5 : 1.0;
+        // Calculate rtPerHour based on aggregate total (direct rates — no divisors)
+        const lowRate = employeeCustomRate !== null
+          ? employeeCustomRate
+          : (hasBonus ? 3.0 : 2.5);
+        const highRate = employeeCustomRate !== null
+          ? employeeCustomRate
+          : (hasBonus ? 5.5 : 5.0);
         const calculatedRtPerHour = isCustom
           ? customRtPerHour
           : aggregateTotal >= threshold
-            ? (5.0 / highDivisor)  // Standard: 5.0, TL/Sup: 0.9091
-            : (2.5 / lowDivisor);  // Standard: 2.5, TL/Sup: 0.8333
+            ? highRate
+            : lowRate;
 
         // Get current month total working hours from TotalEmployeeWorkingHours
         const totalWorkingHours = currentMonthWh?.totalWorkingHours ?? eRecords.reduce((sum, r) => sum + r.totalHours, 0);
