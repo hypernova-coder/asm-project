@@ -272,6 +272,63 @@ export async function POST(request: NextRequest) {
 
       const allocationResult = allocationResults.length === 1 ? allocationResults[0] : allocationResults;
 
+      // Ensure all employees with new salary records have:
+      // 1. TotalEmployeeWorkingHours entries (for monthly tracking)
+      // 2. EmpCountSitePerMonth entries (so they show up in the dropdown)
+      for (const record of savedRecords) {
+        const existingWh = await db.totalEmployeeWorkingHours.findUnique({
+          where: { empId_month: { empId: record.empId, month: record.month } },
+        });
+
+        if (!existingWh) {
+          // Create a new working hours entry for this employee+month
+          const totalHoursForMonth = await db.salaryRecord.findMany({
+            where: {
+              empId: record.empId,
+              month: record.month,
+              isDeleted: false,
+            },
+          });
+
+          const totalHours = totalHoursForMonth.reduce((sum, sr) => sum + sr.totalHours, 0);
+
+          await db.totalEmployeeWorkingHours.create({
+            data: {
+              empId: record.empId,
+              empName: record.empName,
+              month: record.month,
+              totalWorkingHours: totalHours,
+              rtPerHour: record.rtPerHour,
+              isCustom: false,
+            },
+          });
+        }
+
+        // Also ensure the employee is in empCountSitePerMonth so they show up in dropdowns
+        const existingEmpCount = await db.empCountSitePerMonth.findUnique({
+          where: {
+            empId_siteId_month: {
+              empId: record.empId,
+              siteId: record.siteId,
+              month: record.month,
+            },
+          },
+        });
+
+        if (!existingEmpCount) {
+          await db.empCountSitePerMonth.create({
+            data: {
+              empId: record.empId,
+              empName: record.empName,
+              siteId: record.siteId,
+              siteName: record.siteName,
+              month: record.month,
+              deletedDate: null,
+            },
+          });
+        }
+      }
+
       // After allocation, count soft-deleted records for reporting
       // (the allocation engine handles soft-deletes internally)
       const affectedEmpIds = new Set(savedRecords.map((r) => r.empId));
