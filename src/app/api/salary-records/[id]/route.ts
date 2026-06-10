@@ -79,6 +79,57 @@ export async function PUT(
   }
 }
 
+// PATCH /api/salary-records/[id] — Toggle soft delete (undo delete)
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+
+    const body = await request.json();
+    const { isDeleted } = body;
+
+    if (typeof isDeleted !== 'boolean') {
+      return NextResponse.json(
+        { success: false, error: 'isDeleted boolean is required' },
+        { status: 400 }
+      );
+    }
+
+    const existing = await db.salaryRecord.findUnique({ where: { id } });
+
+    if (!existing) {
+      return NextResponse.json(
+        { success: false, error: 'Salary record not found' },
+        { status: 404 }
+      );
+    }
+
+    const salaryRecord = await db.salaryRecord.update({
+      where: { id },
+      data: { isDeleted },
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        salaryRecord: {
+          ...salaryRecord,
+          createdAt: salaryRecord.createdAt.toISOString(),
+          updatedAt: salaryRecord.updatedAt.toISOString(),
+        },
+      },
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 500 }
+    );
+  }
+}
+
 // DELETE /api/salary-records/[id] — Soft delete a salary record
 export async function DELETE(
   request: NextRequest,

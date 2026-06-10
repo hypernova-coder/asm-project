@@ -17,6 +17,7 @@ import {
   Shirt,
   DollarSign,
   Calculator,
+  Clock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -54,6 +55,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, permissionSlug: 'dashboard' },
   { id: 'employees', label: 'Employees', icon: Users, permissionSlug: 'employees', roles: ['super_admin'] },
+  { id: 'employee_hours_ledger', label: 'Employee Hours', icon: Clock, permissionSlug: 'employees', roles: ['super_admin'] },
   { id: 'sites', label: 'Sites', icon: Building2, permissionSlug: 'sites', roles: ['super_admin'] },
   { id: 'attendance', label: 'Attendance', icon: Calendar, permissionSlug: 'attendance', roles: ['super_admin'] },
   { id: 'accounts', label: 'Accounts', icon: DollarSign, permissionSlug: 'accounts', roles: ['super_admin'] },

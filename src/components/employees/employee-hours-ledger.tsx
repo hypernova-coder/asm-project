@@ -16,6 +16,7 @@ import {
   DollarSign,
   Sparkles,
   Calendar,
+  Pencil,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -105,26 +106,66 @@ function formatCurrency(amount: number): string {
   return `${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} AED`;
 }
 
-// ─── Rate Tier helper ───────────────────────────────────────────────────
+// ─── Rate color helper ──────────────────────────────────────────────────
+// Color-codes the Rate/Hr based on its derivation:
+//   Rate derived from 2.5 base (2.5 for Standard, 0.8333 for TL/Sup) → Emerald
+//   Rate derived from 5.0 base (5.0 for Standard, 0.9091 for TL/Sup) → Green
+//   Any custom rate → Violet
 
-function getRateTier(
-  cumulativeHours: number,
-  totalHours: number,
-  prevCumulative: number,
-  threshold: number,
-  isCustom: boolean,
-  customRate: number | null
-): { tier: string; color: string } {
-  if (isCustom || customRate !== null) {
-    return { tier: 'Custom', color: 'violet' };
+function getRateColor(rtPerHour: number, isCustomRate: boolean): 'emerald' | 'green' | 'violet' {
+  if (isCustomRate) return 'violet';
+
+  // Check if rate is derived from 2.5 (low tier)
+  // Standard low: 2.5, TL/Sup low: 2.5/3.0 ≈ 0.8333
+  const isLowTier =
+    Math.abs(rtPerHour - 2.5) < 0.01 ||
+    Math.abs(rtPerHour - 2.5 / 3.0) < 0.01;
+
+  if (isLowTier) return 'emerald';
+
+  // Check if rate is derived from 5.0 (high tier)
+  // Standard high: 5.0, TL/Sup high: 5.0/5.5 ≈ 0.9091
+  const isHighTier =
+    Math.abs(rtPerHour - 5.0) < 0.01 ||
+    Math.abs(rtPerHour - 5.0 / 5.5) < 0.01;
+
+  if (isHighTier) return 'green';
+
+  // Default to violet for any unrecognized rate (treated as custom)
+  return 'violet';
+}
+
+// ─── Rate badge style helper ────────────────────────────────────────────
+
+function getRateBadgeClasses(color: 'emerald' | 'green' | 'violet'): string {
+  switch (color) {
+    case 'emerald':
+      return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25';
+    case 'green':
+      return 'bg-green-500/15 text-green-400 border-green-500/25';
+    case 'violet':
+      return 'bg-violet-500/15 text-violet-400 border-violet-500/25';
   }
-  if (prevCumulative >= threshold) {
-    return { tier: 'Premium', color: 'emerald' };
+}
+
+function getRateTextClasses(color: 'emerald' | 'green' | 'violet'): string {
+  switch (color) {
+    case 'emerald':
+      return 'text-emerald-400';
+    case 'green':
+      return 'text-green-400';
+    case 'violet':
+      return 'text-violet-400';
   }
-  if (cumulativeHours >= threshold) {
-    return { tier: 'Split', color: 'amber' };
-  }
-  return { tier: 'Standard', color: 'slate' };
+}
+
+// ─── Editable row state ─────────────────────────────────────────────────
+
+interface EditableRow {
+  month: string;
+  totalHours: string;
+  rtPerHour: string;
+  customRate: string;
 }
 
 // ─── Main Component ─────────────────────────────────────────────────────
@@ -141,6 +182,11 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
   const [customRateInput, setCustomRateInput] = useState('');
   const [isSavingRate, setIsSavingRate] = useState(false);
   const [isEditingRate, setIsEditingRate] = useState(false);
+
+  // ── Edit mode state ──
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editableRows, setEditableRows] = useState<EditableRow[]>([]);
+  const [isSavingEdits, setIsSavingEdits] = useState(false);
 
   // ── Fetch employee details ──
   const fetchEmployeeDetails = useCallback(async () => {
@@ -206,7 +252,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
   // ── Available years ──
   const availableYears = useMemo(() => {
     const currentYear = new Date().getFullYear();
-    const years = [];
+    const years: number[] = [];
     for (let y = currentYear + 1; y >= currentYear - 5; y--) {
       years.push(y);
     }
@@ -251,6 +297,72 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
     return { totalHours, totalSalary };
   }, [monthlyData]);
 
+  // ── Edit mode handlers ──
+  const enterEditMode = useCallback(() => {
+    const rows: EditableRow[] = monthlyData.map((row) => ({
+      month: row.month,
+      totalHours: row.totalHours > 0 ? String(row.totalHours) : '',
+      rtPerHour: String(row.rtPerHour),
+      customRate: employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '',
+    }));
+    setEditableRows(rows);
+    setIsEditMode(true);
+  }, [monthlyData, employeeInfo]);
+
+  const cancelEditMode = useCallback(() => {
+    setIsEditMode(false);
+    setEditableRows([]);
+  }, []);
+
+  const updateEditableRow = useCallback((month: string, field: keyof EditableRow, value: string) => {
+    setEditableRows((prev) =>
+      prev.map((row) => (row.month === month ? { ...row, [field]: value } : row))
+    );
+  }, []);
+
+  const saveEdits = useCallback(async () => {
+    setIsSavingEdits(true);
+    try {
+      const payload = editableRows.map((row) => ({
+        month: row.month,
+        totalHours: row.totalHours ? parseFloat(row.totalHours) : 0,
+        rtPerHour: row.rtPerHour ? parseFloat(row.rtPerHour) : 2.5,
+        customRate: row.customRate ? parseFloat(row.customRate) : null,
+      }));
+
+      const res = await fetch('/api/accounts/employee-monthly', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          empId: employeeId,
+          year: selectedYear,
+          monthlyData: payload,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        toast({
+          title: 'Changes Saved',
+          description: `Updated ${json.data.updated || payload.length} month(s) successfully.`,
+        });
+        setIsEditMode(false);
+        setEditableRows([]);
+        await fetchMonthlyData();
+        await fetchEmployeeDetails();
+      } else {
+        toast({
+          title: 'Error',
+          description: json.error || 'Failed to save changes',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to save changes', variant: 'destructive' });
+    } finally {
+      setIsSavingEdits(false);
+    }
+  }, [editableRows, employeeId, selectedYear, toast, fetchMonthlyData, fetchEmployeeDetails]);
+
   // ── Custom Rate Save ──
   const handleSaveCustomRate = async () => {
     const rateValue = customRateInput.trim();
@@ -277,7 +389,6 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
             : 'Custom rate removed. Standard tier rates will apply.',
         });
         setIsEditingRate(false);
-        // Refresh data
         await fetchMonthlyData();
         await fetchEmployeeDetails();
       } else {
@@ -580,14 +691,50 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
       {/* ─── Historical Data Table ─────────────────────────────── */}
       <Card className="bg-slate-800/50 border-slate-700/50">
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <CardTitle className="text-base font-medium text-white flex items-center gap-2">
               <Clock className="h-4 w-4 text-slate-400" />
               Monthly Hours Breakdown — {selectedYear}
             </CardTitle>
-            <div className="flex items-center gap-3 text-xs text-slate-400">
-              <span>Year Total: <span className="text-white font-medium">{yearlyTotals.totalHours.toLocaleString()}h</span></span>
-              <span>Est. Salary: <span className="text-white font-medium">{formatCurrency(yearlyTotals.totalSalary)}</span></span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 text-xs text-slate-400">
+                <span>Year Total: <span className="text-white font-medium">{yearlyTotals.totalHours.toLocaleString()}h</span></span>
+                <span>Est. Salary: <span className="text-white font-medium">{formatCurrency(yearlyTotals.totalSalary)}</span></span>
+              </div>
+              {/* ── Edit toggle button ── */}
+              {!isEditMode ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={enterEditMode}
+                  className="h-8 w-8 text-slate-400 hover:text-white hover:bg-slate-700"
+                  title="Edit monthly data"
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={saveEdits}
+                    disabled={isSavingEdits}
+                    className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700"
+                  >
+                    {isSavingEdits ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+                    Save
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={cancelEditMode}
+                    disabled={isSavingEdits}
+                    className="h-8 text-xs text-slate-400 hover:text-white"
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Cancel
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -600,7 +747,6 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                   <TableHead className="text-slate-400 font-medium text-right">Total Hours</TableHead>
                   <TableHead className="text-slate-400 font-medium text-right">Cumulative Hours</TableHead>
                   <TableHead className="text-slate-400 font-medium text-right">Rate/Hr</TableHead>
-                  <TableHead className="text-slate-400 font-medium text-center">Rate Tier</TableHead>
                   <TableHead className="text-slate-400 font-medium text-right">Est. Salary</TableHead>
                   <TableHead className="text-slate-400 font-medium text-center">Custom Rate</TableHead>
                 </TableRow>
@@ -608,25 +754,86 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
               <TableBody>
                 {monthlyData.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-12 text-slate-500">
+                    <TableCell colSpan={6} className="text-center py-12 text-slate-500">
                       No data available for {selectedYear}
                     </TableCell>
                   </TableRow>
+                ) : isEditMode ? (
+                  /* ── Edit Mode Rows ── */
+                  editableRows.map((editRow) => {
+                    const originalRow = monthlyData.find((r) => r.month === editRow.month);
+                    const isThresholdRow = thresholdCrossMonth === editRow.month;
+
+                    return (
+                      <TableRow
+                        key={editRow.month}
+                        className={`border-slate-700/30 ${
+                          isThresholdRow
+                            ? 'bg-red-500/10 hover:bg-red-500/15'
+                            : 'hover:bg-slate-700/30'
+                        }`}
+                      >
+                        <TableCell className="font-medium text-white whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            {formatMonthShort(editRow.month)}
+                            {isThresholdRow && (
+                              <Badge className="bg-red-500/20 text-red-400 border-red-500/30 text-[10px] px-1.5 py-0 h-5">
+                                <AlertTriangle className="h-2.5 w-2.5 mr-0.5" />
+                                1000h Crossed
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Input
+                            type="number"
+                            step="0.5"
+                            min="0"
+                            value={editRow.totalHours}
+                            onChange={(e) => updateEditableRow(editRow.month, 'totalHours', e.target.value)}
+                            className="w-24 h-7 text-sm text-right font-mono bg-slate-900 border-slate-600"
+                            placeholder="0"
+                          />
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-slate-500">
+                          {originalRow && originalRow.cumulativeHours > 0
+                            ? originalRow.cumulativeHours.toFixed(1)
+                            : '0.0'}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Input
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            value={editRow.rtPerHour}
+                            onChange={(e) => updateEditableRow(editRow.month, 'rtPerHour', e.target.value)}
+                            className="w-24 h-7 text-sm text-right font-mono bg-slate-900 border-slate-600"
+                            placeholder="2.5"
+                          />
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-slate-500">
+                          —
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Input
+                            type="number"
+                            step="0.5"
+                            min="0"
+                            value={editRow.customRate}
+                            onChange={(e) => updateEditableRow(editRow.month, 'customRate', e.target.value)}
+                            className="w-24 h-7 text-sm text-center font-mono bg-slate-900 border-slate-600 mx-auto"
+                            placeholder="—"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 ) : (
+                  /* ── View Mode Rows ── */
                   monthlyData.map((row, index) => {
-                    const prevCumulative = index > 0
-                      ? monthlyData[index - 1].cumulativeHours
-                      : (employeeInfo?.previousCumulativeHours || 0);
                     const isThresholdRow = thresholdCrossMonth === row.month;
                     const isCustomRate = employeeInfo?.customHourlyRate != null;
-                    const rateTier = getRateTier(
-                      row.cumulativeHours,
-                      row.totalHours,
-                      prevCumulative,
-                      employeeInfo?.hoursThreshold || 1000,
-                      isCustomRate,
-                      employeeInfo?.customHourlyRate
-                    );
+                    const rateColor = getRateColor(row.rtPerHour, isCustomRate);
                     const estimatedSalary = row.totalHours * row.rtPerHour;
 
                     return (
@@ -652,7 +859,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                           </div>
                         </TableCell>
                         <TableCell className="text-right font-mono text-slate-200">
-                          {row.totalHours > 0 ? row.totalHours.toFixed(1) : '—'}
+                          {row.totalHours > 0 ? row.totalHours.toFixed(1) : '0.0'}
                         </TableCell>
                         <TableCell className="text-right font-mono">
                           <span className={
@@ -660,29 +867,16 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                               ? 'text-red-400'
                               : 'text-slate-200'
                           }>
-                            {row.cumulativeHours > 0 ? row.cumulativeHours.toFixed(1) : '—'}
+                            {row.cumulativeHours > 0 ? row.cumulativeHours.toFixed(1) : '0.0'}
                           </span>
                         </TableCell>
-                        <TableCell className="text-right font-mono text-slate-200">
-                          {row.totalHours > 0 ? `${row.rtPerHour.toFixed(1)}` : '—'}
-                        </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className="text-right">
                           {row.totalHours > 0 ? (
-                            <Badge
-                              className={`text-[10px] px-1.5 py-0 h-5 ${
-                                rateTier.color === 'emerald'
-                                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
-                                  : rateTier.color === 'amber'
-                                  ? 'bg-amber-500/15 text-amber-400 border-amber-500/25'
-                                  : rateTier.color === 'violet'
-                                  ? 'bg-violet-500/15 text-violet-400 border-violet-500/25'
-                                  : 'bg-slate-500/15 text-slate-400 border-slate-500/25'
-                              }`}
-                            >
-                              {rateTier.tier}
+                            <Badge className={`text-xs px-2 py-0.5 h-6 font-mono ${getRateBadgeClasses(rateColor)}`}>
+                              {row.rtPerHour.toFixed(4)}
                             </Badge>
                           ) : (
-                            <span className="text-slate-600">—</span>
+                            <span className="text-slate-600 font-mono">—</span>
                           )}
                         </TableCell>
                         <TableCell className="text-right font-mono text-slate-200">
@@ -713,9 +907,6 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                       —
                     </TableCell>
                     <TableCell className="text-right text-slate-400">
-                      —
-                    </TableCell>
-                    <TableCell className="text-center text-slate-400">
                       —
                     </TableCell>
                     <TableCell className="text-right font-mono font-bold text-white">

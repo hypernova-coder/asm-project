@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { allocateEmployeeHours } from '@/lib/allocation-engine';
+import { allocateEmployeeHours, type AllocationResult } from '@/lib/allocation-engine';
 
 // ---------------------------------------------------------------------------
 // POST /api/accounts/salary/bulk-save
@@ -264,7 +264,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Run allocation for each unique month+year
-      const allocationResults = [];
+      const allocationResults: AllocationResult[] = [];
       for (const [month, year] of monthYearCombos) {
         const result = await allocateEmployeeHours(month, year);
         allocationResults.push(result);

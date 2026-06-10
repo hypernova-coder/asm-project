@@ -135,6 +135,7 @@ export async function GET(request: NextRequest) {
       ? await db.totalEmployeeWorkingHours.findMany({
           where: { empId: { in: empIds }, isDeleted: false },
           select: {
+            id: true,
             empId: true,
             totalWorkingHours: true,
             rtPerHour: true,
@@ -175,32 +176,45 @@ export async function GET(request: NextRequest) {
       : [];
     const siteInfoMap = new Map(sites.map((s) => [s.id, s]));
 
-    // Build the response
-    const siteResults = [];
-    for (const [sId, sData] of siteMap) {
-      const siteInfo = siteInfoMap.get(sId);
-      const employeeEntries: Array<{
+    // Define the employee entry type for reuse
+    type EmployeeEntry = {
+      empId: string;
+      empName: string;
+      employeeCode: string;
+      nationality: string;
+      trade: string;
+      isTeamLeader: boolean;
+      isSupervisor: boolean;
+      rateTier: 'standard' | 'premium';
+      salaryRecord: Omit<(typeof allSalaryRecords)[0], 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string } | null;
+      workingHours: {
+        id?: string;
         empId: string;
         empName: string;
-        employeeCode: string;
-        nationality: string;
-        trade: string;
-        isTeamLeader: boolean;
-        isSupervisor: boolean;
-        rateTier: 'standard' | 'premium';
-        salaryRecord: (typeof allSalaryRecords)[0] | null;
-        workingHours: {
-          id?: string;
-          empId: string;
-          empName: string;
-          totalWorkingHours: number;
-          rtPerHour: number;
-          isCustom: boolean;
-          calculatedRtPerHour: number;
-          previousCumulativeHours: number;
-          hoursThreshold: number;
-        };
-      }> = [];
+        totalWorkingHours: number;
+        rtPerHour: number;
+        isCustom: boolean;
+        calculatedRtPerHour: number;
+        previousCumulativeHours: number;
+        hoursThreshold: number;
+        customHourlyRate: number | null;
+      };
+    };
+
+    // Build the response
+    const siteResults: Array<{
+      site: { id: string; name: string; clientName: string | null; projectName: string | null };
+      employeeCount: number;
+      totalHours: number;
+      totalSalary: number;
+      totalDeductions: number;
+      totalAdvances: number;
+      totalBalanceSalary: number;
+      employees: EmployeeEntry[];
+    }> = [];
+    for (const [sId, sData] of siteMap) {
+      const siteInfo = siteInfoMap.get(sId);
+      const employeeEntries: EmployeeEntry[] = [];
 
       // Group records by empId within this site
       const empRecordsMap = new Map<string, typeof sData.records>();
@@ -227,12 +241,14 @@ export async function GET(request: NextRequest) {
           ? employeeCustomRate
           : (currentMonthWh?.rtPerHour ?? (empWhRecords.length > 0 ? empWhRecords[empWhRecords.length - 1].rtPerHour : 2.5));
 
-        // Calculate rtPerHour based on aggregate total
+        // Calculate rtPerHour based on aggregate total (divisor-based formula)
+        const lowDivisor = hasBonus ? 3.0 : 1.0;
+        const highDivisor = hasBonus ? 5.5 : 1.0;
         const calculatedRtPerHour = isCustom
           ? customRtPerHour
           : aggregateTotal >= threshold
-            ? (hasBonus ? 5.5 : 5.0)
-            : (hasBonus ? 3.0 : 2.5);
+            ? (5.0 / highDivisor)  // Standard: 5.0, TL/Sup: 0.9091
+            : (2.5 / lowDivisor);  // Standard: 2.5, TL/Sup: 0.8333
 
         // Get current month total working hours from TotalEmployeeWorkingHours
         const totalWorkingHours = currentMonthWh?.totalWorkingHours ?? eRecords.reduce((sum, r) => sum + r.totalHours, 0);

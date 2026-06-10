@@ -43,6 +43,9 @@ export async function GET(request: NextRequest) {
             trade: true,
             nationality: true,
             customHourlyRate: true,
+            isTeamLeader: true,
+            isSupervisor: true,
+            role: true,
           },
         },
       },
@@ -55,7 +58,10 @@ export async function GET(request: NextRequest) {
       clientName: string | null;
       employeeCount: number;
       totalHours: number;
+      totalBelowThresholdHours: number;
+      totalAboveThresholdHours: number;
       totalSalary: number;
+      totalGrossSalary: number;
       totalDeductions: number;
       totalAdvances: number;
       netBalance: number;
@@ -68,7 +74,10 @@ export async function GET(request: NextRequest) {
       totalSites: number;
       totalEmployees: number;
       totalHours: number;
+      totalBelowThresholdHours: number;
+      totalAboveThresholdHours: number;
       totalSalary: number;
+      totalGrossSalary: number;
       totalDeductions: number;
       totalAdvances: number;
       netBalance: number;
@@ -94,20 +103,63 @@ export async function GET(request: NextRequest) {
       });
       const siteInfoMap = new Map(sites.map(s => [s.id, s]));
 
+      // Helper: compute divisor-based gross salary for a set of records
+      const computeGrossSalary = (recs: typeof records) => {
+        // Merge records by empId
+        const empMap = new Map<string, { belowHours: number; aboveHours: number; isTL: boolean; isSup: boolean; customRate: number | null }>();
+        for (const r of recs) {
+          const empKey = r.empId;
+          if (!empMap.has(empKey)) {
+            empMap.set(empKey, {
+              belowHours: 0,
+              aboveHours: 0,
+              isTL: r.employee?.isTeamLeader ?? false,
+              isSup: r.employee?.isSupervisor ?? false,
+              customRate: r.employee?.customHourlyRate ?? null,
+            });
+          }
+          const entry = empMap.get(empKey)!;
+          if (r.rateTier === 'standard') {
+            entry.belowHours += r.totalHours;
+          } else if (r.rateTier === 'premium') {
+            entry.aboveHours += r.totalHours;
+          }
+        }
+
+        let gross = 0;
+        for (const [, emp] of empMap) {
+          if (emp.customRate !== null && emp.customRate > 0) {
+            gross += (emp.belowHours + emp.aboveHours) * emp.customRate;
+          } else {
+            const hasBonus = emp.isTL || emp.isSup;
+            const lowDivisor = hasBonus ? 3.0 : 1.0;
+            const highDivisor = hasBonus ? 5.5 : 1.0;
+            gross += (emp.belowHours * 2.5) / lowDivisor + (emp.aboveHours * 5.0) / highDivisor;
+          }
+        }
+        return gross;
+      };
+
       // Build site summaries
       for (const [sId, sRecords] of siteMap) {
         const siteInfo = siteInfoMap.get(sId);
+        const belowHours = sRecords.filter(r => r.rateTier === 'standard').reduce((sum, r) => sum + r.totalHours, 0);
+        const aboveHours = sRecords.filter(r => r.rateTier === 'premium').reduce((sum, r) => sum + r.totalHours, 0);
+
         siteSummaries.push({
           siteId: sId,
           siteName: siteInfo?.name || sRecords[0]?.siteName || 'Unknown',
           clientName: siteInfo?.clientName || null,
-          employeeCount: sRecords.length,
+          employeeCount: new Set(sRecords.map(r => r.empId)).size,
           totalHours: sRecords.reduce((sum, r) => sum + r.totalHours, 0),
+          totalBelowThresholdHours: belowHours,
+          totalAboveThresholdHours: aboveHours,
           totalSalary: sRecords.reduce((sum, r) => sum + r.totalSalary, 0),
-          totalDeductions: sRecords.reduce((sum, r) => sum + r.deduction, 0),
-          totalAdvances: sRecords.reduce((sum, r) => sum + r.advance, 0),
+          totalGrossSalary: computeGrossSalary(sRecords),
+          totalDeductions: sRecords.filter(r => r.rateTier === 'standard').reduce((sum, r) => sum + r.deduction, 0),
+          totalAdvances: sRecords.filter(r => r.rateTier === 'standard').reduce((sum, r) => sum + r.advance, 0),
           netBalance: sRecords.reduce((sum, r) => sum + r.balanceSalary, 0),
-          paidCount: sRecords.filter(r => r.isPaid).length,
+          paidCount: new Set(sRecords.filter(r => r.isPaid).map(r => r.empId)).size,
           totalRecords: sRecords.length,
           employees: sRecords,
         });
@@ -117,16 +169,22 @@ export async function GET(request: NextRequest) {
       siteSummaries.sort((a, b) => a.siteName.localeCompare(b.siteName));
 
       // Grand totals
+      const allBelowHours = records.filter(r => r.rateTier === 'standard').reduce((sum, r) => sum + r.totalHours, 0);
+      const allAboveHours = records.filter(r => r.rateTier === 'premium').reduce((sum, r) => sum + r.totalHours, 0);
+
       totals = {
         totalSites: siteSummaries.length,
-        totalEmployees: records.length,
+        totalEmployees: new Set(records.map(r => r.empId)).size,
         totalHours: records.reduce((sum, r) => sum + r.totalHours, 0),
+        totalBelowThresholdHours: allBelowHours,
+        totalAboveThresholdHours: allAboveHours,
         totalSalary: records.reduce((sum, r) => sum + r.totalSalary, 0),
-        totalDeductions: records.reduce((sum, r) => sum + r.deduction, 0),
-        totalAdvances: records.reduce((sum, r) => sum + r.advance, 0),
+        totalGrossSalary: computeGrossSalary(records),
+        totalDeductions: records.filter(r => r.rateTier === 'standard').reduce((sum, r) => sum + r.deduction, 0),
+        totalAdvances: records.filter(r => r.rateTier === 'standard').reduce((sum, r) => sum + r.advance, 0),
         netBalance: records.reduce((sum, r) => sum + r.balanceSalary, 0),
-        paidCount: records.filter(r => r.isPaid).length,
-        totalRecords: records.length,
+        paidCount: new Set(records.filter(r => r.isPaid).map(r => r.empId)).size,
+        totalRecords: new Set(records.map(r => r.empId)).size,
       };
     }
 
@@ -288,9 +346,10 @@ export async function POST(request: NextRequest) {
         totalHours = attData.presentDays * 8 + attData.overtimeHours;
       }
 
-      // Determine rate based on employee type
+      // Determine rate based on employee type (divisor-based formula)
       const hasBonus = emp.isTeamLeader || emp.isSupervisor;
-      const rtPerHour = hasBonus ? 3.0 : 2.5;
+      const lowDivisor = hasBonus ? 3.0 : 1.0;
+      const rtPerHour = 2.5 / lowDivisor;  // Standard: 2.5, TL/Sup: 0.8333
 
       const totalSalary = totalHours * rtPerHour;
       const deduction = 0;
@@ -353,7 +412,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, deduction, advance, rtPerHour, isPaid } = body;
+    const { id, totalHours, deduction, advance, rtPerHour, isPaid } = body;
 
     if (!id) {
       return NextResponse.json(
@@ -372,6 +431,9 @@ export async function PUT(request: NextRequest) {
 
     const updateData: Record<string, unknown> = {};
 
+    if (typeof totalHours === 'number') {
+      updateData.totalHours = Math.max(0, totalHours);
+    }
     if (typeof deduction === 'number') {
       updateData.deduction = Math.max(0, deduction);
     }
@@ -385,16 +447,17 @@ export async function PUT(request: NextRequest) {
       updateData.isPaid = isPaid;
     }
 
-    // Recalculate totalSalary and balanceSalary
+    // Recalculate totalSalary and balanceSalary using new values if provided
+    const newTotalHours = typeof totalHours === 'number' ? Math.max(0, totalHours) : existing.totalHours;
     const newRtPerHour = typeof rtPerHour === 'number' ? Math.max(0, rtPerHour) : existing.rtPerHour;
     const newDeduction = typeof deduction === 'number' ? Math.max(0, deduction) : existing.deduction;
     const newAdvance = typeof advance === 'number' ? Math.max(0, advance) : existing.advance;
 
-    const totalSalary = existing.totalHours * newRtPerHour;
-    const balanceSalary = totalSalary - newDeduction - newAdvance;
+    const newTotalSalary = newTotalHours * newRtPerHour;
+    const newBalanceSalary = newTotalSalary - newDeduction - newAdvance;
 
-    updateData.totalSalary = totalSalary;
-    updateData.balanceSalary = balanceSalary;
+    updateData.totalSalary = newTotalSalary;
+    updateData.balanceSalary = newBalanceSalary;
 
     const updated = await db.salaryRecord.update({
       where: { id },

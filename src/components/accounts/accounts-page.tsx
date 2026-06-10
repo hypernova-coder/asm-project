@@ -16,6 +16,9 @@ import {
   RefreshCw,
   Pencil,
   Check,
+  Trash2,
+  Save,
+  XSquare,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -70,6 +73,16 @@ interface SalaryRecord {
   rateTier: string;
   customHourlyRate: number | null;
 }
+
+/* Edit buffer: tracks modified fields per record during site edit mode */
+interface EditBufferEntry {
+  totalHours?: number;
+  rtPerHour?: number;
+  deduction?: number;
+  advance?: number;
+}
+
+type EditBuffer = Map<string, EditBufferEntry>;
 
 /* ───────── constants ───────── */
 
@@ -209,94 +222,6 @@ function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange }: S
   );
 }
 
-/* ───────── Editable Cell ───────── */
-
-interface EditableCellProps {
-  value: number;
-  recordId: string;
-  field: 'deduction' | 'advance' | 'rtPerHour';
-  onSave: (recordId: string, field: string, value: number) => Promise<void>;
-}
-
-function EditableCell({ value, recordId, field, onSave }: EditableCellProps) {
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(String(value));
-  const [saving, setSaving] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editing]);
-
-  const handleSave = useCallback(async () => {
-    const numVal = parseFloat(editValue);
-    if (isNaN(numVal) || numVal < 0) {
-      toast({ title: 'Invalid value', description: 'Please enter a valid positive number', variant: 'destructive' });
-      setEditValue(String(value));
-      setEditing(false);
-      return;
-    }
-    if (numVal === value) {
-      setEditing(false);
-      return;
-    }
-    setSaving(true);
-    try {
-      await onSave(recordId, field, numVal);
-      setEditing(false);
-    } catch {
-      setEditValue(String(value));
-    } finally {
-      setSaving(false);
-    }
-  }, [editValue, value, recordId, field, onSave]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSave();
-    } else if (e.key === 'Escape') {
-      setEditValue(String(value));
-      setEditing(false);
-    }
-  };
-
-  if (editing) {
-    return (
-      <div className="flex items-center gap-1">
-        <Input
-          ref={inputRef}
-          type="number"
-          min="0"
-          step={field === 'rtPerHour' ? '0.1' : '1'}
-          value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onBlur={handleSave}
-          onKeyDown={handleKeyDown}
-          disabled={saving}
-          className="h-7 w-20 bg-slate-900 border-slate-600 text-white text-xs px-2 py-1"
-        />
-        {saving && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
-      </div>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => {
-        setEditValue(String(value));
-        setEditing(true);
-      }}
-      className="px-2 py-1 rounded text-xs hover:bg-slate-700/50 transition-colors text-slate-200 cursor-pointer min-w-[40px] text-left"
-      title="Click to edit"
-    >
-      {field === 'rtPerHour' ? value.toFixed(2) : value.toLocaleString()}
-    </button>
-  );
-}
-
 /* ───────── Custom Rate Cell ───────── */
 
 interface CustomRateCellProps {
@@ -322,7 +247,6 @@ function CustomRateCell({ empId, customHourlyRate, currentRtPerHour, monthParam,
     }
   }, [editing]);
 
-  // Sync edit value when external data changes
   useEffect(() => {
     if (!editing) {
       setEditValue(customHourlyRate != null ? String(customHourlyRate) : '');
@@ -332,7 +256,6 @@ function CustomRateCell({ empId, customHourlyRate, currentRtPerHour, monthParam,
   const handleSave = useCallback(async () => {
     const trimmed = editValue.trim();
 
-    // If empty or cleared, remove the custom rate
     if (trimmed === '' || trimmed === '0') {
       setSaving(true);
       try {
@@ -441,6 +364,11 @@ export function AccountsPage() {
   const [generating, setGenerating] = useState(false);
   const autoGenerateAttempted = useRef(false);
 
+  /* Site edit mode state */
+  const [isEditing, setIsEditing] = useState(false);
+  const [editBuffer, setEditBuffer] = useState<EditBuffer>(new Map());
+  const [savingEdits, setSavingEdits] = useState(false);
+
   const yearOptions = useMemo(() => {
     const currentYear = now.getFullYear();
     return [
@@ -491,14 +419,12 @@ export function AccountsPage() {
       const data = await res.json();
       if (data.success) {
         const rawRecords = data.data.records || [];
-        // Map customHourlyRate from employee relation into each salary record
         const records = rawRecords.map((r: Record<string, unknown>) => ({
           ...r,
           customHourlyRate: (r.employee as Record<string, unknown>)?.customHourlyRate ?? null,
         }));
         setSalaryRecords(records);
 
-        // Auto-generate salary records if none exist for this site+month (only once)
         if (records.length === 0 && !autoGenerateAttempted.current) {
           autoGenerateAttempted.current = true;
           await autoGenerateSalary();
@@ -536,7 +462,6 @@ export function AccountsPage() {
           title: 'Salary Records Auto-Generated',
           description: data.data.message || `${data.data.created} records created`,
         });
-        // Re-fetch to get the newly created records
         const params = new URLSearchParams({
           siteId: selectedSiteId,
           month: monthParam,
@@ -599,7 +524,7 @@ export function AccountsPage() {
     }
   }, [selectedSiteId, selectedSiteName, monthParam, year, fetchSalaryRecords]);
 
-  // Update individual salary record
+  // Update individual salary record (for inline edits outside of site edit mode)
   const handleUpdateRecord = useCallback(
     async (recordId: string, field: string, value: number | boolean) => {
       try {
@@ -610,12 +535,10 @@ export function AccountsPage() {
         });
         const data = await res.json();
         if (data.success) {
-          // Optimistically update local state
           setSalaryRecords((prev) =>
             prev.map((r) => {
               if (r.id !== recordId) return r;
               const updated = { ...r, [field]: value };
-              // Recalculate
               if (field === 'deduction' || field === 'advance' || field === 'rtPerHour' || field === 'totalHours') {
                 updated.totalSalary = updated.totalHours * updated.rtPerHour;
                 updated.balanceSalary = updated.totalSalary - updated.deduction - updated.advance;
@@ -623,6 +546,7 @@ export function AccountsPage() {
               return updated;
             })
           );
+          toast({ title: 'Updated', description: 'Record saved successfully' });
         } else {
           toast({ title: 'Error', description: data.error || 'Failed to update record', variant: 'destructive' });
           throw new Error('Update failed');
@@ -639,7 +563,6 @@ export function AccountsPage() {
   const handleSetCustomRate = useCallback(
     async (empId: string, customRate: number | null) => {
       try {
-        // 1. Update employee's customHourlyRate
         const empRes = await fetch(`/api/employees/${empId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -651,7 +574,6 @@ export function AccountsPage() {
           throw new Error('Employee update failed');
         }
 
-        // 2. Update TotalEmployeeWorkingHours for the current month to mark as custom
         const whRes = await fetch('/api/accounts/working-hours', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -666,7 +588,6 @@ export function AccountsPage() {
           console.warn('Working hours update returned non-ok status');
         }
 
-        // 3. Re-trigger the allocation engine for this month+year
         try {
           await fetch('/api/accounts/allocate', {
             method: 'POST',
@@ -677,7 +598,6 @@ export function AccountsPage() {
           // Allocation engine failure shouldn't block the user
         }
 
-        // 4. Refresh salary records
         await fetchSalaryRecords();
 
         toast({
@@ -698,7 +618,6 @@ export function AccountsPage() {
   const handleTogglePaid = useCallback(
     async (record: SalaryRecord) => {
       const newPaidStatus = !record.isPaid;
-      // Optimistic update
       setSalaryRecords((prev) =>
         prev.map((r) => (r.id === record.id ? { ...r, isPaid: newPaidStatus } : r))
       );
@@ -710,7 +629,6 @@ export function AccountsPage() {
         });
         const data = await res.json();
         if (!data.success) {
-          // Revert on failure
           setSalaryRecords((prev) =>
             prev.map((r) => (r.id === record.id ? { ...r, isPaid: record.isPaid } : r))
           );
@@ -731,16 +649,177 @@ export function AccountsPage() {
     []
   );
 
+  // Soft delete a record
+  const handleSoftDelete = useCallback(
+    async (record: SalaryRecord) => {
+      // Optimistically remove from local state
+      setSalaryRecords((prev) => prev.filter((r) => r.id !== record.id));
+
+      try {
+        const res = await fetch(`/api/salary-records/${record.id}`, {
+          method: 'DELETE',
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          // Show toast with Undo button
+          const { dismiss } = toast({
+            title: 'Record Deleted',
+            description: `${record.empName} salary record removed`,
+            action: (
+              <Button
+                variant="outline"
+                size="sm"
+                className="bg-amber-600 hover:bg-amber-700 text-white border-amber-600"
+                onClick={async () => {
+                  // Undo: restore the record
+                  try {
+                    const undoRes = await fetch(`/api/salary-records/${record.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ isDeleted: false }),
+                    });
+                    const undoData = await undoRes.json();
+                    if (undoData.success) {
+                      toast({ title: 'Record Restored', description: `${record.empName} salary record has been restored` });
+                      fetchSalaryRecords();
+                    } else {
+                      toast({ title: 'Undo Failed', description: 'Could not restore the record', variant: 'destructive' });
+                    }
+                  } catch {
+                    toast({ title: 'Undo Failed', description: 'Could not restore the record', variant: 'destructive' });
+                  }
+                  dismiss();
+                }}
+              >
+                Undo
+              </Button>
+            ),
+            duration: 5000,
+          });
+        } else {
+          // Revert on failure
+          setSalaryRecords((prev) => [...prev, record]);
+          toast({ title: 'Error', description: data.error || 'Failed to delete record', variant: 'destructive' });
+        }
+      } catch {
+        setSalaryRecords((prev) => [...prev, record]);
+        toast({ title: 'Error', description: 'Failed to delete record', variant: 'destructive' });
+      }
+    },
+    [fetchSalaryRecords]
+  );
+
   // Site change handler
   const handleSiteChange = useCallback((siteId: string, siteName: string) => {
     setSelectedSiteId(siteId);
     setSelectedSiteName(siteName);
     autoGenerateAttempted.current = false;
+    setIsEditing(false);
+    setEditBuffer(new Map());
   }, []);
+
+  /* ─── Site Edit Mode Handlers ─── */
+
+  const handleEnterEditMode = useCallback(() => {
+    setIsEditing(true);
+    setEditBuffer(new Map());
+  }, []);
+
+  const handleCancelEditMode = useCallback(() => {
+    setIsEditing(false);
+    setEditBuffer(new Map());
+  }, []);
+
+  // Update a field in the edit buffer (local only, no API call)
+  const handleEditFieldChange = useCallback((recordId: string, field: keyof EditBufferEntry, value: number) => {
+    setEditBuffer((prev) => {
+      const next = new Map(prev);
+      const entry = next.get(recordId) || {};
+      next.set(recordId, { ...entry, [field]: value });
+      return next;
+    });
+  }, []);
+
+  // Save all edited records via bulk-update API
+  const handleSaveEdits = useCallback(async () => {
+    if (editBuffer.size === 0) {
+      setIsEditing(false);
+      return;
+    }
+
+    setSavingEdits(true);
+    try {
+      const records: Array<{ id: string; totalHours?: number; rtPerHour?: number; deduction?: number; advance?: number }> = [];
+
+      editBuffer.forEach((entry, id) => {
+        records.push({ id, ...entry });
+      });
+
+      const res = await fetch('/api/salary-records/bulk-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        const { updated, failed } = data.data;
+        if (failed > 0) {
+          toast({
+            title: 'Partial Save',
+            description: `${updated} records saved, ${failed} failed`,
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: 'All Changes Saved',
+            description: `${updated} record${updated !== 1 ? 's' : ''} updated successfully`,
+          });
+        }
+        setIsEditing(false);
+        setEditBuffer(new Map());
+        await fetchSalaryRecords();
+      } else {
+        toast({ title: 'Error', description: data.error || 'Failed to save changes', variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Error', description: 'Failed to save changes', variant: 'destructive' });
+    } finally {
+      setSavingEdits(false);
+    }
+  }, [editBuffer, fetchSalaryRecords]);
+
+  // Get the effective value for a field (edit buffer override or original)
+  const getEffectiveValue = useCallback(
+    (record: SalaryRecord, field: keyof EditBufferEntry): number => {
+      const buf = editBuffer.get(record.id);
+      if (buf && buf[field] !== undefined) {
+        return buf[field]!;
+      }
+      return record[field];
+    },
+    [editBuffer]
+  );
+
+  // Compute effective records with edit buffer applied (for totals and display)
+  const effectiveRecords = useMemo(() => {
+    return salaryRecords.map((r) => {
+      const buf = editBuffer.get(r.id);
+      if (!buf) return r;
+      const totalHours = buf.totalHours ?? r.totalHours;
+      const rtPerHour = buf.rtPerHour ?? r.rtPerHour;
+      const deduction = buf.deduction ?? r.deduction;
+      const advance = buf.advance ?? r.advance;
+      const totalSalary = totalHours * rtPerHour;
+      const balanceSalary = totalSalary - deduction - advance;
+      return { ...r, totalHours, rtPerHour, deduction, advance, totalSalary, balanceSalary };
+    });
+  }, [salaryRecords, editBuffer]);
 
   // Compute totals
   const totals = useMemo(() => {
-    return salaryRecords.reduce(
+    return effectiveRecords.reduce(
       (acc, r) => ({
         totalHours: acc.totalHours + r.totalHours,
         totalSalary: acc.totalSalary + r.totalSalary,
@@ -752,7 +831,10 @@ export function AccountsPage() {
       }),
       { totalHours: 0, totalSalary: 0, deduction: 0, advance: 0, balanceSalary: 0, paidCount: 0, unpaidCount: 0 }
     );
-  }, [salaryRecords]);
+  }, [effectiveRecords]);
+
+  // Count of changed records in edit buffer
+  const changedCount = editBuffer.size;
 
   // No site selected prompt
   if (!selectedSiteId) {
@@ -927,7 +1009,7 @@ export function AccountsPage() {
             </CardHeader>
             <CardContent className="px-4 pt-0">
               <p className="text-xl font-bold text-green-400">{totals.paidCount}</p>
-              <p className="text-xs text-slate-500 mt-0.5">of {salaryRecords.length} employees</p>
+              <p className="text-xs text-slate-500 mt-0.5">of {effectiveRecords.length} employees</p>
             </CardContent>
           </Card>
           <Card className="bg-slate-800/50 border-slate-700/50 py-3">
@@ -939,7 +1021,7 @@ export function AccountsPage() {
             </CardHeader>
             <CardContent className="px-4 pt-0">
               <p className="text-xl font-bold text-red-400">{totals.unpaidCount}</p>
-              <p className="text-xs text-slate-500 mt-0.5">of {salaryRecords.length} employees</p>
+              <p className="text-xs text-slate-500 mt-0.5">of {effectiveRecords.length} employees</p>
             </CardContent>
           </Card>
         </div>
@@ -947,11 +1029,56 @@ export function AccountsPage() {
 
       {/* Salary Records Table */}
       <Card className="bg-slate-800/50 border-slate-700/50">
-        <CardHeader className="px-4">
+        <CardHeader className="px-4 flex flex-row items-center justify-between">
           <CardTitle className="text-base text-white flex items-center gap-2">
             <FileText className="h-4 w-4 text-slate-400" />
             Salary Records
           </CardTitle>
+          {/* Edit Action Buttons - nested within the header/dropdown bar */}
+          {salaryRecords.length > 0 && !isEditing && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleEnterEditMode}
+              className="gap-1.5 bg-amber-600/10 border-amber-500/30 text-amber-400 hover:bg-amber-600/20 hover:text-amber-300"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Edit
+            </Button>
+          )}
+          {isEditing && (
+            <div className="flex items-center gap-2">
+              {changedCount > 0 && (
+                <span className="text-xs text-amber-400 font-medium">
+                  {changedCount} record{changedCount !== 1 ? 's' : ''} modified
+                </span>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelEditMode}
+                disabled={savingEdits}
+                className="gap-1.5 bg-slate-700/50 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+              >
+                <XSquare className="h-3.5 w-3.5" />
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSaveEdits}
+                disabled={savingEdits || changedCount === 0}
+                className="gap-1.5 bg-emerald-600/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/20 hover:text-emerald-300"
+              >
+                {savingEdits ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+                Save
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="px-4">
           {loadingRecords ? (
@@ -989,104 +1116,193 @@ export function AccountsPage() {
                     <TableHead className="text-slate-400 font-semibold text-xs text-right">Balance</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-center">Rate Tier</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-center">Status</TableHead>
+                    {isEditing && (
+                      <TableHead className="text-slate-400 font-semibold text-xs text-center w-10">Del</TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {salaryRecords.map((record, idx) => (
-                    <TableRow
-                      key={record.id}
-                      className={cn(
-                        'border-slate-700/50 hover:bg-slate-700/30',
-                        record.isPaid && 'bg-green-500/5'
-                      )}
-                    >
-                      <TableCell className="text-slate-400 text-xs font-mono">{idx + 1}</TableCell>
-                      <TableCell className="text-slate-300 text-xs font-mono">{record.employeeCode}</TableCell>
-                      <TableCell className="text-white text-sm font-medium">{record.empName}</TableCell>
-                      <TableCell className="text-slate-400 text-xs">{record.nationality || '—'}</TableCell>
-                      <TableCell className="text-slate-400 text-xs">{record.trade || '—'}</TableCell>
-                      <TableCell className="text-slate-200 text-xs text-right font-mono">
-                        {record.totalHours.toFixed(1)}
-                      </TableCell>
-                      <TableCell>
-                        <EditableCell
-                          value={record.rtPerHour}
-                          recordId={record.id}
-                          field="rtPerHour"
-                          onSave={handleUpdateRecord}
-                        />
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <CustomRateCell
-                          empId={record.empId}
-                          customHourlyRate={record.customHourlyRate}
-                          currentRtPerHour={record.rtPerHour}
-                          monthParam={monthParam}
-                          onSave={handleSetCustomRate}
-                        />
-                      </TableCell>
-                      <TableCell className="text-emerald-400 text-xs text-right font-mono font-semibold">
-                        {record.totalSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </TableCell>
-                      <TableCell>
-                        <EditableCell
-                          value={record.deduction}
-                          recordId={record.id}
-                          field="deduction"
-                          onSave={handleUpdateRecord}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <EditableCell
-                          value={record.advance}
-                          recordId={record.id}
-                          field="advance"
-                          onSave={handleUpdateRecord}
-                        />
-                      </TableCell>
-                      <TableCell className={cn(
-                        'text-xs text-right font-mono font-semibold',
-                        record.balanceSalary >= 0 ? 'text-white' : 'text-red-400'
-                      )}>
-                        {record.balanceSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge
-                          className={cn(
-                            'text-[10px] px-2 py-0.5',
-                            record.rateTier === 'premium'
-                              ? 'bg-amber-500/15 text-amber-400 border-amber-500/25'
-                              : 'bg-slate-600/30 text-slate-300 border-slate-500/25'
+                  {effectiveRecords.map((record, idx) => {
+                    const isModified = editBuffer.has(record.id);
+                    return (
+                      <TableRow
+                        key={record.id}
+                        className={cn(
+                          'border-slate-700/50 hover:bg-slate-700/30',
+                          record.isPaid && 'bg-green-500/5',
+                          isEditing && isModified && 'bg-amber-500/5'
+                        )}
+                      >
+                        <TableCell className="text-slate-400 text-xs font-mono">{idx + 1}</TableCell>
+                        <TableCell className="text-slate-300 text-xs font-mono">{record.employeeCode}</TableCell>
+                        <TableCell className="text-white text-sm font-medium">{record.empName}</TableCell>
+                        <TableCell className="text-slate-400 text-xs">{record.nationality || '—'}</TableCell>
+                        <TableCell className="text-slate-400 text-xs">{record.trade || '—'}</TableCell>
+                        {/* Total Hours - editable in site edit mode */}
+                        <TableCell className="text-right">
+                          {isEditing ? (
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.5"
+                              value={getEffectiveValue(record, 'totalHours')}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val >= 0) {
+                                  handleEditFieldChange(record.id, 'totalHours', val);
+                                }
+                              }}
+                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1 text-right"
+                            />
+                          ) : (
+                            <span className="text-slate-200 text-xs font-mono">
+                              {record.totalHours.toFixed(1)}
+                            </span>
                           )}
-                        >
-                          {record.rateTier === 'premium' ? 'Premium' : 'Standard'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <button
-                          onClick={() => handleTogglePaid(record)}
-                          className="focus:outline-none"
-                          title={record.isPaid ? 'Click to mark as unpaid' : 'Click to mark as paid'}
-                        >
+                        </TableCell>
+                        {/* Rate/Hr - editable in site edit mode */}
+                        <TableCell>
+                          {isEditing ? (
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={getEffectiveValue(record, 'rtPerHour')}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val >= 0) {
+                                  handleEditFieldChange(record.id, 'rtPerHour', val);
+                                }
+                              }}
+                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1"
+                            />
+                          ) : (
+                            <EditableCell
+                              value={record.rtPerHour}
+                              recordId={record.id}
+                              field="rtPerHour"
+                              onSave={handleUpdateRecord}
+                            />
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <CustomRateCell
+                            empId={record.empId}
+                            customHourlyRate={record.customHourlyRate}
+                            currentRtPerHour={record.rtPerHour}
+                            monthParam={monthParam}
+                            onSave={handleSetCustomRate}
+                          />
+                        </TableCell>
+                        <TableCell className="text-emerald-400 text-xs text-right font-mono font-semibold">
+                          {record.totalSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </TableCell>
+                        {/* Deduction - editable in site edit mode */}
+                        <TableCell>
+                          {isEditing ? (
+                            <Input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={getEffectiveValue(record, 'deduction')}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val >= 0) {
+                                  handleEditFieldChange(record.id, 'deduction', val);
+                                }
+                              }}
+                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1"
+                            />
+                          ) : (
+                            <EditableCell
+                              value={record.deduction}
+                              recordId={record.id}
+                              field="deduction"
+                              onSave={handleUpdateRecord}
+                            />
+                          )}
+                        </TableCell>
+                        {/* Advance - editable in site edit mode */}
+                        <TableCell>
+                          {isEditing ? (
+                            <Input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={getEffectiveValue(record, 'advance')}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val >= 0) {
+                                  handleEditFieldChange(record.id, 'advance', val);
+                                }
+                              }}
+                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1"
+                            />
+                          ) : (
+                            <EditableCell
+                              value={record.advance}
+                              recordId={record.id}
+                              field="advance"
+                              onSave={handleUpdateRecord}
+                            />
+                          )}
+                        </TableCell>
+                        <TableCell className={cn(
+                          'text-xs text-right font-mono font-semibold',
+                          record.balanceSalary >= 0 ? 'text-white' : 'text-red-400'
+                        )}>
+                          {record.balanceSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </TableCell>
+                        <TableCell className="text-center">
                           <Badge
                             className={cn(
-                              'text-[10px] px-2 py-0.5 cursor-pointer transition-colors',
-                              record.isPaid
-                                ? 'bg-green-500/15 text-green-400 border-green-500/25 hover:bg-green-500/25'
-                                : 'bg-red-500/15 text-red-400 border-red-500/25 hover:bg-red-500/25'
+                              'text-[10px] px-2 py-0.5',
+                              record.rateTier === 'premium'
+                                ? 'bg-amber-500/15 text-amber-400 border-amber-500/25'
+                                : 'bg-slate-600/30 text-slate-300 border-slate-500/25'
                             )}
                           >
-                            {record.isPaid ? 'Paid' : 'Unpaid'}
+                            {record.rateTier === 'premium' ? 'Premium' : 'Standard'}
                           </Badge>
-                        </button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <button
+                            onClick={() => handleTogglePaid(record)}
+                            className="focus:outline-none"
+                            title={record.isPaid ? 'Click to mark as unpaid' : 'Click to mark as paid'}
+                          >
+                            <Badge
+                              className={cn(
+                                'text-[10px] px-2 py-0.5 cursor-pointer transition-colors',
+                                record.isPaid
+                                  ? 'bg-green-500/15 text-green-400 border-green-500/25 hover:bg-green-500/25'
+                                  : 'bg-red-500/15 text-red-400 border-red-500/25 hover:bg-red-500/25'
+                              )}
+                            >
+                              {record.isPaid ? 'Paid' : 'Unpaid'}
+                            </Badge>
+                          </button>
+                        </TableCell>
+                        {/* Delete button - only visible in edit mode */}
+                        {isEditing && (
+                          <TableCell className="text-center">
+                            <button
+                              onClick={() => handleSoftDelete(record)}
+                              className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                              title="Delete record"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
                 <TableFooter>
                   <TableRow className="border-slate-700 hover:bg-transparent bg-slate-900/60">
                     <TableCell colSpan={5} className="text-white text-sm font-bold">
-                      Totals ({salaryRecords.length} employees)
+                      Totals ({effectiveRecords.length} employees)
                     </TableCell>
                     <TableCell className="text-slate-200 text-xs text-right font-mono font-bold">
                       {totals.totalHours.toFixed(1)}
@@ -1110,11 +1326,7 @@ export function AccountsPage() {
                     </TableCell>
                     <TableCell className="text-slate-400 text-xs">—</TableCell>
                     <TableCell className="text-slate-400 text-xs">—</TableCell>
-                    <TableCell className="text-center">
-                      <span className="text-[10px] text-slate-400">
-                        {totals.paidCount}/{salaryRecords.length}
-                      </span>
-                    </TableCell>
+                    {isEditing && <TableCell className="text-slate-400 text-xs">—</TableCell>}
                   </TableRow>
                 </TableFooter>
               </Table>
@@ -1123,5 +1335,93 @@ export function AccountsPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/* ───────── Editable Cell (for non-edit-mode inline editing) ───────── */
+
+interface EditableCellProps {
+  value: number;
+  recordId: string;
+  field: 'deduction' | 'advance' | 'rtPerHour';
+  onSave: (recordId: string, field: string, value: number) => Promise<void>;
+}
+
+function EditableCell({ value, recordId, field, onSave }: EditableCellProps) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(String(value));
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const handleSave = useCallback(async () => {
+    const numVal = parseFloat(editValue);
+    if (isNaN(numVal) || numVal < 0) {
+      toast({ title: 'Invalid value', description: 'Please enter a valid positive number', variant: 'destructive' });
+      setEditValue(String(value));
+      setEditing(false);
+      return;
+    }
+    if (numVal === value) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(recordId, field, numVal);
+      setEditing(false);
+    } catch {
+      setEditValue(String(value));
+    } finally {
+      setSaving(false);
+    }
+  }, [editValue, value, recordId, field, onSave]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSave();
+    } else if (e.key === 'Escape') {
+      setEditValue(String(value));
+      setEditing(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <Input
+          ref={inputRef}
+          type="number"
+          min="0"
+          step={field === 'rtPerHour' ? '0.1' : '1'}
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onBlur={handleSave}
+          onKeyDown={handleKeyDown}
+          disabled={saving}
+          className="h-7 w-20 bg-slate-900 border-slate-600 text-white text-xs px-2 py-1"
+        />
+        {saving && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => {
+        setEditValue(String(value));
+        setEditing(true);
+      }}
+      className="px-2 py-1 rounded text-xs hover:bg-slate-700/50 transition-colors text-slate-200 cursor-pointer min-w-[40px] text-left"
+      title="Click to edit"
+    >
+      {field === 'rtPerHour' ? value.toFixed(2) : value.toLocaleString()}
+    </button>
   );
 }

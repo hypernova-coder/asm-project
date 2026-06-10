@@ -21,14 +21,16 @@ async function calculateRtPerHour(
     select: { isTeamLeader: true, isSupervisor: true, hoursThreshold: true },
   });
 
-  // TL / Supervisor bonus applies across all sites
+  // Divisor-based formula: effective rate = tier rate / divisor
   const hasBonus = employee?.isTeamLeader || employee?.isSupervisor || false;
   const threshold = employee?.hoursThreshold || 1000;
+  const lowDivisor = hasBonus ? 3.0 : 1.0;
+  const highDivisor = hasBonus ? 5.5 : 1.0;
 
   if (totalHrs >= threshold) {
-    return hasBonus ? 5.5 : 5.0;
+    return 5.0 / highDivisor;  // Standard: 5.0, TL/Sup: 0.9091
   }
-  return hasBonus ? 3.0 : 2.5;
+  return 2.5 / lowDivisor;  // Standard: 2.5, TL/Sup: 0.8333
 }
 
 // POST: Create a new salary record

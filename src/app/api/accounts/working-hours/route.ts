@@ -11,11 +11,14 @@ function calculateRtPerHour(
   threshold: number = 1000
 ): number {
   if (isCustom) return customRtPerHour;
+  // Divisor-based formula: effective rate = tier rate / divisor
   const hasBonus = isTeamLeader || isSupervisor;
+  const lowDivisor = hasBonus ? 3.0 : 1.0;
+  const highDivisor = hasBonus ? 5.5 : 1.0;
   if (totalWorkingHours >= threshold) {
-    return hasBonus ? 5.5 : 5.0;
+    return 5.0 / highDivisor;  // Standard: 5.0, TL/Sup: 0.9091
   }
-  return hasBonus ? 3.0 : 2.5;
+  return 2.5 / lowDivisor;  // Standard: 2.5, TL/Sup: 0.8333
 }
 
 // GET: Get all working hours records (aggregated from monthly records)
@@ -248,7 +251,25 @@ export async function POST(request: NextRequest) {
 
     // Batch creation from AddEmployeeDialog
     if (employeeIds && Array.isArray(employeeIds) && employeeIds.length > 0) {
-      const results = [];
+      const results: Array<{
+        id: string;
+        empId: string;
+        empName: string;
+        totalWorkingHours: number;
+        rtPerHour: number;
+        isCustom: boolean;
+        calculatedRtPerHour: number;
+        employee: {
+          id: string;
+          fullName: string;
+          employeeId: string;
+          trade: string | null;
+          nationality: string | null;
+          isTeamLeader: boolean;
+          isSupervisor: boolean;
+          hoursThreshold: number;
+        };
+      }> = [];
       for (const eid of employeeIds) {
         const employee = await db.employee.findUnique({
           where: { id: eid },

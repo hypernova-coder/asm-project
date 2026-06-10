@@ -83,6 +83,7 @@ model Employee {
   siteHistory          EmpCountSitePerMonth[]
   salaryRecords        SalaryRecord[]
   workingHours         TotalEmployeeWorkingHours[]
+  workLogs             WorkLog[]
 
   @@index([trade])
   @@index([isTeamLeader])
@@ -100,6 +101,7 @@ model Site {
 
   employeeHistory   EmpCountSitePerMonth[]
   monthActivations  SiteMonthActivation[]
+  workLogs          WorkLog[]
 }
 
 model Attendance {
@@ -368,4 +370,24 @@ model SiteMonthActivation {
   @@unique([siteId, month, year])
   @@index([month, year])
   @@index([siteId])
+}
+
+model WorkLog {
+  logId        Int      @id @default(autoincrement())
+  employeeId   String   // FK to Employee.id
+  siteId       String   // FK to Site.id
+  year         Int      // NOT NULL
+  month        Int      // NOT NULL, 1-12
+  hoursWorked  Float    @default(0.00)
+  allowances   Float    @default(0.00)
+  deductions   Float    @default(0.00)
+  deletedAt    DateTime? // soft delete
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  site     Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, siteId, year, month])
+  @@index([employeeId, year, month], name: "idx_work_logs_chrono")
 }

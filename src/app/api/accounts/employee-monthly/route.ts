@@ -73,8 +73,10 @@ export async function GET(request: NextRequest) {
 
     // Also compute cumulative hours within the selected year up to the current month
     // This is used for the per-month cumulative display
+    // PRD: If a month has NO hours worked (totalHours = 0), cumulative = 0
+    // For months WITH hours, cumulative = running sum including that month (cross-year)
     const withinYearCumulative: Record<string, number> = {};
-    const monthsInOrder = [];
+    const monthsInOrder: string[] = [];
     for (let m = 1; m <= 12; m++) {
       const monthStr = `${year}-${String(m).padStart(2, '0')}`;
       monthsInOrder.push(monthStr);
@@ -84,8 +86,10 @@ export async function GET(request: NextRequest) {
       const monthHours = allSalaryRecords
         .filter(r => r.month === m)
         .reduce((sum, r) => sum + r.totalHours, 0);
-      withinYearCumulative[m] = runningTotal + monthHours;
-      runningTotal += monthHours;
+      // If this month has hours, cumulative = running total + this month's hours
+      // If this month has NO hours, cumulative = 0 (drop to zero instead of trailing duplicate)
+      withinYearCumulative[m] = monthHours > 0 ? runningTotal + monthHours : 0;
+      runningTotal += monthHours; // running total always carries forward
     }
 
     // Get custom rate info from TotalEmployeeWorkingHours (all months)
@@ -100,17 +104,19 @@ export async function GET(request: NextRequest) {
       ? allWhRecords[allWhRecords.length - 1].rtPerHour
       : 2.5;
 
-    // Auto-calculate the aggregate rate
+    // Auto-calculate the aggregate rate (divisor-based formula)
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
     const empThreshold = employee.hoursThreshold || 1000;
+    const lowDivisor = hasBonus ? 3.0 : 1.0;
+    const highDivisor = hasBonus ? 5.5 : 1.0;
     // If employee has a customHourlyRate, use it directly
     const autoRate = employee.customHourlyRate != null
       ? employee.customHourlyRate
-      : (aggregateTotalHours >= empThreshold ? (hasBonus ? 5.5 : 5.0) : (hasBonus ? 3.0 : 2.5));
+      : (aggregateTotalHours >= empThreshold ? (5.0 / highDivisor) : (2.5 / lowDivisor));
 
     // Build monthly data for all 12 months
     // Use SalaryRecord as source of truth for per-month hours (sum of standard + premium)
-    const monthlyData = [];
+    const monthlyData: Array<{ month: string; totalHours: number; cumulativeHours: number; rtPerHour: number; recordId: string | null }> = [];
     for (let m = 0; m < 12; m++) {
       const monthStr = `${year}-${String(m + 1).padStart(2, '0')}`;
       const record = monthlyRecords.find((r) => r.month === monthStr);
@@ -197,8 +203,8 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const results = [];
-    const errors = [];
+    const results: Array<{ month: string; action: string; id: string; totalWorkingHours: number }> = [];
+    const errors: Array<{ month: string; error: string }> = [];
     const monthsToReallocate = new Set<string>();
 
     for (const monthEntry of monthlyData) {

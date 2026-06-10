@@ -20,6 +20,7 @@ import { UniformRegistryPage } from '@/components/uniform-registry/uniform-regis
 import { AccountsPage } from '@/components/accounts/accounts-page';
 import { ConsolidatedSalaryPage } from '@/components/consolidated-salary/consolidated-salary-page';
 import { EmployeeHoursLedger } from '@/components/employees/employee-hours-ledger';
+import { EmployeeHoursDirectory } from '@/components/employees/employee-hours-directory';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -165,10 +166,9 @@ function MainLayout() {
             employeeId={selectedEmployeeId}
             onBack={() => {
               setSelectedEmployeeId(null);
-              setCurrentView('employees');
             }}
           />
-        ) : <EmployeePage />;
+        ) : <EmployeeHoursDirectory />;
       case 'profile':
         return <ProfilePage />;
       default:

@@ -3,16 +3,27 @@ import { db } from '@/lib/db';
 // ---------------------------------------------------------------------------
 // Cross-Site Monthly Hour Allocation Engine (Shared Module)
 // ---------------------------------------------------------------------------
-// Business Rules:
-//   For each employee in a given month:
-//     | Hours Range                        | Employee Rate | TL/Supervisor Rate |
-//     | First N hrs (cumulative threshold) | 2.5           | 3.0                |
-//     | Above N hrs (cumulative threshold) | 5.0           | 5.5                |
-//   Where N = employee's hoursThreshold (default 1000).
+// Business Rules (Divisor-Based Formula from PRD):
+//   Wages = Σ (Hours Worked Within Tier × Tier Rate / Role Divisor)
 //
+//   Tier Rates are ALWAYS the same regardless of role:
+//     - Below threshold (standard): Tier Rate = 2.5
+//     - Above threshold (premium):  Tier Rate = 5.0
+//
+//   Divisor Reference Rules:
+//     | Role            | Below Threshold Divisor | Above Threshold Divisor |
+//     | Standard        | 1.0                     | 1.0                     |
+//     | Team Leader     | 3.0                     | 5.5                     |
+//     | Supervisor      | 3.0                     | 5.5                     |
+//
+//   Effective Rate = Tier Rate / Divisor:
+//     | Role            | Below (2.5/div) | Above (5.0/div) |
+//     | Standard        | 2.5000          | 5.0000           |
+//     | Team Leader     | 0.8333          | 0.9091           |
+//     | Supervisor      | 0.8333          | 0.9091           |
+//
+//   Where N = employee's hoursThreshold (default 1000).
 //   KEY: The threshold is CUMULATIVE across all months, NOT per-month.
-//   We compute previous months' aggregate hours, then apply remaining
-//   threshold to the current month's site hours in sequential order.
 //
 //   Sequential Allocation:
 //     1. Compute previous months' cumulative hours for the employee
@@ -124,8 +135,13 @@ export async function allocateEmployeeHours(
 
     const threshold = employee.hoursThreshold || 1000;
     const hasBonus = employee.isTeamLeader || employee.isSupervisor;
-    const lowRate = hasBonus ? 3.0 : 2.5;
-    const highRate = hasBonus ? 5.5 : 5.0;
+    // Divisor-based formula: effective rate = tier rate / divisor
+    // Tier rates are always 2.5 (below threshold) and 5.0 (above threshold)
+    // Divisors: Standard = 1.0/1.0, TL/Supervisor = 3.0/5.5
+    const lowDivisor = hasBonus ? 3.0 : 1.0;
+    const highDivisor = hasBonus ? 5.5 : 1.0;
+    const lowRate = 2.5 / lowDivisor;   // Standard: 2.5, TL/Sup: 0.8333
+    const highRate = 5.0 / highDivisor;  // Standard: 5.0, TL/Sup: 0.9091
 
     // ------------------------------------------------------------------
     // 3a2. Check if employee has a custom rate override
@@ -541,14 +557,13 @@ export async function allocateEmployeeHours(
       empInfo?.isTeamLeader || empInfo?.isSupervisor || false;
     const empThreshold = empInfo?.hoursThreshold || 1000;
 
+    // Divisor-based formula: effective rate = tier rate / divisor
+    const lowDivisor = empHasBonus ? 3.0 : 1.0;
+    const highDivisor = empHasBonus ? 5.5 : 1.0;
     const calculatedRt =
       aggregateTotal >= empThreshold
-        ? empHasBonus
-          ? 5.5
-          : 5.0
-        : empHasBonus
-          ? 3.0
-          : 2.5;
+        ? 5.0 / highDivisor  // Standard: 5.0, TL/Sup: 0.9091
+        : 2.5 / lowDivisor;  // Standard: 2.5, TL/Sup: 0.8333
 
     const isCustom = currentMonthWhRecord?.isCustom ?? false;
     const effectiveRt = isCustom
@@ -625,8 +640,11 @@ export function computeAllocationSplit(params: {
 }): SiteAllocation[] {
   const { previousCumulative, currentMonthSiteHours, threshold, isTeamLeader, isSupervisor, isCustomRate, customRate, customHourlyRate } = params;
   const hasBonus = isTeamLeader || isSupervisor;
-  const lowRate = hasBonus ? 3.0 : 2.5;
-  const highRate = hasBonus ? 5.5 : 5.0;
+  // Divisor-based formula: effective rate = tier rate / divisor
+  const lowDivisor = hasBonus ? 3.0 : 1.0;
+  const highDivisor = hasBonus ? 5.5 : 1.0;
+  const lowRate = 2.5 / lowDivisor;   // Standard: 2.5, TL/Sup: 0.8333
+  const highRate = 5.0 / highDivisor;  // Standard: 5.0, TL/Sup: 0.9091
 
   let consumedThreshold = Math.min(previousCumulative, threshold);
   const siteAllocations: SiteAllocation[] = [];

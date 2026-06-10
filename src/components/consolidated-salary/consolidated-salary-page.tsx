@@ -15,6 +15,8 @@ import {
   AlertCircle,
   CheckCircle2,
   XCircle,
+  ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -52,6 +54,13 @@ const MONTHS = [
   { value: '12', label: 'December' },
 ];
 
+const RATE_BELOW = 2.5;
+const RATE_ABOVE = 5.0;
+const DIVISOR_STANDARD_BELOW = 1.0;
+const DIVISOR_STANDARD_ABOVE = 1.0;
+const DIVISOR_TL_BELOW = 3.0;
+const DIVISOR_TL_ABOVE = 5.5;
+
 /* ───────── types ───────── */
 interface SalaryRecord {
   id: string;
@@ -80,7 +89,38 @@ interface SalaryRecord {
     currentSite: string | null;
     trade: string | null;
     nationality: string | null;
+    customHourlyRate: number | null;
+    isTeamLeader: boolean;
+    isSupervisor: boolean;
+    role: string;
   };
+}
+
+/** Merged employee row combining standard + premium salary records */
+interface MergedEmployee {
+  empId: string;
+  empName: string;
+  employeeCode: string;
+  nationality: string;
+  trade: string;
+  siteId: string;
+  siteName: string;
+  belowThresholdHours: number;
+  aboveThresholdHours: number;
+  totalHours: number;
+  isTeamLeader: boolean;
+  isSupervisor: boolean;
+  customHourlyRate: number | null;
+  grossSalary: number;
+  belowSalaryComponent: number;
+  aboveSalaryComponent: number;
+  deduction: number;
+  advance: number;
+  balanceSalary: number;
+  isPaid: boolean;
+  rateTier: 'standard' | 'premium' | 'split';
+  standardRecordId: string | null;
+  premiumRecordId: string | null;
 }
 
 interface SiteSummary {
@@ -89,7 +129,10 @@ interface SiteSummary {
   clientName: string | null;
   employeeCount: number;
   totalHours: number;
+  totalBelowThresholdHours: number;
+  totalAboveThresholdHours: number;
   totalSalary: number;
+  totalGrossSalary: number;
   totalDeductions: number;
   totalAdvances: number;
   netBalance: number;
@@ -102,7 +145,10 @@ interface Totals {
   totalSites: number;
   totalEmployees: number;
   totalHours: number;
+  totalBelowThresholdHours: number;
+  totalAboveThresholdHours: number;
   totalSalary: number;
+  totalGrossSalary: number;
   totalDeductions: number;
   totalAdvances: number;
   netBalance: number;
@@ -123,6 +169,111 @@ function formatHours(hours: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 1,
   });
+}
+
+/** Compute gross salary using divisor-based formula */
+function computeGrossSalary(
+  belowHours: number,
+  aboveHours: number,
+  isTeamLeader: boolean,
+  isSupervisor: boolean,
+  customHourlyRate: number | null,
+): { gross: number; belowComponent: number; aboveComponent: number } {
+  if (customHourlyRate !== null && customHourlyRate > 0) {
+    const gross = (belowHours + aboveHours) * customHourlyRate;
+    return { gross, belowComponent: belowHours * customHourlyRate, aboveComponent: aboveHours * customHourlyRate };
+  }
+
+  const hasBonus = isTeamLeader || isSupervisor;
+  const lowDivisor = hasBonus ? DIVISOR_TL_BELOW : DIVISOR_STANDARD_BELOW;
+  const highDivisor = hasBonus ? DIVISOR_TL_ABOVE : DIVISOR_STANDARD_ABOVE;
+
+  const belowComponent = (belowHours * RATE_BELOW) / lowDivisor;
+  const aboveComponent = (aboveHours * RATE_ABOVE) / highDivisor;
+  const gross = belowComponent + aboveComponent;
+
+  return { gross, belowComponent, aboveComponent };
+}
+
+/** Merge salary records by employee, combining standard + premium tiers */
+function mergeSalaryRecords(records: SalaryRecord[]): MergedEmployee[] {
+  const empMap = new Map<string, SalaryRecord[]>();
+  for (const record of records) {
+    const key = `${record.empId}::${record.siteId}`;
+    if (!empMap.has(key)) {
+      empMap.set(key, []);
+    }
+    empMap.get(key)!.push(record);
+  }
+
+  const merged: MergedEmployee[] = [];
+
+  const sortedEntries = [...empMap.entries()].sort((a, b) => {
+    const nameA = a[1][0]?.empName || '';
+    const nameB = b[1][0]?.empName || '';
+    return nameA.localeCompare(nameB);
+  });
+
+  for (const [, empRecords] of sortedEntries) {
+    const standardRecord = empRecords.find(r => r.rateTier === 'standard');
+    const premiumRecord = empRecords.find(r => r.rateTier === 'premium');
+    const baseRecord = standardRecord || premiumRecord || empRecords[0];
+
+    const belowThresholdHours = standardRecord?.totalHours ?? 0;
+    const aboveThresholdHours = premiumRecord?.totalHours ?? 0;
+    const totalHours = belowThresholdHours + aboveThresholdHours;
+
+    const isTeamLeader = baseRecord.employee?.isTeamLeader ?? false;
+    const isSupervisor = baseRecord.employee?.isSupervisor ?? false;
+    const customHourlyRate = baseRecord.employee?.customHourlyRate ?? null;
+
+    const { gross: grossSalary, belowComponent, aboveComponent } = computeGrossSalary(
+      belowThresholdHours,
+      aboveThresholdHours,
+      isTeamLeader,
+      isSupervisor,
+      customHourlyRate,
+    );
+
+    const deduction = standardRecord?.deduction ?? 0;
+    const advance = standardRecord?.advance ?? 0;
+    const isPaid = (standardRecord?.isPaid ?? false) || (premiumRecord?.isPaid ?? false);
+
+    let rateTier: 'standard' | 'premium' | 'split' = 'standard';
+    if (standardRecord && premiumRecord) {
+      rateTier = 'split';
+    } else if (premiumRecord && !standardRecord) {
+      rateTier = 'premium';
+    }
+
+    merged.push({
+      empId: baseRecord.empId,
+      empName: baseRecord.empName,
+      employeeCode: baseRecord.employeeCode || baseRecord.employee?.employeeId || '',
+      nationality: baseRecord.nationality || baseRecord.employee?.nationality || '',
+      trade: baseRecord.trade || baseRecord.employee?.trade || '',
+      siteId: baseRecord.siteId,
+      siteName: baseRecord.siteName,
+      belowThresholdHours,
+      aboveThresholdHours,
+      totalHours,
+      isTeamLeader,
+      isSupervisor,
+      customHourlyRate,
+      grossSalary,
+      belowSalaryComponent: belowComponent,
+      aboveSalaryComponent: aboveComponent,
+      deduction,
+      advance,
+      balanceSalary: grossSalary - deduction - advance,
+      isPaid,
+      rateTier,
+      standardRecordId: standardRecord?.id ?? null,
+      premiumRecordId: premiumRecord?.id ?? null,
+    });
+  }
+
+  return merged;
 }
 
 /* ───────── Metric Card ───────── */
@@ -184,6 +335,7 @@ export function ConsolidatedSalaryPage() {
   const [totals, setTotals] = useState<Totals | null>(null);
   const [hasData, setHasData] = useState(true);
   const [expandedSites, setExpandedSites] = useState<Set<string>>(new Set());
+  const [fetchKey, setFetchKey] = useState(0); // DB-first invalidation key
 
   const yearOptions = useMemo(() => {
     const currentYear = now.getFullYear();
@@ -195,12 +347,20 @@ export function ConsolidatedSalaryPage() {
     ];
   }, []);
 
-  /* ── Fetch salary data ── */
+  /* ── Fetch salary data with DB-first invalidation ── */
   const fetchSalaryData = useCallback(async (m: string, y: string) => {
     try {
       setLoading(true);
       const monthStr = `${y}-${m.padStart(2, '0')}`;
-      const res = await fetch(`/api/salary-records?month=${monthStr}&year=${y}`);
+      // Add cache-busting timestamp to ensure fresh DB data
+      const cacheBuster = `&_t=${Date.now()}`;
+      const res = await fetch(`/api/salary-records?month=${monthStr}&year=${y}${cacheBuster}`, {
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+        },
+      });
       const json = await res.json();
       if (json.success) {
         setSiteSummaries(json.data.siteSummaries || []);
@@ -222,7 +382,7 @@ export function ConsolidatedSalaryPage() {
 
   useEffect(() => {
     fetchSalaryData(month, year);
-  }, [month, year, fetchSalaryData]);
+  }, [month, year, fetchSalaryData, fetchKey]);
 
   /* ── Toggle site expansion ── */
   const toggleSiteExpand = useCallback((siteId: string) => {
@@ -237,8 +397,22 @@ export function ConsolidatedSalaryPage() {
     });
   }, []);
 
+  /* ── Refresh data (DB-first invalidation) ── */
+  const refreshData = useCallback(() => {
+    setFetchKey(k => k + 1);
+  }, []);
+
   /* ── Month/Year display label ── */
   const monthLabel = MONTHS.find((m) => m.value === month)?.label || '';
+
+  /* ── Merge employees for expanded view ── */
+  const mergedEmployeesBySite = useMemo(() => {
+    const result: Record<string, MergedEmployee[]> = {};
+    for (const site of siteSummaries) {
+      result[site.siteId] = mergeSalaryRecords(site.employees);
+    }
+    return result;
+  }, [siteSummaries]);
 
   /* ── Summary metrics config ── */
   const metrics: MetricCardProps[] = useMemo(() => [
@@ -261,8 +435,8 @@ export function ConsolidatedSalaryPage() {
       subtitle: `${monthLabel} ${year}`,
     },
     {
-      title: 'Total Working Hours',
-      value: totals?.totalHours ?? null,
+      title: 'Below Threshold Hrs',
+      value: totals?.totalBelowThresholdHours ?? null,
       icon: Clock,
       color: 'text-cyan-400',
       bgColor: 'bg-cyan-500/10',
@@ -271,14 +445,24 @@ export function ConsolidatedSalaryPage() {
       subtitle: `${monthLabel} ${year}`,
     },
     {
-      title: 'Total Salary',
-      value: totals?.totalSalary ?? null,
+      title: 'Above Threshold Hrs',
+      value: totals?.totalAboveThresholdHours ?? null,
+      icon: ArrowUpRight,
+      color: 'text-amber-400',
+      bgColor: 'bg-amber-500/10',
+      format: 'hours',
+      loading,
+      subtitle: `${monthLabel} ${year}`,
+    },
+    {
+      title: 'Gross Salary',
+      value: totals?.totalGrossSalary ?? null,
       icon: DollarSign,
       color: 'text-emerald-400',
       bgColor: 'bg-emerald-500/10',
       format: 'currency',
       loading,
-      subtitle: `${monthLabel} ${year}`,
+      subtitle: `Divisor-based`,
     },
     {
       title: 'Total Deductions',
@@ -286,16 +470,6 @@ export function ConsolidatedSalaryPage() {
       icon: TrendingDown,
       color: 'text-red-400',
       bgColor: 'bg-red-500/10',
-      format: 'currency',
-      loading,
-      subtitle: `${monthLabel} ${year}`,
-    },
-    {
-      title: 'Total Advances',
-      value: totals?.totalAdvances ?? null,
-      icon: ArrowUpRight,
-      color: 'text-amber-400',
-      bgColor: 'bg-amber-500/10',
       format: 'currency',
       loading,
       subtitle: `${monthLabel} ${year}`,
@@ -312,6 +486,27 @@ export function ConsolidatedSalaryPage() {
     },
   ], [totals, loading, monthLabel, year]);
 
+  /* ── Role badge for employee ── */
+  const RoleBadge = ({ emp }: { emp: MergedEmployee }) => {
+    if (emp.isSupervisor) {
+      return (
+        <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/20 text-[9px] gap-0.5 px-1 py-0">
+          <ShieldAlert className="h-2.5 w-2.5" />
+          SUP
+        </Badge>
+      );
+    }
+    if (emp.isTeamLeader) {
+      return (
+        <Badge className="bg-sky-500/10 text-sky-400 border-sky-500/20 hover:bg-sky-500/20 text-[9px] gap-0.5 px-1 py-0">
+          <ShieldCheck className="h-2.5 w-2.5" />
+          TL
+        </Badge>
+      );
+    }
+    return null;
+  };
+
   return (
     <div className="flex flex-col gap-6">
       {/* Page Header */}
@@ -323,7 +518,7 @@ export function ConsolidatedSalaryPage() {
             <p className="text-emerald-400 font-medium text-sm">{monthLabel} {year}</p>
           </div>
           <p className="text-slate-400 mt-1">
-            Aggregated salary overview across all sites for the selected month.
+            Aggregated salary overview with threshold split &bull; Divisor-based formula
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -357,7 +552,7 @@ export function ConsolidatedSalaryPage() {
                 >
                   {y}
                 </SelectItem>
-                ))}
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -386,11 +581,17 @@ export function ConsolidatedSalaryPage() {
       {/* Main Table */}
       {!loading && hasData && siteSummaries.length > 0 && (
         <Card className="bg-slate-800/50 border-slate-700/50 py-4">
-          <CardHeader className="px-4">
+          <CardHeader className="px-4 flex flex-row items-center justify-between">
             <CardTitle className="text-base text-white flex items-center gap-2">
               <Building2 className="h-4 w-4 text-slate-400" />
               Site-wise Salary Summary
             </CardTitle>
+            <button
+              onClick={refreshData}
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              Refresh from DB
+            </button>
           </CardHeader>
           <CardContent className="px-4">
             <div className="overflow-x-auto rounded-lg">
@@ -399,14 +600,16 @@ export function ConsolidatedSalaryPage() {
                   <TableRow className="border-slate-700 hover:bg-transparent">
                     <TableHead className="text-slate-400 font-semibold w-8"></TableHead>
                     <TableHead className="text-slate-400 font-semibold">Site Name</TableHead>
-                    <TableHead className="text-slate-400 font-semibold">Client Name</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-center">No. of Employees</TableHead>
+                    <TableHead className="text-slate-400 font-semibold">Client</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-center">Employees</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-right bg-cyan-900/10">Below Threshold Hrs</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-right bg-amber-900/10">Above Threshold Hrs</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-right">Total Hours</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-right">Total Salary</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-right">Total Deductions</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-right">Total Advances</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-right bg-emerald-900/10">Gross Salary</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-right">Deductions</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-right">Advances</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-right">Net Balance</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-center">Paid / Total</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-center">Paid</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -438,16 +641,22 @@ export function ConsolidatedSalaryPage() {
                             </div>
                           </TableCell>
                           <TableCell className="text-slate-400">
-                            {site.clientName || '—'}
+                            {site.clientName || '\u2014'}
                           </TableCell>
                           <TableCell className="text-slate-200 text-center font-semibold">
                             {site.employeeCount}
                           </TableCell>
+                          <TableCell className="text-cyan-400 text-right font-medium bg-cyan-900/5">
+                            {formatHours(site.totalBelowThresholdHours)}
+                          </TableCell>
+                          <TableCell className="text-amber-400 text-right font-medium bg-amber-900/5">
+                            {formatHours(site.totalAboveThresholdHours)}
+                          </TableCell>
                           <TableCell className="text-slate-200 text-right">
                             {formatHours(site.totalHours)}
                           </TableCell>
-                          <TableCell className="text-emerald-400 text-right font-medium">
-                            {formatCurrency(site.totalSalary)}
+                          <TableCell className="text-emerald-400 text-right font-medium bg-emerald-900/5">
+                            {formatCurrency(site.totalGrossSalary)}
                           </TableCell>
                           <TableCell className="text-red-400 text-right">
                             {formatCurrency(site.totalDeductions)}
@@ -465,7 +674,7 @@ export function ConsolidatedSalaryPage() {
                             <div className="flex items-center justify-center gap-1">
                               <span className="text-emerald-400 font-semibold">{site.paidCount}</span>
                               <span className="text-slate-500">/</span>
-                              <span className="text-slate-300">{site.totalRecords}</span>
+                              <span className="text-slate-300">{site.employeeCount}</span>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -473,19 +682,23 @@ export function ConsolidatedSalaryPage() {
                         {/* Expanded Employee Details */}
                         {isExpanded && (
                           <TableRow className="border-slate-700/30 bg-slate-900/50 hover:bg-transparent">
-                            <TableCell colSpan={10} className="p-0">
+                            <TableCell colSpan={12} className="p-0">
                               <div className="px-8 py-3">
                                 <div className="overflow-x-auto rounded-lg border border-slate-700/30">
                                   <Table>
                                     <TableHeader>
                                       <TableRow className="border-slate-700/30 hover:bg-transparent">
                                         <TableHead className="text-slate-500 font-medium text-xs">#</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs">Employee Name</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs">Code</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs">Trade</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Hours</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Rate/Hr</TableHead>
-                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Salary</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs">Employee ID</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs">Name</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs">Site</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs">Role</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-cyan-900/10">Below Threshold Hrs</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-amber-900/10">Above Threshold Hrs</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Total Hrs</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Below Salary</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right">Above Salary</TableHead>
+                                        <TableHead className="text-slate-500 font-medium text-xs text-right bg-emerald-900/10">Gross Salary</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs text-right">Deduction</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs text-right">Advance</TableHead>
                                         <TableHead className="text-slate-500 font-medium text-xs text-right">Balance</TableHead>
@@ -493,29 +706,59 @@ export function ConsolidatedSalaryPage() {
                                       </TableRow>
                                     </TableHeader>
                                     <TableBody>
-                                      {site.employees.map((emp, idx) => (
+                                      {(mergedEmployeesBySite[site.siteId] || []).map((emp, idx) => (
                                         <TableRow
-                                          key={emp.id}
-                                          className="border-slate-700/20 hover:bg-slate-800/30"
+                                          key={emp.empId}
+                                          className={cn(
+                                            'border-slate-700/20 hover:bg-slate-800/30',
+                                            emp.rateTier === 'split' && 'bg-amber-500/5',
+                                            emp.isPaid && emp.rateTier !== 'split' && 'bg-emerald-500/5',
+                                          )}
                                         >
                                           <TableCell className="text-slate-500 text-xs">{idx + 1}</TableCell>
-                                          <TableCell className="text-slate-300 text-sm font-medium">
-                                            {emp.empName}
-                                          </TableCell>
                                           <TableCell className="text-slate-400 text-xs font-mono">
                                             {emp.employeeCode}
                                           </TableCell>
-                                          <TableCell className="text-slate-400 text-xs">
-                                            {emp.trade || '—'}
+                                          <TableCell className="text-slate-300 text-sm font-medium">
+                                            <div className="flex items-center gap-1.5">
+                                              {emp.empName}
+                                              <RoleBadge emp={emp} />
+                                              {emp.customHourlyRate !== null && emp.customHourlyRate > 0 && (
+                                                <Badge className="bg-violet-500/10 text-violet-400 border-violet-500/20 text-[9px] px-1 py-0">
+                                                  CR
+                                                </Badge>
+                                              )}
+                                            </div>
                                           </TableCell>
-                                          <TableCell className="text-slate-300 text-xs text-right">
+                                          <TableCell className="text-slate-400 text-xs">
+                                            {emp.siteName}
+                                          </TableCell>
+                                          <TableCell className="text-xs">
+                                            {emp.isSupervisor ? (
+                                              <span className="text-orange-400">Supervisor</span>
+                                            ) : emp.isTeamLeader ? (
+                                              <span className="text-sky-400">TL</span>
+                                            ) : (
+                                              <span className="text-slate-500">Standard</span>
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-cyan-400/80 text-xs text-right bg-cyan-900/5">
+                                            {formatHours(emp.belowThresholdHours)}
+                                          </TableCell>
+                                          <TableCell className="text-amber-400/80 text-xs text-right bg-amber-900/5">
+                                            {formatHours(emp.aboveThresholdHours)}
+                                          </TableCell>
+                                          <TableCell className="text-slate-300 text-xs text-right font-medium">
                                             {formatHours(emp.totalHours)}
                                           </TableCell>
-                                          <TableCell className="text-slate-400 text-xs text-right">
-                                            {formatCurrency(emp.rtPerHour)}
+                                          <TableCell className="text-cyan-400/60 text-xs text-right">
+                                            {formatCurrency(emp.belowSalaryComponent)}
                                           </TableCell>
-                                          <TableCell className="text-emerald-400/80 text-xs text-right">
-                                            {formatCurrency(emp.totalSalary)}
+                                          <TableCell className="text-amber-400/60 text-xs text-right">
+                                            {formatCurrency(emp.aboveSalaryComponent)}
+                                          </TableCell>
+                                          <TableCell className="text-emerald-400/80 text-xs text-right font-medium bg-emerald-900/5">
+                                            {formatCurrency(emp.grossSalary)}
                                           </TableCell>
                                           <TableCell className="text-red-400/80 text-xs text-right">
                                             {formatCurrency(emp.deduction)}
@@ -544,8 +787,81 @@ export function ConsolidatedSalaryPage() {
                                           </TableCell>
                                         </TableRow>
                                       ))}
+
+                                      {/* Site employee totals */}
+                                      {(mergedEmployeesBySite[site.siteId] || []).length > 0 && (
+                                        <TableRow className="border-slate-600/50 bg-slate-800/40 hover:bg-slate-800/40">
+                                          <TableCell colSpan={5} className="text-slate-300 text-xs font-bold text-right pr-4">
+                                            Site Employee Total
+                                          </TableCell>
+                                          <TableCell className="text-cyan-400 text-xs text-right font-bold bg-cyan-900/5">
+                                            {formatHours(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.belowThresholdHours, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-amber-400 text-xs text-right font-bold bg-amber-900/5">
+                                            {formatHours(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.aboveThresholdHours, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-slate-200 text-xs text-right font-bold">
+                                            {formatHours(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.totalHours, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-cyan-400/70 text-xs text-right font-bold">
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.belowSalaryComponent, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-amber-400/70 text-xs text-right font-bold">
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.aboveSalaryComponent, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-emerald-400 text-xs text-right font-bold bg-emerald-900/5">
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.grossSalary, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-red-400 text-xs text-right font-bold">
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.deduction, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className="text-amber-400 text-xs text-right font-bold">
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.advance, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell className={cn(
+                                            'text-xs text-right font-bold',
+                                            (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.balanceSalary, 0) >= 0
+                                              ? 'text-purple-400'
+                                              : 'text-red-400'
+                                          )}>
+                                            {formatCurrency(
+                                              (mergedEmployeesBySite[site.siteId] || []).reduce((s, e) => s + e.balanceSalary, 0)
+                                            )}
+                                          </TableCell>
+                                          <TableCell></TableCell>
+                                        </TableRow>
+                                      )}
                                     </TableBody>
                                   </Table>
+                                </div>
+
+                                {/* Divisor formula reference */}
+                                <div className="mt-3 flex flex-wrap gap-3 text-[10px] text-slate-500">
+                                  <span className="bg-slate-800/50 px-2 py-1 rounded border border-slate-700/30">
+                                    Standard: (below_hrs x 2.5)/1.0 + (above_hrs x 5.0)/1.0
+                                  </span>
+                                  <span className="bg-slate-800/50 px-2 py-1 rounded border border-slate-700/30">
+                                    TL/Supervisor: (below_hrs x 2.5)/3.0 + (above_hrs x 5.0)/5.5
+                                  </span>
+                                  <span className="bg-violet-900/20 px-2 py-1 rounded border border-violet-700/30 text-violet-400">
+                                    CR = Custom Rate override
+                                  </span>
                                 </div>
                               </div>
                             </TableCell>
@@ -566,11 +882,17 @@ export function ConsolidatedSalaryPage() {
                       <TableCell className="text-white text-center font-bold">
                         {totals.totalEmployees}
                       </TableCell>
+                      <TableCell className="text-cyan-400 text-right font-bold bg-cyan-900/5">
+                        {formatHours(totals.totalBelowThresholdHours)}
+                      </TableCell>
+                      <TableCell className="text-amber-400 text-right font-bold bg-amber-900/5">
+                        {formatHours(totals.totalAboveThresholdHours)}
+                      </TableCell>
                       <TableCell className="text-white text-right font-bold">
                         {formatHours(totals.totalHours)}
                       </TableCell>
-                      <TableCell className="text-emerald-400 text-right font-bold">
-                        {formatCurrency(totals.totalSalary)}
+                      <TableCell className="text-emerald-400 text-right font-bold bg-emerald-900/5">
+                        {formatCurrency(totals.totalGrossSalary)}
                       </TableCell>
                       <TableCell className="text-red-400 text-right font-bold">
                         {formatCurrency(totals.totalDeductions)}
