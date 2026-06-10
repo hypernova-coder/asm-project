@@ -16,6 +16,10 @@ import {
   Crown,
   ShieldCheck,
   User,
+  Pencil,
+  Save,
+  X,
+  TableProperties,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -38,6 +42,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAppStore } from '@/store/app-store';
+import { useToast } from '@/hooks/use-toast';
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -60,6 +65,27 @@ interface EmployeeHoursSummary {
 type SortField = 'employeeId' | 'fullName' | 'currentSite' | 'trade' | 'rate' | 'cumulativeHours' | 'thresholdStatus';
 type SortDirection = 'asc' | 'desc';
 
+// ─── Editable row state ─────────────────────────────────────────────────
+
+interface EditableEmployeeRow {
+  id: string;
+  employeeId: string;
+  fullName: string;
+  currentSite: string;
+  trade: string;
+  customHourlyRate: string;
+  cumulativeHours: string;
+  hoursThreshold: string;
+  // Original values for change detection
+  originalEmployeeId: string;
+  originalFullName: string;
+  originalCurrentSite: string;
+  originalTrade: string;
+  originalCustomHourlyRate: string;
+  originalCumulativeHours: string;
+  originalHoursThreshold: string;
+}
+
 // ─── Helper ─────────────────────────────────────────────────────────────
 
 function formatHours(hours: number): string {
@@ -71,6 +97,7 @@ function formatHours(hours: number): string {
 
 export function EmployeeHoursDirectory() {
   const { setSelectedEmployeeId, setCurrentView } = useAppStore();
+  const { toast } = useToast();
 
   // ── State ──
   const [employees, setEmployees] = useState<EmployeeHoursSummary[]>([]);
@@ -80,6 +107,12 @@ export function EmployeeHoursDirectory() {
   const [thresholdFilter, setThresholdFilter] = useState<string>('all');
   const [sortField, setSortField] = useState<SortField>('fullName');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  // ── Edit mode state ──
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editableRows, setEditableRows] = useState<EditableEmployeeRow[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [changedRowIds, setChangedRowIds] = useState<Set<string>>(new Set());
 
   // ── Fetch data ──
   const fetchData = useCallback(async () => {
@@ -150,6 +183,7 @@ export function EmployeeHoursDirectory() {
 
   // ── Employee click ──
   const handleEmployeeClick = (empId: string) => {
+    if (isEditMode) return; // Don't navigate while editing
     setSelectedEmployeeId(empId);
     setCurrentView('employee_hours_ledger');
   };
@@ -171,6 +205,149 @@ export function EmployeeHoursDirectory() {
     const totalHours = employees.reduce((sum, e) => sum + e.cumulativeHours, 0);
     return { total, aboveThreshold, belowThreshold, customRate, totalHours };
   }, [employees]);
+
+  // ── Edit mode handlers ──
+  const enterEditMode = useCallback(() => {
+    const rows: EditableEmployeeRow[] = sortedEmployees.map((emp) => ({
+      id: emp.id,
+      employeeId: emp.employeeId,
+      fullName: emp.fullName,
+      currentSite: emp.currentSite || '',
+      trade: emp.trade || '',
+      customHourlyRate: emp.customHourlyRate != null ? String(emp.customHourlyRate) : '',
+      cumulativeHours: String(emp.cumulativeHours),
+      hoursThreshold: String(emp.hoursThreshold),
+      originalEmployeeId: emp.employeeId,
+      originalFullName: emp.fullName,
+      originalCurrentSite: emp.currentSite || '',
+      originalTrade: emp.trade || '',
+      originalCustomHourlyRate: emp.customHourlyRate != null ? String(emp.customHourlyRate) : '',
+      originalCumulativeHours: String(emp.cumulativeHours),
+      originalHoursThreshold: String(emp.hoursThreshold),
+    }));
+    setEditableRows(rows);
+    setChangedRowIds(new Set());
+    setIsEditMode(true);
+  }, [sortedEmployees]);
+
+  const cancelEditMode = useCallback(() => {
+    setIsEditMode(false);
+    setEditableRows([]);
+    setChangedRowIds(new Set());
+  }, []);
+
+  const updateEditableRow = useCallback((id: string, field: keyof EditableEmployeeRow, value: string) => {
+    setEditableRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const updated = { ...row, [field]: value };
+        // Check if this row has changed from original
+        const hasChanged =
+          updated.employeeId !== updated.originalEmployeeId ||
+          updated.fullName !== updated.originalFullName ||
+          updated.currentSite !== updated.originalCurrentSite ||
+          updated.trade !== updated.originalTrade ||
+          updated.customHourlyRate !== updated.originalCustomHourlyRate ||
+          updated.cumulativeHours !== updated.originalCumulativeHours ||
+          updated.hoursThreshold !== updated.originalHoursThreshold;
+        setChangedRowIds((prevSet) => {
+          const newSet = new Set(prevSet);
+          if (hasChanged) {
+            newSet.add(id);
+          } else {
+            newSet.delete(id);
+          }
+          return newSet;
+        });
+        return updated;
+      })
+    );
+  }, []);
+
+  const saveEdits = useCallback(async () => {
+    if (changedRowIds.size === 0) {
+      toast({ title: 'No Changes', description: 'No changes to save.' });
+      return;
+    }
+
+    setIsSaving(true);
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const rowId of changedRowIds) {
+      const row = editableRows.find((r) => r.id === rowId);
+      if (!row) continue;
+
+      const payload: Record<string, unknown> = {};
+
+      if (row.employeeId !== row.originalEmployeeId) {
+        payload.employeeId = row.employeeId;
+      }
+      if (row.fullName !== row.originalFullName) {
+        payload.fullName = row.fullName;
+      }
+      if (row.currentSite !== row.originalCurrentSite) {
+        payload.currentSite = row.currentSite || null;
+      }
+      if (row.trade !== row.originalTrade) {
+        payload.trade = row.trade || null;
+      }
+      if (row.customHourlyRate !== row.originalCustomHourlyRate) {
+        const rateVal = row.customHourlyRate.trim();
+        payload.customHourlyRate = rateVal ? parseFloat(rateVal) : null;
+      }
+      // Note: cumulativeHours and hoursThreshold are typically computed/read-only
+      // but we allow editing hoursThreshold as it affects rate calculations
+      if (row.hoursThreshold !== row.originalHoursThreshold) {
+        const thresholdVal = parseFloat(row.hoursThreshold);
+        if (!isNaN(thresholdVal) && thresholdVal > 0) {
+          payload.hoursThreshold = thresholdVal;
+        }
+      }
+
+      if (Object.keys(payload).length === 0) continue;
+
+      try {
+        const res = await fetch(`/api/employees/${rowId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json();
+        if (json.success) {
+          successCount++;
+        } else {
+          errorCount++;
+          toast({
+            title: `Error updating ${row.fullName}`,
+            description: json.error || 'Unknown error',
+            variant: 'destructive',
+          });
+        }
+      } catch {
+        errorCount++;
+      }
+    }
+
+    setIsSaving(false);
+
+    if (successCount > 0) {
+      toast({
+        title: 'Changes Saved',
+        description: `Successfully updated ${successCount} employee${successCount !== 1 ? 's' : ''}.${errorCount > 0 ? ` ${errorCount} failed.` : ''}`,
+      });
+      setIsEditMode(false);
+      setEditableRows([]);
+      setChangedRowIds(new Set());
+      await fetchData();
+    } else if (errorCount > 0) {
+      toast({
+        title: 'Save Failed',
+        description: `Failed to update ${errorCount} employee${errorCount !== 1 ? 's' : ''}.`,
+        variant: 'destructive',
+      });
+    }
+  }, [changedRowIds, editableRows, toast, fetchData]);
 
   // ── Rate badge ──
   const RateBadge = ({ emp }: { emp: EmployeeHoursSummary }) => {
@@ -227,6 +404,11 @@ export function EmployeeHoursDirectory() {
     );
   };
 
+  // ── Get editable row data ──
+  const getEditableRow = (empId: string): EditableEmployeeRow | undefined => {
+    return editableRows.find((r) => r.id === empId);
+  };
+
   // ── Loading state ──
   if (isLoading && employees.length === 0) {
     return (
@@ -251,7 +433,7 @@ export function EmployeeHoursDirectory() {
   return (
     <div className="space-y-6">
       {/* ─── Header ────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/15 border border-blue-500/25">
             <Clock className="h-5 w-5 text-blue-400" />
@@ -265,7 +447,59 @@ export function EmployeeHoursDirectory() {
             </p>
           </div>
         </div>
+
+        {/* ── Edit/Save/Cancel Buttons ── */}
+        {!isEditMode ? (
+          <Button
+            onClick={enterEditMode}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-lg shadow-emerald-900/30"
+            size="default"
+          >
+            <Pencil className="h-4 w-4" />
+            Edit Directory
+          </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={saveEdits}
+              disabled={isSaving || changedRowIds.size === 0}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-lg shadow-emerald-900/30"
+            >
+              {isSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              Save Changes{changedRowIds.size > 0 ? ` (${changedRowIds.size})` : ''}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={cancelEditMode}
+              disabled={isSaving}
+              className="border-slate-600 text-slate-300 hover:bg-slate-800 gap-2"
+            >
+              <X className="h-4 w-4" />
+              Cancel
+            </Button>
+          </div>
+        )}
       </div>
+
+      {/* ─── Edit Mode Banner ──────────────────────────────────── */}
+      {isEditMode && (
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/25">
+          <TableProperties className="h-5 w-5 text-amber-400 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-amber-300">Edit Mode Active</p>
+            <p className="text-xs text-amber-400/70">
+              Click any cell to edit. Changed rows are highlighted. Save to apply changes or Cancel to revert.
+            </p>
+          </div>
+          <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30 text-xs">
+            {changedRowIds.size} change{changedRowIds.size !== 1 ? 's' : ''}
+          </Badge>
+        </div>
+      )}
 
       {/* ─── Summary Cards ─────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -319,13 +553,14 @@ export function EmployeeHoursDirectory() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9 bg-slate-900 border-slate-700 h-9"
+                disabled={isEditMode}
               />
             </div>
 
             {/* Rate Filter */}
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-slate-400 shrink-0" />
-              <Select value={rateFilter} onValueChange={setRateFilter}>
+              <Select value={rateFilter} onValueChange={setRateFilter} disabled={isEditMode}>
                 <SelectTrigger className="w-[140px] bg-slate-900 border-slate-700 h-9 text-sm">
                   <SelectValue placeholder="Filter by Rate" />
                 </SelectTrigger>
@@ -341,7 +576,7 @@ export function EmployeeHoursDirectory() {
             </div>
 
             {/* Threshold Filter */}
-            <Select value={thresholdFilter} onValueChange={setThresholdFilter}>
+            <Select value={thresholdFilter} onValueChange={setThresholdFilter} disabled={isEditMode}>
               <SelectTrigger className="w-[140px] bg-slate-900 border-slate-700 h-9 text-sm">
                 <SelectValue placeholder="Threshold" />
               </SelectTrigger>
@@ -370,66 +605,73 @@ export function EmployeeHoursDirectory() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <Table>
+            <Table className={isEditMode ? 'border-collapse' : ''}>
               <TableHeader>
-                <TableRow className="border-slate-700/50 hover:bg-transparent">
-                  <TableHead className="text-slate-400 font-medium">
+                <TableRow className={`border-slate-700/50 hover:bg-transparent ${isEditMode ? 'bg-slate-800/80' : ''}`}>
+                  <TableHead className={`text-slate-400 font-medium ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center hover:text-white transition-colors"
-                      onClick={() => handleSort('employeeId')}
+                      onClick={() => !isEditMode && handleSort('employeeId')}
+                      disabled={isEditMode}
                     >
                       Employee ID <SortIcon field="employeeId" />
                     </button>
                   </TableHead>
-                  <TableHead className="text-slate-400 font-medium">
+                  <TableHead className={`text-slate-400 font-medium ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center hover:text-white transition-colors"
-                      onClick={() => handleSort('fullName')}
+                      onClick={() => !isEditMode && handleSort('fullName')}
+                      disabled={isEditMode}
                     >
                       Name <SortIcon field="fullName" />
                     </button>
                   </TableHead>
-                  <TableHead className="text-slate-400 font-medium">
+                  <TableHead className={`text-slate-400 font-medium ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center hover:text-white transition-colors"
-                      onClick={() => handleSort('currentSite')}
+                      onClick={() => !isEditMode && handleSort('currentSite')}
+                      disabled={isEditMode}
                     >
                       Current Site <SortIcon field="currentSite" />
                     </button>
                   </TableHead>
-                  <TableHead className="text-slate-400 font-medium">
+                  <TableHead className={`text-slate-400 font-medium ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center hover:text-white transition-colors"
-                      onClick={() => handleSort('trade')}
+                      onClick={() => !isEditMode && handleSort('trade')}
+                      disabled={isEditMode}
                     >
                       Trade <SortIcon field="trade" />
                     </button>
                   </TableHead>
-                  <TableHead className="text-slate-400 font-medium">
+                  <TableHead className={`text-slate-400 font-medium ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center hover:text-white transition-colors"
-                      onClick={() => handleSort('rate')}
+                      onClick={() => !isEditMode && handleSort('rate')}
+                      disabled={isEditMode}
                     >
                       Rate <SortIcon field="rate" />
                     </button>
                   </TableHead>
-                  <TableHead className="text-slate-400 font-medium text-right">
+                  <TableHead className={`text-slate-400 font-medium text-right ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center justify-end hover:text-white transition-colors"
-                      onClick={() => handleSort('cumulativeHours')}
+                      onClick={() => !isEditMode && handleSort('cumulativeHours')}
+                      disabled={isEditMode}
                     >
                       Cumulative Hours <SortIcon field="cumulativeHours" />
                     </button>
                   </TableHead>
-                  <TableHead className="text-slate-400 font-medium text-center">
+                  <TableHead className={`text-slate-400 font-medium text-center ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                     <button
                       className="flex items-center justify-center hover:text-white transition-colors"
-                      onClick={() => handleSort('thresholdStatus')}
+                      onClick={() => !isEditMode && handleSort('thresholdStatus')}
+                      disabled={isEditMode}
                     >
                       Threshold <SortIcon field="thresholdStatus" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-10" />
+                  {!isEditMode && <TableHead className="w-10" />}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -446,7 +688,112 @@ export function EmployeeHoursDirectory() {
                       )}
                     </TableCell>
                   </TableRow>
+                ) : isEditMode ? (
+                  /* ── Edit Mode Rows ── */
+                  sortedEmployees.map((emp) => {
+                    const editRow = getEditableRow(emp.id);
+                    if (!editRow) return null;
+                    const isChanged = changedRowIds.has(emp.id);
+
+                    return (
+                      <TableRow
+                        key={emp.id}
+                        className={`border-slate-700/30 transition-colors ${
+                          isChanged
+                            ? 'bg-emerald-500/10 hover:bg-emerald-500/15'
+                            : 'hover:bg-slate-700/30'
+                        }`}
+                      >
+                        {/* Employee ID */}
+                        <TableCell className={`font-mono text-sm whitespace-nowrap py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <Input
+                            type="text"
+                            value={editRow.employeeId}
+                            onChange={(e) => updateEditableRow(emp.id, 'employeeId', e.target.value)}
+                            className="h-7 text-xs font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-24"
+                            placeholder="Emp ID"
+                          />
+                        </TableCell>
+                        {/* Full Name */}
+                        <TableCell className={`whitespace-nowrap py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="text"
+                              value={editRow.fullName}
+                              onChange={(e) => updateEditableRow(emp.id, 'fullName', e.target.value)}
+                              className="h-7 text-xs bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-40"
+                              placeholder="Full Name"
+                            />
+                            <RoleBadge emp={emp} />
+                          </div>
+                        </TableCell>
+                        {/* Current Site */}
+                        <TableCell className={`whitespace-nowrap py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <Input
+                            type="text"
+                            value={editRow.currentSite}
+                            onChange={(e) => updateEditableRow(emp.id, 'currentSite', e.target.value)}
+                            className="h-7 text-xs bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-32"
+                            placeholder="Site"
+                          />
+                        </TableCell>
+                        {/* Trade */}
+                        <TableCell className={`whitespace-nowrap py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <Input
+                            type="text"
+                            value={editRow.trade}
+                            onChange={(e) => updateEditableRow(emp.id, 'trade', e.target.value)}
+                            className="h-7 text-xs bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-28"
+                            placeholder="Trade"
+                          />
+                        </TableCell>
+                        {/* Rate (Custom Rate) */}
+                        <TableCell className={`whitespace-nowrap py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              type="number"
+                              step="0.5"
+                              min="0"
+                              value={editRow.customHourlyRate}
+                              onChange={(e) => updateEditableRow(emp.id, 'customHourlyRate', e.target.value)}
+                              className="h-7 text-xs font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-20"
+                              placeholder="—"
+                            />
+                            <span className="text-[10px] text-slate-500">AED/hr</span>
+                          </div>
+                        </TableCell>
+                        {/* Cumulative Hours */}
+                        <TableCell className={`text-right py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <Input
+                            type="number"
+                            step="0.5"
+                            min="0"
+                            value={editRow.cumulativeHours}
+                            onChange={(e) => updateEditableRow(emp.id, 'cumulativeHours', e.target.value)}
+                            className="h-7 text-xs font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-24 text-right"
+                            placeholder="0"
+                          />
+                        </TableCell>
+                        {/* Threshold */}
+                        <TableCell className={`text-center py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          <div className="flex items-center justify-center gap-1.5">
+                            <Input
+                              type="number"
+                              step="100"
+                              min="0"
+                              value={editRow.hoursThreshold}
+                              onChange={(e) => updateEditableRow(emp.id, 'hoursThreshold', e.target.value)}
+                              className="h-7 text-xs font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 w-20 text-center"
+                              placeholder="1000"
+                            />
+                            <span className="text-[10px] text-slate-500">h</span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 ) : (
+                  /* ── View Mode Rows ── */
                   sortedEmployees.map((emp) => (
                     <TableRow
                       key={emp.id}

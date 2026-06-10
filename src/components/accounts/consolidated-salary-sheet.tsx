@@ -2,14 +2,17 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  Plus,
-  Trash2,
   Save,
   Loader2,
   Search,
   Pencil,
   X,
   FileSpreadsheet,
+  CheckCircle2,
+  XCircle,
+  ShieldCheck,
+  ShieldAlert,
+  Trash2,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -28,6 +31,22 @@ import {
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
+/* ───────── Constants ───────── */
+
+const MONTH_SHORT = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const MONTH_FULL = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+// Divisor-based formula constants
+const RATE_BELOW = 2.5;
+const RATE_ABOVE = 5.0;
+const DIVISOR_STANDARD_BELOW = 1.0;
+const DIVISOR_STANDARD_ABOVE = 1.0;
+const DIVISOR_TL_BELOW = 3.0;
+const DIVISOR_TL_ABOVE = 5.5;
+
 /* ───────── Types ───────── */
 
 interface MergedEmployeeRow {
@@ -41,22 +60,22 @@ interface MergedEmployeeRow {
   slNo: number;
 
   // Hours
-  totalHours: number; // Sum of standard + premium hours (editable)
-  lowRateHours: number; // From standard record (editable)
-  highRateHours: number; // From premium record (editable)
-  previousCumulativeHours: number; // Hours from previous months (for split calculation)
-  hoursThreshold: number; // Per-employee threshold (default 1000)
+  totalHours: number;
+  lowRateHours: number; // Below threshold hours (editable)
+  highRateHours: number; // Above threshold hours (editable)
+  previousCumulativeHours: number;
+  hoursThreshold: number;
 
-  // Rates
-  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor (editable) or custom rate
-  highRate: number; // 5.0 or 5.5 based on TL/Supervisor (editable) or custom rate
+  // Rates (for display/calculation only)
+  lowRate: number; // 2.5 or 3.0 based on TL/Supervisor
+  highRate: number; // 5.0 or 5.5 based on TL/Supervisor
 
-  // Salary
-  totalSalary: number; // Sum of standard + premium salary
-  deduction: number; // From standard record
-  advance: number; // From standard record
-  balanceSalary: number; // totalSalary - deduction - advance
-  isPaid: boolean; // From standard record
+  // Salary (divisor-based)
+  salary: number; // Gross salary using divisor formula
+  deduction: number;
+  advance: number;
+  totalSalary: number; // salary - deduction - advance
+  isPaid: boolean;
 
   // Record IDs for save
   standardRecordId: string | null;
@@ -66,8 +85,8 @@ interface MergedEmployeeRow {
   rateTier: 'standard' | 'premium' | 'split';
 
   // Custom rate flag
-  isCustomRate: boolean; // Whether the employee has a custom rate override
-  customHourlyRate: number | null; // Custom hourly rate from API if applicable
+  isCustomRate: boolean;
+  customHourlyRate: number | null;
 
   // Site info for save
   siteId: string;
@@ -152,18 +171,14 @@ interface ApiSiteResult {
   employees: ApiEmployeeEntry[];
 }
 
-/* ───────── Constants ───────── */
-
-const MONTH_SHORT = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const MONTH_FULL = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
-
 /* ───────── Helpers ───────── */
 
 function formatNumber(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatHours(n: number): string {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 1 });
 }
 
 function getMonthString(year: number, month: number): string {
@@ -179,13 +194,36 @@ function isMonthAvailable(year: number, month: number): boolean {
   return false;
 }
 
+/** Compute salary using the divisor-based formula */
+function computeSalary(
+  lowRateHours: number,
+  highRateHours: number,
+  isTeamLeader: boolean,
+  isSupervisor: boolean,
+  isCustomRate: boolean,
+  customHourlyRate: number | null,
+): number {
+  if (isCustomRate && customHourlyRate !== null && customHourlyRate > 0) {
+    return (lowRateHours + highRateHours) * customHourlyRate;
+  }
+
+  const hasBonus = isTeamLeader || isSupervisor;
+  const lowDivisor = hasBonus ? DIVISOR_TL_BELOW : DIVISOR_STANDARD_BELOW;
+  const highDivisor = hasBonus ? DIVISOR_TL_ABOVE : DIVISOR_STANDARD_ABOVE;
+
+  const lowComponent = (lowRateHours * RATE_BELOW) / lowDivisor;
+  const highComponent = (highRateHours * RATE_ABOVE) / highDivisor;
+
+  return lowComponent + highComponent;
+}
+
 /** Merge split API entries into a single MergedEmployeeRow per (empId, siteId) */
 function mergeApiEntries(
   entries: ApiEmployeeEntry[],
   siteId: string,
   siteName: string,
 ): MergedEmployeeRow[] {
-  // Group by empId (all entries here are already for the same site)
+  // Group by empId
   const grouped = new Map<string, ApiEmployeeEntry[]>();
   for (const entry of entries) {
     if (!grouped.has(entry.empId)) {
@@ -196,7 +234,6 @@ function mergeApiEntries(
 
   const merged: MergedEmployeeRow[] = [];
   let slNo = 0;
-  const seenEmpIds = new Set<string>();
 
   // Sort entries by name for consistent ordering
   const sortedGroups = [...grouped.entries()].sort((a, b) =>
@@ -218,13 +255,23 @@ function mergeApiEntries(
     const highRateHours = premiumEntry?.salaryRecord?.totalHours ?? 0;
     const totalHours = lowRateHours + highRateHours;
 
-    const standardSalary = standardEntry?.salaryRecord?.totalSalary ?? lowRateHours * lowRate;
-    const premiumSalary = premiumEntry?.salaryRecord?.totalSalary ?? highRateHours * highRate;
-    const totalSalary = standardSalary + premiumSalary;
+    // Detect custom rate
+    const isCustomRate = (baseEntry.workingHours?.isCustom as boolean) ?? false;
+    const customHourlyRate: number | null =
+      (baseEntry.workingHours?.customHourlyRate as number | null | undefined) ?? null;
+
+    // Compute salary using divisor-based formula
+    const salary = computeSalary(
+      lowRateHours,
+      highRateHours,
+      baseEntry.isTeamLeader,
+      baseEntry.isSupervisor,
+      isCustomRate,
+      customHourlyRate,
+    );
 
     const deduction = standardEntry?.salaryRecord?.deduction ?? 0;
     const advance = standardEntry?.salaryRecord?.advance ?? 0;
-    // Use OR logic: if either record is paid, the merged row shows as paid
     const isPaid = (standardEntry?.salaryRecord?.isPaid ?? false) || (premiumEntry?.salaryRecord?.isPaid ?? false);
 
     let rateTier: 'standard' | 'premium' | 'split' = 'standard';
@@ -234,16 +281,8 @@ function mergeApiEntries(
       rateTier = 'premium';
     }
 
-    // Use API-provided previousCumulativeHours (computed from salary records)
     const previousCumulativeHours = (baseEntry.workingHours?.previousCumulativeHours as number) || 0;
     const hoursThreshold = (baseEntry.workingHours?.hoursThreshold as number) || 1000;
-
-    // Detect custom rate: if the low rate differs from default and workingHours says custom
-    const isCustomRate = (baseEntry.workingHours?.isCustom as boolean) ?? false;
-
-    // Extract customHourlyRate from API if available
-    const customHourlyRate: number | null =
-      (baseEntry.workingHours?.customHourlyRate as number | null | undefined) ?? null;
 
     merged.push({
       empId,
@@ -259,12 +298,12 @@ function mergeApiEntries(
       highRateHours,
       previousCumulativeHours,
       hoursThreshold,
-      lowRate: standardEntry?.salaryRecord?.rtPerHour ?? lowRate,
-      highRate: premiumEntry?.salaryRecord?.rtPerHour ?? highRate,
-      totalSalary,
+      lowRate,
+      highRate,
+      salary,
       deduction,
       advance,
-      balanceSalary: totalSalary - deduction - advance,
+      totalSalary: salary - deduction - advance,
       isPaid,
       standardRecordId: standardEntry?.salaryRecord?.id ?? null,
       premiumRecordId: premiumEntry?.salaryRecord?.id ?? null,
@@ -274,8 +313,6 @@ function mergeApiEntries(
       siteId,
       siteName,
     });
-
-    seenEmpIds.add(empId);
   }
 
   return merged;
@@ -368,17 +405,16 @@ export function ConsolidatedSalarySheet() {
 
         // Recalculate salary fields when relevant fields change
         if (field === 'totalHours') {
-          // Custom rate employees: no split, all hours at the custom rate
           if (u.isCustomRate) {
             u.lowRateHours = u.totalHours;
             u.highRateHours = 0;
-            u.totalSalary = u.lowRateHours * u.lowRate;
-            u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+            u.salary = computeSalary(u.lowRateHours, u.highRateHours, u.isTeamLeader, u.isSupervisor, u.isCustomRate, u.customHourlyRate);
+            u.totalSalary = u.salary - u.deduction - u.advance;
             u.rateTier = 'standard';
           } else {
-            // When totalHours changes, recalculate the split based on cumulative threshold
-            const threshold = u.hoursThreshold || 1000; // Use per-employee threshold
-            const cumulativeBefore = u.previousCumulativeHours; // Use actual cumulative from previous months
+            // Recalculate the split based on cumulative threshold
+            const threshold = u.hoursThreshold || 1000;
+            const cumulativeBefore = u.previousCumulativeHours;
             const remainingThreshold = threshold - cumulativeBefore;
             const totalHrs = u.totalHours;
 
@@ -393,39 +429,28 @@ export function ConsolidatedSalarySheet() {
               u.highRateHours = totalHrs - remainingThreshold;
             }
 
-            u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-            u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+            u.salary = computeSalary(u.lowRateHours, u.highRateHours, u.isTeamLeader, u.isSupervisor, u.isCustomRate, u.customHourlyRate);
+            u.totalSalary = u.salary - u.deduction - u.advance;
             u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
           }
         }
 
         if (field === 'deduction' || field === 'advance') {
-          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+          u.totalSalary = u.salary - u.deduction - u.advance;
         }
 
         if (field === 'lowRateHours') {
           u.totalHours = u.lowRateHours + u.highRateHours;
-          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+          u.salary = computeSalary(u.lowRateHours, u.highRateHours, u.isTeamLeader, u.isSupervisor, u.isCustomRate, u.customHourlyRate);
+          u.totalSalary = u.salary - u.deduction - u.advance;
           u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
         }
 
         if (field === 'highRateHours') {
           u.totalHours = u.lowRateHours + u.highRateHours;
-          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
+          u.salary = computeSalary(u.lowRateHours, u.highRateHours, u.isTeamLeader, u.isSupervisor, u.isCustomRate, u.customHourlyRate);
+          u.totalSalary = u.salary - u.deduction - u.advance;
           u.rateTier = u.highRateHours > 0 ? (u.lowRateHours > 0 ? 'split' : 'premium') : 'standard';
-        }
-
-        if (field === 'lowRate') {
-          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
-        }
-
-        if (field === 'highRate') {
-          u.totalSalary = u.lowRateHours * u.lowRate + u.highRateHours * u.highRate;
-          u.balanceSalary = u.totalSalary - u.deduction - u.advance;
         }
 
         return u;
@@ -441,7 +466,6 @@ export function ConsolidatedSalarySheet() {
     // Optimistic UI update
     handleCellChange(siteId, index, 'isPaid', newIsPaid);
 
-    // Immediately call the toggle-paid API to sync across all pages
     const employees = siteEmployees[siteId] || [];
     const emp = employees[index];
     if (!emp) return;
@@ -460,7 +484,6 @@ export function ConsolidatedSalarySheet() {
       });
       const json = await res.json();
       if (!json.success) {
-        // Revert on failure
         handleCellChange(siteId, index, 'isPaid', currentIsPaid);
         toast({ title: 'Error', description: json.error || 'Failed to update payment status', variant: 'destructive' });
       } else {
@@ -470,7 +493,6 @@ export function ConsolidatedSalarySheet() {
         });
       }
     } catch {
-      // Revert on failure
       handleCellChange(siteId, index, 'isPaid', currentIsPaid);
       toast({ title: 'Error', description: 'Failed to update payment status', variant: 'destructive' });
     }
@@ -501,10 +523,10 @@ export function ConsolidatedSalarySheet() {
             hoursThreshold: 1000,
             lowRate: 2.5,
             highRate: 5.0,
-            totalSalary: 0,
+            salary: 0,
             deduction: 0,
             advance: 0,
-            balanceSalary: 0,
+            totalSalary: 0,
             isPaid: false,
             standardRecordId: null,
             premiumRecordId: null,
@@ -532,7 +554,6 @@ export function ConsolidatedSalarySheet() {
     try {
       setSaving(true);
 
-      // Collect all records across all sites
       const allRecords: Array<{
         salaryRecordId?: string;
         empId: string;
@@ -555,15 +576,16 @@ export function ConsolidatedSalarySheet() {
         rateTier: string;
       }> = [];
 
-      // Track which record IDs are in the submitted payload for soft-delete handling
-      const submittedRecordIds = new Set<string>();
-
       for (const site of sites) {
         const employees = siteEmployees[site.id] || [];
         for (const emp of employees) {
           // Send standard record if lowRateHours > 0 or record exists
           if (emp.lowRateHours > 0 || emp.standardRecordId) {
-            const standardRecord = {
+            const lowSalary = emp.isCustomRate && emp.customHourlyRate
+              ? emp.lowRateHours * emp.customHourlyRate
+              : (emp.lowRateHours * RATE_BELOW) / (emp.isTeamLeader || emp.isSupervisor ? DIVISOR_TL_BELOW : DIVISOR_STANDARD_BELOW);
+
+            allRecords.push({
               salaryRecordId: emp.standardRecordId || undefined,
               empId: emp.empId,
               empName: emp.empName,
@@ -576,23 +598,23 @@ export function ConsolidatedSalarySheet() {
               employeeCode: emp.employeeCode,
               slNo: emp.slNo,
               totalHours: emp.lowRateHours,
-              rtPerHour: emp.lowRate,
-              totalSalary: emp.lowRateHours * emp.lowRate,
+              rtPerHour: emp.isCustomRate && emp.customHourlyRate ? emp.customHourlyRate : emp.lowRate,
+              totalSalary: lowSalary,
               deduction: emp.deduction,
               advance: emp.advance,
-              balanceSalary: (emp.lowRateHours * emp.lowRate) - emp.deduction - emp.advance,
+              balanceSalary: lowSalary - emp.deduction - emp.advance,
               isPaid: emp.isPaid,
               rateTier: 'standard',
-            };
-            allRecords.push(standardRecord);
-            if (emp.standardRecordId) {
-              submittedRecordIds.add(emp.standardRecordId);
-            }
+            });
           }
 
           // Send premium record if highRateHours > 0 or record exists
           if (emp.highRateHours > 0 || emp.premiumRecordId) {
-            const premiumRecord = {
+            const highSalary = emp.isCustomRate && emp.customHourlyRate
+              ? emp.highRateHours * emp.customHourlyRate
+              : (emp.highRateHours * RATE_ABOVE) / (emp.isTeamLeader || emp.isSupervisor ? DIVISOR_TL_ABOVE : DIVISOR_STANDARD_ABOVE);
+
+            allRecords.push({
               salaryRecordId: emp.premiumRecordId || undefined,
               empId: emp.empId,
               empName: emp.empName,
@@ -605,18 +627,14 @@ export function ConsolidatedSalarySheet() {
               employeeCode: emp.employeeCode,
               slNo: emp.slNo,
               totalHours: emp.highRateHours,
-              rtPerHour: emp.highRate,
-              totalSalary: emp.highRateHours * emp.highRate,
+              rtPerHour: emp.isCustomRate && emp.customHourlyRate ? emp.customHourlyRate : emp.highRate,
+              totalSalary: highSalary,
               deduction: 0,
               advance: 0,
-              balanceSalary: emp.highRateHours * emp.highRate,
-              isPaid: emp.isPaid, // Sync isPaid with standard record
+              balanceSalary: highSalary,
+              isPaid: emp.isPaid,
               rateTier: 'premium',
-            };
-            allRecords.push(premiumRecord);
-            if (emp.premiumRecordId) {
-              submittedRecordIds.add(emp.premiumRecordId);
-            }
+            });
           }
         }
       }
@@ -667,44 +685,39 @@ export function ConsolidatedSalarySheet() {
     );
   };
 
-  const tradeDisplay = (emp: MergedEmployeeRow) => {
-    let trade = emp.trade;
-    if (emp.isSupervisor) trade = `${trade}/SUPERVISOR`;
-    if (emp.isTeamLeader) trade = `${trade}/TL`;
-    return trade;
-  };
-
   // Grand totals
   const grandTotals = useMemo(() => {
     let totalHours = 0;
+    let totalLowRateHours = 0;
+    let totalHighRateHours = 0;
     let totalSalary = 0;
-    let totalBaseAmt = 0;
-    let totalPremiumAmt = 0;
-    let totalGrossTotal = 0;
     let totalDeductions = 0;
     let totalAdvances = 0;
     let totalBalance = 0;
     let totalEmployees = 0;
+    let paidCount = 0;
+    let unpaidCount = 0;
 
     for (const site of sites) {
       const employees = siteEmployees[site.id] || [];
       totalHours += employees.reduce((s, e) => s + e.totalHours, 0);
-      totalSalary += employees.reduce((s, e) => s + e.totalSalary, 0);
-      totalBaseAmt += employees.reduce((s, e) => s + (e.lowRateHours * e.lowRate), 0);
-      totalPremiumAmt += employees.reduce((s, e) => s + (e.highRateHours * e.highRate), 0);
+      totalLowRateHours += employees.reduce((s, e) => s + e.lowRateHours, 0);
+      totalHighRateHours += employees.reduce((s, e) => s + e.highRateHours, 0);
+      totalSalary += employees.reduce((s, e) => s + e.salary, 0);
       totalDeductions += employees.reduce((s, e) => s + e.deduction, 0);
       totalAdvances += employees.reduce((s, e) => s + e.advance, 0);
-      totalBalance += employees.reduce((s, e) => s + e.balanceSalary, 0);
+      totalBalance += employees.reduce((s, e) => s + e.totalSalary, 0);
       totalEmployees += employees.length;
+      paidCount += employees.filter((e) => e.isPaid).length;
+      unpaidCount += employees.filter((e) => !e.isPaid).length;
     }
-    totalGrossTotal = totalBaseAmt + totalPremiumAmt;
 
-    return { totalHours, totalSalary, totalBaseAmt, totalPremiumAmt, totalGrossTotal, totalDeductions, totalAdvances, totalBalance, totalEmployees };
+    return {
+      totalHours, totalLowRateHours, totalHighRateHours,
+      totalSalary, totalDeductions, totalAdvances, totalBalance,
+      totalEmployees, paidCount, unpaidCount,
+    };
   }, [sites, siteEmployees]);
-
-  // ── Column header for low-rate (shows 2.5/3) ──
-  const lowRateHeader = '2.5/3 HRS';
-  const highRateHeader = '5/5.5 HRS';
 
   return (
     <div className="min-h-screen bg-slate-900 p-4 sm:p-6">
@@ -724,14 +737,15 @@ export function ConsolidatedSalarySheet() {
                   )}
                 </h1>
                 <p className="text-slate-500 text-sm mt-0.5">
-                  All sites salary data in one view &bull; {MONTH_FULL[selectedMonth]} {selectedYear}
+                  All sites salary data &bull; {MONTH_FULL[selectedMonth]} {selectedYear}
                 </p>
               </div>
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
+            {/* Grand Total Badge */}
             <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-sm px-3 py-1.5 font-semibold">
-              Grand Total: {formatNumber(grandTotals.totalSalary)} AED
+              Grand Total: {formatNumber(grandTotals.totalSalary)} DHS
             </Badge>
             {editMode && (
               <Button
@@ -746,7 +760,6 @@ export function ConsolidatedSalarySheet() {
             <Button
               onClick={() => {
                 if (editMode) {
-                  // Revert changes to original data
                   setSiteEmployees(JSON.parse(JSON.stringify(originalSiteEmployees)));
                 }
                 setEditMode(!editMode);
@@ -842,6 +855,62 @@ export function ConsolidatedSalarySheet() {
           </CardContent>
         </Card>
 
+        {/* Grand Totals Bar */}
+        {!loading && sites.length > 0 && (
+          <Card className="bg-slate-800/50 border-slate-700/50">
+            <CardContent className="p-3">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Employees:</span>
+                  <span className="text-white font-semibold">{grandTotals.totalEmployees}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Total Hrs:</span>
+                  <span className="text-white font-semibold">{formatHours(grandTotals.totalHours)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-cyan-400/70">Rate 2.5/3 Hrs:</span>
+                  <span className="text-cyan-400 font-semibold">{formatHours(grandTotals.totalLowRateHours)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-amber-400/70">Rate 5/5.5 Hrs:</span>
+                  <span className="text-amber-400 font-semibold">{formatHours(grandTotals.totalHighRateHours)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Salary:</span>
+                  <span className="text-emerald-400 font-semibold">{formatNumber(grandTotals.totalSalary)} DHS</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Deduction:</span>
+                  <span className="text-red-400 font-semibold">{formatNumber(grandTotals.totalDeductions)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Advance:</span>
+                  <span className="text-amber-400 font-semibold">{formatNumber(grandTotals.totalAdvances)}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Net:</span>
+                  <span className={cn(
+                    'font-bold',
+                    grandTotals.totalBalance >= 0 ? 'text-emerald-400' : 'text-red-400'
+                  )}>
+                    {formatNumber(grandTotals.totalBalance)} DHS
+                  </span>
+                </div>
+                <Separator orientation="vertical" className="hidden sm:block h-4 bg-slate-700/50" />
+                <div className="flex items-center gap-1.5">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                  <span className="text-emerald-400 font-semibold">{grandTotals.paidCount} Paid</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <XCircle className="h-3.5 w-3.5 text-red-400" />
+                  <span className="text-red-400 font-semibold">{grandTotals.unpaidCount} Unpaid</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Content */}
         {loading ? (
           <div className="space-y-6">
@@ -868,15 +937,13 @@ export function ConsolidatedSalarySheet() {
             {sites.map((site) => {
               const employees = siteEmployees[site.id] || [];
               const siteTotalHours = employees.reduce((s, e) => s + e.totalHours, 0);
-              const siteTotalSalary = employees.reduce((s, e) => s + e.totalSalary, 0);
               const siteTotalLowRateHours = employees.reduce((s, e) => s + e.lowRateHours, 0);
               const siteTotalHighRateHours = employees.reduce((s, e) => s + e.highRateHours, 0);
-              const siteTotalBaseAmt = employees.reduce((s, e) => s + (e.lowRateHours * e.lowRate), 0);
-              const siteTotalPremiumAmt = employees.reduce((s, e) => s + (e.highRateHours * e.highRate), 0);
-              const siteTotalGrossTotal = siteTotalBaseAmt + siteTotalPremiumAmt;
+              const siteTotalSalary = employees.reduce((s, e) => s + e.salary, 0);
               const siteTotalDeduction = employees.reduce((s, e) => s + e.deduction, 0);
               const siteTotalAdvance = employees.reduce((s, e) => s + e.advance, 0);
-              const siteTotalBalance = employees.reduce((s, e) => s + e.balanceSalary, 0);
+              const siteTotalBalance = employees.reduce((s, e) => s + e.totalSalary, 0);
+              const sitePaidCount = employees.filter((e) => e.isPaid).length;
 
               return (
                 <div key={site.id} className="mb-1">
@@ -893,50 +960,53 @@ export function ConsolidatedSalarySheet() {
                         Employees: <span className="text-white font-semibold">{employees.length}</span>
                       </span>
                       <span className="text-slate-400">
-                        Hours: <span className="text-white font-semibold">{formatNumber(siteTotalHours)}</span>
+                        Hours: <span className="text-white font-semibold">{formatHours(siteTotalHours)}</span>
+                      </span>
+                      <span className="text-slate-400">
+                        Paid: <span className="text-emerald-400 font-semibold">{sitePaidCount}/{employees.length}</span>
                       </span>
                       <span className="text-emerald-400 font-semibold">
-                        {formatNumber(siteTotalSalary)} AED
+                        {formatNumber(siteTotalSalary)} DHS
                       </span>
                     </div>
                   </div>
 
                   {/* Salary Table */}
                   <div className="overflow-x-auto border border-t-0 border-slate-700/50 rounded-b-lg">
-                    <table className="w-full border-collapse min-w-[1600px]">
+                    <table className="w-full border-collapse min-w-[1300px]">
                       <thead>
                         <tr className="bg-slate-800/90 border-b border-slate-700/50">
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-center whitespace-nowrap" style={{width: '40px'}}>SL</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '90px'}}>NATIONALITY</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '140px'}}>NAME</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '110px'}}>TRADE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '90px'}}>EMP ID</th>
-                          <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>TOTAL HRS</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-slate-800/50" style={{minWidth: '85px'}}>{lowRateHeader}</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-amber-900/20" style={{minWidth: '85px'}}>{highRateHeader}</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-slate-800/50" style={{minWidth: '95px'}}>BASE AMT</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-amber-900/10" style={{minWidth: '95px'}}>PREMIUM AMT</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-violet-900/10" style={{minWidth: '90px'}}>CUSTOM RATE</th>
-                          <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-emerald-900/10" style={{minWidth: '110px'}}>GROSS TOTAL</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '110px'}}>TOTAL SALARY</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>DEDUCT</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '130px'}}>NAME</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '80px'}}>EMP CODE</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-left whitespace-nowrap" style={{minWidth: '100px'}}>TRADE</th>
+                          <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '80px'}}>TOTAL HRS</th>
+                          <th className="text-cyan-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-cyan-900/10" style={{minWidth: '90px'}}>
+                            RATE 2.5/3 HRS
+                          </th>
+                          <th className="text-amber-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-amber-900/10" style={{minWidth: '95px'}}>
+                            RATE 5/5.5 HRS
+                          </th>
+                          <th className="text-emerald-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap bg-emerald-900/10" style={{minWidth: '100px'}}>
+                            SALARY (DHS)
+                          </th>
                           <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>ADVANCE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '110px'}}>BALANCE</th>
-                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-center whitespace-nowrap" style={{width: '60px'}}>PAID</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '90px'}}>DEDUCTION</th>
+                          <th className="text-slate-300 font-semibold text-[11px] py-2.5 px-2 text-right whitespace-nowrap" style={{minWidth: '110px'}}>TOTAL SALARY</th>
+                          <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2 text-center whitespace-nowrap" style={{width: '70px'}}>STATUS</th>
                           {editMode && <th className="text-slate-400 font-semibold text-[11px] py-2.5 px-2" style={{width: '36px'}}></th>}
                         </tr>
                       </thead>
                       <tbody>
                         {employees.length === 0 ? (
                           <tr>
-                            <td colSpan={editMode ? 18 : 17} className="text-center text-slate-500 py-6 text-xs">
+                            <td colSpan={editMode ? 13 : 12} className="text-center text-slate-500 py-6 text-xs">
                               No employees for this site.
                             </td>
                           </tr>
                         ) : (
                           employees.map((emp, index) => {
                             const highlighted = isRowHighlighted(emp);
-                            const hasSplit = emp.rateTier === 'split';
                             return (
                               <tr
                                 key={`${emp.empId}-${index}`}
@@ -944,26 +1014,13 @@ export function ConsolidatedSalarySheet() {
                                   'border-b border-slate-700/30 transition-colors',
                                   highlighted && 'bg-yellow-500/15 ring-1 ring-yellow-500/30',
                                   !highlighted && emp.isPaid && 'bg-emerald-500/5',
-                                  !highlighted && !emp.isPaid && hasSplit && 'bg-amber-500/5',
+                                  !highlighted && !emp.isPaid && emp.rateTier === 'split' && 'bg-amber-500/5',
                                   editMode && !highlighted && 'hover:bg-slate-700/20',
                                 )}
                               >
                                 {/* SL */}
                                 <td className="text-slate-500 text-[11px] text-center font-mono py-1.5 px-2">
                                   {emp.slNo}
-                                </td>
-
-                                {/* NATIONALITY */}
-                                <td className="py-1.5 px-2">
-                                  {editMode ? (
-                                    <Input
-                                      value={emp.nationality}
-                                      onChange={(e) => handleCellChange(site.id, index, 'nationality', e.target.value)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0 px-1.5"
-                                    />
-                                  ) : (
-                                    <span className="text-[11px] text-slate-300">{emp.nationality || '-'}</span>
-                                  )}
                                 </td>
 
                                 {/* NAME */}
@@ -975,9 +1032,39 @@ export function ConsolidatedSalarySheet() {
                                       className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0 px-1.5"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px] font-medium', highlighted ? 'text-yellow-300' : 'text-white')}>
-                                      {emp.empName || '-'}
-                                    </span>
+                                    <div className="flex items-center gap-1">
+                                      <span className={cn('text-[11px] font-medium', highlighted ? 'text-yellow-300' : 'text-white')}>
+                                        {emp.empName || '-'}
+                                      </span>
+                                      {emp.isSupervisor && (
+                                        <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20 text-[9px] gap-0.5 px-1 py-0 ml-0.5">
+                                          <ShieldAlert className="h-2.5 w-2.5" />SUP
+                                        </Badge>
+                                      )}
+                                      {emp.isTeamLeader && !emp.isSupervisor && (
+                                        <Badge className="bg-sky-500/10 text-sky-400 border-sky-500/20 text-[9px] gap-0.5 px-1 py-0 ml-0.5">
+                                          <ShieldCheck className="h-2.5 w-2.5" />TL
+                                        </Badge>
+                                      )}
+                                      {emp.isCustomRate && (
+                                        <Badge className="bg-violet-500/10 text-violet-400 border-violet-500/20 text-[9px] px-1 py-0 ml-0.5">
+                                          CR
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+
+                                {/* EMP CODE */}
+                                <td className="py-1.5 px-2">
+                                  {editMode ? (
+                                    <Input
+                                      value={emp.employeeCode}
+                                      onChange={(e) => handleCellChange(site.id, index, 'employeeCode', e.target.value)}
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0 px-1.5 font-mono"
+                                    />
+                                  ) : (
+                                    <span className="text-[11px] text-slate-300 font-mono">{emp.employeeCode || '-'}</span>
                                   )}
                                 </td>
 
@@ -990,199 +1077,143 @@ export function ConsolidatedSalarySheet() {
                                       className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-full py-0 px-1.5"
                                     />
                                   ) : (
-                                    <span className="text-[11px] text-slate-300">{tradeDisplay(emp)}</span>
-                                  )}
-                                </td>
-
-                                {/* EMP ID */}
-                                <td className="py-1.5 px-2">
-                                  {editMode ? (
-                                    <Input
-                                      value={emp.employeeCode}
-                                      onChange={(e) => handleCellChange(site.id, index, 'employeeCode', e.target.value)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white font-mono w-full py-0 px-1.5"
-                                    />
-                                  ) : (
-                                    <span className={cn('text-[11px] font-mono', highlighted ? 'text-yellow-300' : 'text-slate-300')}>
-                                      {emp.employeeCode || '-'}
+                                    <span className="text-[11px] text-slate-300">
+                                      {emp.trade}
+                                      {emp.isSupervisor && '/SUP'}
+                                      {emp.isTeamLeader && !emp.isSupervisor && '/TL'}
                                     </span>
                                   )}
                                 </td>
 
-                                {/* TOTAL HRS - Editable */}
-                                <td className="py-1.5 px-2">
+                                {/* TOTAL HRS */}
+                                <td className="py-1.5 px-2 text-right">
                                   {editMode ? (
                                     <Input
                                       type="number"
-                                      min={0}
-                                      step={1}
+                                      min="0"
+                                      step="0.5"
                                       value={emp.totalHours || ''}
                                       onChange={(e) => handleCellChange(site.id, index, 'totalHours', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0 px-1.5"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-20 py-0 px-1.5 text-right ml-auto"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px] block text-right', emp.totalHours > 0 ? 'text-white font-medium' : 'text-slate-500')}>
-                                      {emp.totalHours || '-'}
-                                    </span>
+                                    <span className="text-[11px] text-white font-medium">{formatHours(emp.totalHours)}</span>
                                   )}
                                 </td>
 
-                                {/* 2.5/3 HRS - Editable (hours × rate) */}
-                                <td className="py-1.5 px-2 bg-slate-800/30">
-                                  {editMode ? (
-                                    <div className="flex items-center gap-0.5 justify-end">
-                                      <Input
-                                        type="number"
-                                        min={0}
-                                        step={1}
-                                        value={emp.lowRateHours || ''}
-                                        onChange={(e) => handleCellChange(site.id, index, 'lowRateHours', parseFloat(e.target.value) || 0)}
-                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[42px] py-0 px-1"
-                                      />
-                                      <span className="text-slate-500 text-[10px]">×</span>
-                                      <Input
-                                        type="number"
-                                        min={0}
-                                        step={0.5}
-                                        value={emp.lowRate || ''}
-                                        onChange={(e) => handleCellChange(site.id, index, 'lowRate', parseFloat(e.target.value) || 0)}
-                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-white text-right w-[36px] py-0 px-1"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <span className={cn('text-[11px] block text-right', emp.lowRateHours > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                                      {emp.lowRateHours > 0 ? `${emp.lowRateHours} × ${emp.lowRate}` : '-'}
-                                    </span>
-                                  )}
-                                </td>
-
-                                {/* 5/5.5 HRS - Editable (hours × rate) */}
-                                <td className="py-1.5 px-2 bg-amber-900/10">
-                                  {editMode ? (
-                                    <div className="flex items-center gap-0.5 justify-end">
-                                      <Input
-                                        type="number"
-                                        min={0}
-                                        step={1}
-                                        value={emp.highRateHours || ''}
-                                        onChange={(e) => handleCellChange(site.id, index, 'highRateHours', parseFloat(e.target.value) || 0)}
-                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-amber-300 text-right w-[42px] py-0 px-1"
-                                      />
-                                      <span className="text-slate-500 text-[10px]">×</span>
-                                      <Input
-                                        type="number"
-                                        min={0}
-                                        step={0.5}
-                                        value={emp.highRate || ''}
-                                        onChange={(e) => handleCellChange(site.id, index, 'highRate', parseFloat(e.target.value) || 0)}
-                                        className="h-6 text-[10px] bg-slate-900/80 border-slate-600/50 text-amber-300 text-right w-[36px] py-0 px-1"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <span className={cn('text-[11px] block text-right', emp.highRateHours > 0 ? 'text-amber-300' : 'text-slate-600')}>
-                                      {emp.highRateHours > 0 ? `${emp.highRateHours} × ${emp.highRate}` : '-'}
-                                    </span>
-                                  )}
-                                </td>
-
-                                {/* BASE AMT - Calculated (lowRateHours × lowRate) */}
-                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2 bg-slate-800/20', (emp.lowRateHours * emp.lowRate) > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                                  {formatNumber(emp.lowRateHours * emp.lowRate)}
-                                </td>
-
-                                {/* PREMIUM AMT - Calculated (highRateHours × highRate) */}
-                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2 bg-amber-900/5', (emp.highRateHours * emp.highRate) > 0 ? 'text-amber-300' : 'text-slate-600')}>
-                                  {formatNumber(emp.highRateHours * emp.highRate)}
-                                </td>
-
-                                {/* CUSTOM RATE - Show custom rate or "—" */}
-                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2 bg-violet-900/5', emp.isCustomRate ? 'text-violet-300' : 'text-slate-600')}>
-                                  {emp.isCustomRate
-                                    ? (emp.customHourlyRate != null
-                                        ? formatNumber(emp.customHourlyRate)
-                                        : formatNumber(emp.lowRate))
-                                    : '—'}
-                                </td>
-
-                                {/* GROSS TOTAL - Calculated (BASE AMT + PREMIUM AMT) */}
-                                <td className={cn('text-[11px] text-right font-semibold py-1.5 px-2 bg-emerald-900/5', (emp.lowRateHours * emp.lowRate + emp.highRateHours * emp.highRate) > 0 ? 'text-emerald-400' : 'text-slate-600')}>
-                                  {formatNumber(emp.lowRateHours * emp.lowRate + emp.highRateHours * emp.highRate)}
-                                </td>
-
-                                {/* TOTAL SALARY - Calculated */}
-                                <td className={cn('text-[11px] text-right font-medium py-1.5 px-2', emp.totalSalary > 0 ? 'text-white' : 'text-slate-500')}>
-                                  {formatNumber(emp.totalSalary)}
-                                </td>
-
-                                {/* DEDUCT - Editable */}
-                                <td className="py-1.5 px-2">
+                                {/* RATE 2.5/3 HRS - Low rate hours */}
+                                <td className="py-1.5 px-2 text-right bg-cyan-900/5">
                                   {editMode ? (
                                     <Input
                                       type="number"
-                                      min={0}
-                                      step={1}
-                                      value={emp.deduction || ''}
-                                      onChange={(e) => handleCellChange(site.id, index, 'deduction', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0 px-1.5"
+                                      min="0"
+                                      step="0.5"
+                                      value={emp.lowRateHours || ''}
+                                      onChange={(e) => handleCellChange(site.id, index, 'lowRateHours', parseFloat(e.target.value) || 0)}
+                                      className="h-7 text-xs bg-slate-900/80 border-cyan-500/30 text-cyan-300 w-20 py-0 px-1.5 text-right ml-auto"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px] block text-right', emp.deduction > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                                      {emp.deduction || '-'}
-                                    </span>
+                                    <span className="text-[11px] text-cyan-400 font-medium">{formatHours(emp.lowRateHours)}</span>
                                   )}
                                 </td>
 
-                                {/* ADVANCE - Editable */}
-                                <td className="py-1.5 px-2">
+                                {/* RATE 5/5.5 HRS - High rate hours */}
+                                <td className="py-1.5 px-2 text-right bg-amber-900/5">
                                   {editMode ? (
                                     <Input
                                       type="number"
-                                      min={0}
-                                      step={1}
+                                      min="0"
+                                      step="0.5"
+                                      value={emp.highRateHours || ''}
+                                      onChange={(e) => handleCellChange(site.id, index, 'highRateHours', parseFloat(e.target.value) || 0)}
+                                      className="h-7 text-xs bg-slate-900/80 border-amber-500/30 text-amber-300 w-20 py-0 px-1.5 text-right ml-auto"
+                                    />
+                                  ) : (
+                                    <span className="text-[11px] text-amber-400 font-medium">{formatHours(emp.highRateHours)}</span>
+                                  )}
+                                </td>
+
+                                {/* SALARY (DHS) - Divisor-based gross salary */}
+                                <td className="py-1.5 px-2 text-right bg-emerald-900/5">
+                                  <span className="text-[11px] text-emerald-400 font-semibold">
+                                    {formatNumber(emp.salary)}
+                                  </span>
+                                </td>
+
+                                {/* ADVANCE */}
+                                <td className="py-1.5 px-2 text-right">
+                                  {editMode ? (
+                                    <Input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
                                       value={emp.advance || ''}
                                       onChange={(e) => handleCellChange(site.id, index, 'advance', parseFloat(e.target.value) || 0)}
-                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white text-right w-full py-0 px-1.5"
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-20 py-0 px-1.5 text-right ml-auto"
                                     />
                                   ) : (
-                                    <span className={cn('text-[11px] block text-right', emp.advance > 0 ? 'text-slate-300' : 'text-slate-600')}>
-                                      {emp.advance || '-'}
-                                    </span>
+                                    <span className="text-[11px] text-amber-400">{formatNumber(emp.advance)}</span>
                                   )}
                                 </td>
 
-                                {/* BALANCE - Calculated */}
-                                <td className={cn(
-                                  'text-[11px] text-right font-semibold py-1.5 px-2',
-                                  emp.isPaid ? 'text-emerald-400' : emp.balanceSalary > 0 ? 'text-amber-400' : 'text-slate-400',
-                                )}>
-                                  {formatNumber(emp.balanceSalary)}
+                                {/* DEDUCTION */}
+                                <td className="py-1.5 px-2 text-right">
+                                  {editMode ? (
+                                    <Input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={emp.deduction || ''}
+                                      onChange={(e) => handleCellChange(site.id, index, 'deduction', parseFloat(e.target.value) || 0)}
+                                      className="h-7 text-xs bg-slate-900/80 border-slate-600/50 text-white w-20 py-0 px-1.5 text-right ml-auto"
+                                    />
+                                  ) : (
+                                    <span className="text-[11px] text-red-400">{formatNumber(emp.deduction)}</span>
+                                  )}
                                 </td>
 
-                                {/* PAID - Toggle */}
-                                <td className="text-center py-1.5 px-2">
+                                {/* TOTAL SALARY (Salary - Advance - Deduction) */}
+                                <td className="py-1.5 px-2 text-right">
+                                  <span className={cn(
+                                    'text-[11px] font-semibold',
+                                    emp.totalSalary >= 0 ? 'text-white' : 'text-red-400',
+                                  )}>
+                                    {formatNumber(emp.totalSalary)}
+                                  </span>
+                                </td>
+
+                                {/* STATUS */}
+                                <td className="py-1.5 px-2 text-center">
                                   <button
+                                    type="button"
                                     onClick={() => handlePaidToggle(site.id, index, emp.isPaid)}
-                                    className={cn(
-                                      'inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[9px] font-bold transition-colors cursor-pointer',
-                                      emp.isPaid
-                                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30'
-                                        : 'bg-slate-700/50 text-slate-500 border border-slate-600/50 hover:bg-slate-600/50 hover:text-slate-400',
-                                    )}
+                                    className="focus:outline-none"
+                                    title={emp.isPaid ? 'Click to mark as unpaid' : 'Click to mark as paid'}
                                   >
-                                    {emp.isPaid ? 'PAID' : 'UNPAID'}
+                                    {emp.isPaid ? (
+                                      <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20 text-[10px] gap-1 cursor-pointer">
+                                        <CheckCircle2 className="h-3 w-3" />
+                                        Paid
+                                      </Badge>
+                                    ) : (
+                                      <Badge className="bg-slate-600/20 text-slate-400 border-slate-600/30 hover:bg-slate-600/30 text-[10px] gap-1 cursor-pointer">
+                                        <XCircle className="h-3 w-3" />
+                                        Unpaid
+                                      </Badge>
+                                    )}
                                   </button>
                                 </td>
 
                                 {/* Delete button (edit mode only) */}
                                 {editMode && (
-                                  <td className="py-1.5 px-1">
+                                  <td className="py-1.5 px-2 text-center">
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      className="h-6 w-6 text-slate-500 hover:text-red-400 hover:bg-red-500/10"
+                                      className="h-6 w-6 text-slate-500 hover:text-red-400"
                                       onClick={() => handleDeleteRow(site.id, index)}
                                     >
-                                      <Trash2 className="h-3 w-3" />
+                                      <Trash2 className="h-3.5 w-3.5" />
                                     </Button>
                                   </td>
                                 )}
@@ -1190,113 +1221,78 @@ export function ConsolidatedSalarySheet() {
                             );
                           })
                         )}
+
+                        {/* Site Totals Row */}
+                        {employees.length > 0 && (
+                          <tr className="bg-slate-800/60 border-t border-slate-600/50">
+                            <td colSpan={4} className="text-right text-[11px] font-bold text-slate-300 py-2 px-2 pr-4">
+                              Site Total
+                            </td>
+                            <td className="text-right text-[11px] font-bold text-white py-2 px-2">
+                              {formatHours(siteTotalHours)}
+                            </td>
+                            <td className="text-right text-[11px] font-bold text-cyan-400 py-2 px-2 bg-cyan-900/5">
+                              {formatHours(siteTotalLowRateHours)}
+                            </td>
+                            <td className="text-right text-[11px] font-bold text-amber-400 py-2 px-2 bg-amber-900/5">
+                              {formatHours(siteTotalHighRateHours)}
+                            </td>
+                            <td className="text-right text-[11px] font-bold text-emerald-400 py-2 px-2 bg-emerald-900/5">
+                              {formatNumber(siteTotalSalary)}
+                            </td>
+                            <td className="text-right text-[11px] font-bold text-amber-400 py-2 px-2">
+                              {formatNumber(siteTotalAdvance)}
+                            </td>
+                            <td className="text-right text-[11px] font-bold text-red-400 py-2 px-2">
+                              {formatNumber(siteTotalDeduction)}
+                            </td>
+                            <td className={cn(
+                              'text-right text-[11px] font-bold py-2 px-2',
+                              siteTotalBalance >= 0 ? 'text-white' : 'text-red-400',
+                            )}>
+                              {formatNumber(siteTotalBalance)}
+                            </td>
+                            <td colSpan={editMode ? 2 : 1} />
+                          </tr>
+                        )}
                       </tbody>
-
-                      {/* Site Total Footer */}
-                      <tfoot>
-                        <tr className="bg-slate-900/60 border-t border-slate-700/50">
-                          <td colSpan={5} className="text-[11px] text-slate-400 font-bold py-2 px-2">
-                            Site Total
-                          </td>
-                          <td className="text-[11px] text-white font-bold py-2 px-2 text-right">
-                            {formatNumber(siteTotalHours)}
-                          </td>
-                          <td className="text-[11px] text-slate-300 font-bold py-2 px-2 text-right bg-slate-800/30">
-                            {formatNumber(siteTotalLowRateHours)}
-                          </td>
-                          <td className="text-[11px] text-amber-300 font-bold py-2 px-2 text-right bg-amber-900/10">
-                            {formatNumber(siteTotalHighRateHours)}
-                          </td>
-                          <td className="text-[11px] text-slate-300 font-bold py-2 px-2 text-right bg-slate-800/20">
-                            {formatNumber(siteTotalBaseAmt)}
-                          </td>
-                          <td className="text-[11px] text-amber-300 font-bold py-2 px-2 text-right bg-amber-900/5">
-                            {formatNumber(siteTotalPremiumAmt)}
-                          </td>
-                          <td className="text-[11px] text-slate-600 font-bold py-2 px-2 text-right bg-violet-900/5">
-                            —
-                          </td>
-                          <td className="text-[11px] text-emerald-400 font-bold py-2 px-2 text-right bg-emerald-900/5">
-                            {formatNumber(siteTotalGrossTotal)}
-                          </td>
-                          <td className="text-[11px] text-emerald-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(siteTotalSalary)} AED
-                          </td>
-                          <td className="text-[11px] text-slate-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(siteTotalDeduction)}
-                          </td>
-                          <td className="text-[11px] text-slate-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(siteTotalAdvance)}
-                          </td>
-                          <td className="text-[11px] text-amber-400 font-bold py-2 px-2 text-right">
-                            {formatNumber(siteTotalBalance)}
-                          </td>
-                          <td className="py-2 px-2"></td>
-                          {editMode && <td className="py-2 px-2"></td>}
-                        </tr>
-                      </tfoot>
                     </table>
-                  </div>
 
-                  {/* Add Row Button (only in edit mode) */}
-                  {editMode && (
-                    <div className="mt-1 flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleAddRow(site.id)}
-                        className="bg-slate-700/50 border-slate-600 text-slate-200 hover:bg-slate-600 hover:text-white gap-1 h-8 text-xs"
-                      >
-                        <Plus className="h-3 w-3" />
-                        Add Row to {site.name}
-                      </Button>
-                    </div>
-                  )}
+                    {/* Add Row Button (edit mode only) */}
+                    {editMode && (
+                      <div className="border-t border-slate-700/30 px-4 py-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleAddRow(site.id)}
+                          className="text-xs text-slate-400 hover:text-emerald-400 gap-1"
+                        >
+                          + Add Employee
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
 
-            {/* Grand Total Bar */}
-            <div className="mt-4 bg-slate-800/60 border border-slate-700/50 rounded-lg px-4 py-3">
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-4 text-xs">
-                <div>
-                  <div className="text-slate-500 mb-0.5">Sites</div>
-                  <div className="text-white font-bold text-sm">{sites.length}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Employees</div>
-                  <div className="text-white font-bold text-sm">{grandTotals.totalEmployees}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Total Hours</div>
-                  <div className="text-white font-bold text-sm">{formatNumber(grandTotals.totalHours)}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Base Amount</div>
-                  <div className="text-slate-300 font-bold text-sm">{formatNumber(grandTotals.totalBaseAmt)} AED</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Premium Amount</div>
-                  <div className="text-amber-300 font-bold text-sm">{formatNumber(grandTotals.totalPremiumAmt)} AED</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Gross Total</div>
-                  <div className="text-emerald-400 font-bold text-sm">{formatNumber(grandTotals.totalGrossTotal)} AED</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Total Salary</div>
-                  <div className="text-white font-bold text-sm">{formatNumber(grandTotals.totalSalary)} AED</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Total Deductions</div>
-                  <div className="text-slate-400 font-bold text-sm">{formatNumber(grandTotals.totalDeductions)} AED</div>
-                </div>
-                <div>
-                  <div className="text-slate-500 mb-0.5">Total Balance</div>
-                  <div className="text-amber-400 font-bold text-sm">{formatNumber(grandTotals.totalBalance)} AED</div>
-                </div>
+            {/* Formula Reference */}
+            {!loading && sites.length > 0 && (
+              <div className="mt-4 flex flex-wrap gap-3 text-[10px] text-slate-500">
+                <span className="bg-slate-800/50 px-2 py-1 rounded border border-slate-700/30">
+                  Standard: (below_hrs &times; 2.5)/1.0 + (above_hrs &times; 5.0)/1.0
+                </span>
+                <span className="bg-slate-800/50 px-2 py-1 rounded border border-slate-700/30">
+                  TL/Supervisor: (below_hrs &times; 2.5)/3.0 + (above_hrs &times; 5.0)/5.5
+                </span>
+                <span className="bg-violet-900/20 px-2 py-1 rounded border border-violet-700/30 text-violet-400">
+                  CR = Custom Rate override (all hours at custom rate)
+                </span>
+                <span className="bg-emerald-900/20 px-2 py-1 rounded border border-emerald-700/30 text-emerald-400">
+                  Total Salary = Salary - Advance - Deduction
+                </span>
               </div>
-            </div>
+            )}
           </div>
         )}
       </div>

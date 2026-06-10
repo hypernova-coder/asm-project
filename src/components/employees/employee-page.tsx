@@ -1101,6 +1101,8 @@ export function EmployeePage() {
       const payload: Record<string, unknown> = {
         ...formData,
         photo: formPhoto,
+        // Always explicitly include employeeId to ensure updates persist
+        employeeId: formData.employeeId?.trim() || null,
         // Send trade as both trade and position for backward compat
         trade: formData.trade || null,
         position: formData.trade || null,
@@ -1110,9 +1112,9 @@ export function EmployeePage() {
         supervisorSiteId: formData.isSupervisor ? (formData.supervisorSiteId || null) : null,
         customHourlyRate: formData.customHourlyRate ? parseFloat(formData.customHourlyRate) : null,
       };
-      // Clear empty strings (but keep booleans)
+      // Clear empty strings (but keep booleans and employeeId - handled above)
       Object.keys(payload).forEach((key) => {
-        if (payload[key] === '' && key !== 'isTeamLeader' && key !== 'isSupervisor') payload[key] = null;
+        if (payload[key] === '' && key !== 'isTeamLeader' && key !== 'isSupervisor' && key !== 'employeeId') payload[key] = null;
       });
 
       let res: Response;

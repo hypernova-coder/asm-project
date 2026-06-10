@@ -17,6 +17,7 @@ import {
   Sparkles,
   Calendar,
   Pencil,
+  TableProperties,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -107,31 +108,22 @@ function formatCurrency(amount: number): string {
 }
 
 // ─── Rate color helper ──────────────────────────────────────────────────
-// Color-codes the Rate/Hr based on its derivation:
-//   Rate derived from 2.5 base (2.5 for Standard, 0.8333 for TL/Sup) → Emerald
-//   Rate derived from 5.0 base (5.0 for Standard, 0.9091 for TL/Sup) → Green
-//   Any custom rate → Violet
 
 function getRateColor(rtPerHour: number, isCustomRate: boolean): 'emerald' | 'green' | 'violet' {
   if (isCustomRate) return 'violet';
 
-  // Check if rate is derived from 2.5 (low tier)
-  // Standard low: 2.5, TL/Sup low: 2.5/3.0 ≈ 0.8333
   const isLowTier =
     Math.abs(rtPerHour - 2.5) < 0.01 ||
     Math.abs(rtPerHour - 2.5 / 3.0) < 0.01;
 
   if (isLowTier) return 'emerald';
 
-  // Check if rate is derived from 5.0 (high tier)
-  // Standard high: 5.0, TL/Sup high: 5.0/5.5 ≈ 0.9091
   const isHighTier =
     Math.abs(rtPerHour - 5.0) < 0.01 ||
     Math.abs(rtPerHour - 5.0 / 5.5) < 0.01;
 
   if (isHighTier) return 'green';
 
-  // Default to violet for any unrecognized rate (treated as custom)
   return 'violet';
 }
 
@@ -166,6 +158,10 @@ interface EditableRow {
   totalHours: string;
   rtPerHour: string;
   customRate: string;
+  // Original values for change detection
+  originalTotalHours: string;
+  originalRtPerHour: string;
+  originalCustomRate: string;
 }
 
 // ─── Main Component ─────────────────────────────────────────────────────
@@ -187,6 +183,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
   const [isEditMode, setIsEditMode] = useState(false);
   const [editableRows, setEditableRows] = useState<EditableRow[]>([]);
   const [isSavingEdits, setIsSavingEdits] = useState(false);
+  const [changedMonths, setChangedMonths] = useState<Set<string>>(new Set());
 
   // ── Fetch employee details ──
   const fetchEmployeeDetails = useCallback(async () => {
@@ -212,7 +209,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
         }
       }
     } catch {
-      // silent - will show in monthly data fetch
+      // silent
     }
   }, [employeeId]);
 
@@ -304,19 +301,42 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
       totalHours: row.totalHours > 0 ? String(row.totalHours) : '',
       rtPerHour: String(row.rtPerHour),
       customRate: employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '',
+      originalTotalHours: row.totalHours > 0 ? String(row.totalHours) : '',
+      originalRtPerHour: String(row.rtPerHour),
+      originalCustomRate: employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '',
     }));
     setEditableRows(rows);
+    setChangedMonths(new Set());
     setIsEditMode(true);
   }, [monthlyData, employeeInfo]);
 
   const cancelEditMode = useCallback(() => {
     setIsEditMode(false);
     setEditableRows([]);
+    setChangedMonths(new Set());
   }, []);
 
   const updateEditableRow = useCallback((month: string, field: keyof EditableRow, value: string) => {
     setEditableRows((prev) =>
-      prev.map((row) => (row.month === month ? { ...row, [field]: value } : row))
+      prev.map((row) => {
+        if (row.month !== month) return row;
+        const updated = { ...row, [field]: value };
+        // Check if this row has changed from original
+        const hasChanged =
+          updated.totalHours !== updated.originalTotalHours ||
+          updated.rtPerHour !== updated.originalRtPerHour ||
+          updated.customRate !== updated.originalCustomRate;
+        setChangedMonths((prevSet) => {
+          const newSet = new Set(prevSet);
+          if (hasChanged) {
+            newSet.add(month);
+          } else {
+            newSet.delete(month);
+          }
+          return newSet;
+        });
+        return updated;
+      })
     );
   }, []);
 
@@ -347,6 +367,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
         });
         setIsEditMode(false);
         setEditableRows([]);
+        setChangedMonths(new Set());
         await fetchMonthlyData();
         await fetchEmployeeDetails();
       } else {
@@ -585,13 +606,16 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
         </Card>
       )}
 
-      {/* ─── Year Selector + Custom Rate ───────────────────────── */}
+      {/* ─── Year Selector + Custom Rate + Edit Button ─────────── */}
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <div className="flex items-center gap-3">
           <Calendar className="h-5 w-5 text-slate-400" />
           <Select
             value={String(selectedYear)}
-            onValueChange={(val) => setSelectedYear(parseInt(val, 10))}
+            onValueChange={(val) => {
+              if (!isEditMode) setSelectedYear(parseInt(val, 10));
+            }}
+            disabled={isEditMode}
           >
             <SelectTrigger className="w-[140px] bg-slate-800 border-slate-700">
               <SelectValue />
@@ -606,87 +630,141 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
           </Select>
         </div>
 
-        {/* Custom Rate Configuration */}
-        <Card className="bg-slate-800/50 border-slate-700/50 w-full sm:w-auto">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-3 flex-wrap">
-              <Sparkles className="h-4 w-4 text-violet-400 shrink-0" />
-              <span className="text-sm text-slate-300 whitespace-nowrap">Custom Rate:</span>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Custom Rate Configuration */}
+          <Card className="bg-slate-800/50 border-slate-700/50 w-full sm:w-auto">
+            <CardContent className="p-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <Sparkles className="h-4 w-4 text-violet-400 shrink-0" />
+                <span className="text-sm text-slate-300 whitespace-nowrap">Custom Rate:</span>
 
-              {employeeInfo?.customHourlyRate != null && !isEditingRate && (
-                <>
-                  <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25">
-                    {employeeInfo.customHourlyRate} AED/hr
-                  </Badge>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsEditingRate(true)}
-                    className="h-7 text-xs text-slate-400 hover:text-white"
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleClearCustomRate}
-                    disabled={isSavingRate}
-                    className="h-7 text-xs text-red-400 hover:text-red-300"
-                  >
-                    {isSavingRate ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Clear'}
-                  </Button>
-                </>
-              )}
-
-              {(employeeInfo?.customHourlyRate == null || isEditingRate) && (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      placeholder="e.g. 4.0"
-                      value={customRateInput}
-                      onChange={(e) => setCustomRateInput(e.target.value)}
-                      className="w-24 h-8 text-sm bg-slate-900 border-slate-600"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSaveCustomRate();
-                        if (e.key === 'Escape') {
-                          setIsEditingRate(false);
-                          setCustomRateInput(employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '');
-                        }
-                      }}
-                    />
-                    <span className="text-xs text-slate-500">AED/hr</span>
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={handleSaveCustomRate}
-                    disabled={isSavingRate}
-                    className="h-8 text-xs bg-violet-600 hover:bg-violet-700"
-                  >
-                    {isSavingRate ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
-                    Save
-                  </Button>
-                  {isEditingRate && (
+                {employeeInfo?.customHourlyRate != null && !isEditingRate && (
+                  <>
+                    <Badge className="bg-violet-500/15 text-violet-400 border-violet-500/25">
+                      {employeeInfo.customHourlyRate} AED/hr
+                    </Badge>
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => {
-                        setIsEditingRate(false);
-                        setCustomRateInput(employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '');
-                      }}
-                      className="h-8 text-xs text-slate-400"
+                      onClick={() => setIsEditingRate(true)}
+                      className="h-7 text-xs text-slate-400 hover:text-white"
                     >
-                      <X className="h-3 w-3" />
+                      Edit
                     </Button>
-                  )}
-                </>
-              )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleClearCustomRate}
+                      disabled={isSavingRate}
+                      className="h-7 text-xs text-red-400 hover:text-red-300"
+                    >
+                      {isSavingRate ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Clear'}
+                    </Button>
+                  </>
+                )}
+
+                {(employeeInfo?.customHourlyRate == null || isEditingRate) && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        placeholder="e.g. 4.0"
+                        value={customRateInput}
+                        onChange={(e) => setCustomRateInput(e.target.value)}
+                        className="w-24 h-8 text-sm bg-slate-900 border-slate-600"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveCustomRate();
+                          if (e.key === 'Escape') {
+                            setIsEditingRate(false);
+                            setCustomRateInput(employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '');
+                          }
+                        }}
+                      />
+                      <span className="text-xs text-slate-500">AED/hr</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={handleSaveCustomRate}
+                      disabled={isSavingRate}
+                      className="h-8 text-xs bg-violet-600 hover:bg-violet-700"
+                    >
+                      {isSavingRate ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+                      Save
+                    </Button>
+                    {isEditingRate && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setIsEditingRate(false);
+                          setCustomRateInput(employeeInfo?.customHourlyRate != null ? String(employeeInfo.customHourlyRate) : '');
+                        }}
+                        className="h-8 text-xs text-slate-400"
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* ── Prominent Edit/Save/Cancel Buttons ── */}
+          {!isEditMode ? (
+            <Button
+              onClick={enterEditMode}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-lg shadow-emerald-900/30"
+              size="default"
+            >
+              <Pencil className="h-4 w-4" />
+              Edit Ledger
+            </Button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={saveEdits}
+                disabled={isSavingEdits || changedMonths.size === 0}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-lg shadow-emerald-900/30"
+              >
+                {isSavingEdits ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                Save{changedMonths.size > 0 ? ` (${changedMonths.size})` : ''}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={cancelEditMode}
+                disabled={isSavingEdits}
+                className="border-slate-600 text-slate-300 hover:bg-slate-800 gap-2"
+              >
+                <X className="h-4 w-4" />
+                Cancel
+              </Button>
             </div>
-          </CardContent>
-        </Card>
+          )}
+        </div>
       </div>
+
+      {/* ─── Edit Mode Banner ──────────────────────────────────── */}
+      {isEditMode && (
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/25">
+          <TableProperties className="h-5 w-5 text-amber-400 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-amber-300">Edit Mode Active</p>
+            <p className="text-xs text-amber-400/70">
+              Click any cell to edit Total Hours, Rate/Hr, or Custom Rate. Changed rows are highlighted. Save to apply or Cancel to revert.
+            </p>
+          </div>
+          <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30 text-xs">
+            {changedMonths.size} change{changedMonths.size !== 1 ? 's' : ''}
+          </Badge>
+        </div>
+      )}
 
       {/* ─── Historical Data Table ─────────────────────────────── */}
       <Card className="bg-slate-800/50 border-slate-700/50">
@@ -696,59 +774,23 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
               <Clock className="h-4 w-4 text-slate-400" />
               Monthly Hours Breakdown — {selectedYear}
             </CardTitle>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-3 text-xs text-slate-400">
-                <span>Year Total: <span className="text-white font-medium">{yearlyTotals.totalHours.toLocaleString()}h</span></span>
-                <span>Est. Salary: <span className="text-white font-medium">{formatCurrency(yearlyTotals.totalSalary)}</span></span>
-              </div>
-              {/* ── Edit toggle button ── */}
-              {!isEditMode ? (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={enterEditMode}
-                  className="h-8 w-8 text-slate-400 hover:text-white hover:bg-slate-700"
-                  title="Edit monthly data"
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={saveEdits}
-                    disabled={isSavingEdits}
-                    className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700"
-                  >
-                    {isSavingEdits ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
-                    Save
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={cancelEditMode}
-                    disabled={isSavingEdits}
-                    className="h-8 text-xs text-slate-400 hover:text-white"
-                  >
-                    <X className="h-3 w-3 mr-1" />
-                    Cancel
-                  </Button>
-                </div>
-              )}
+            <div className="flex items-center gap-3 text-xs text-slate-400">
+              <span>Year Total: <span className="text-white font-medium">{yearlyTotals.totalHours.toLocaleString()}h</span></span>
+              <span>Est. Salary: <span className="text-white font-medium">{formatCurrency(yearlyTotals.totalSalary)}</span></span>
             </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <Table>
+            <Table className={isEditMode ? 'border-collapse' : ''}>
               <TableHeader>
-                <TableRow className="border-slate-700/50 hover:bg-transparent">
-                  <TableHead className="text-slate-400 font-medium">Month</TableHead>
-                  <TableHead className="text-slate-400 font-medium text-right">Total Hours</TableHead>
-                  <TableHead className="text-slate-400 font-medium text-right">Cumulative Hours</TableHead>
-                  <TableHead className="text-slate-400 font-medium text-right">Rate/Hr</TableHead>
-                  <TableHead className="text-slate-400 font-medium text-right">Est. Salary</TableHead>
-                  <TableHead className="text-slate-400 font-medium text-center">Custom Rate</TableHead>
+                <TableRow className={`border-slate-700/50 hover:bg-transparent ${isEditMode ? 'bg-slate-800/80' : ''}`}>
+                  <TableHead className={`text-slate-400 font-medium ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>Month</TableHead>
+                  <TableHead className={`text-slate-400 font-medium text-right ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>Total Hours</TableHead>
+                  <TableHead className={`text-slate-400 font-medium text-right ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>Cumulative Hours</TableHead>
+                  <TableHead className={`text-slate-400 font-medium text-right ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>Rate/Hr</TableHead>
+                  <TableHead className={`text-slate-400 font-medium text-right ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>Est. Salary</TableHead>
+                  <TableHead className={`text-slate-400 font-medium text-center ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>Custom Rate</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -763,17 +805,27 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                   editableRows.map((editRow) => {
                     const originalRow = monthlyData.find((r) => r.month === editRow.month);
                     const isThresholdRow = thresholdCrossMonth === editRow.month;
+                    const isChanged = changedMonths.has(editRow.month);
+
+                    // Compute estimated salary from editable values
+                    const editHours = editRow.totalHours ? parseFloat(editRow.totalHours) : 0;
+                    const editRate = editRow.rtPerHour ? parseFloat(editRow.rtPerHour) : 0;
+                    const estSalary = editHours * editRate;
 
                     return (
                       <TableRow
                         key={editRow.month}
-                        className={`border-slate-700/30 ${
-                          isThresholdRow
+                        className={`border-slate-700/30 transition-colors ${
+                          isChanged
+                            ? isThresholdRow
+                              ? 'bg-emerald-500/10 hover:bg-emerald-500/15'
+                              : 'bg-emerald-500/10 hover:bg-emerald-500/15'
+                            : isThresholdRow
                             ? 'bg-red-500/10 hover:bg-red-500/15'
                             : 'hover:bg-slate-700/30'
                         }`}
                       >
-                        <TableCell className="font-medium text-white whitespace-nowrap">
+                        <TableCell className={`font-medium text-white whitespace-nowrap py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
                           <div className="flex items-center gap-2">
                             {formatMonthShort(editRow.month)}
                             {isThresholdRow && (
@@ -784,44 +836,44 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className={`text-right py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
                           <Input
                             type="number"
                             step="0.5"
                             min="0"
                             value={editRow.totalHours}
                             onChange={(e) => updateEditableRow(editRow.month, 'totalHours', e.target.value)}
-                            className="w-24 h-7 text-sm text-right font-mono bg-slate-900 border-slate-600"
+                            className="w-24 h-7 text-sm text-right font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20"
                             placeholder="0"
                           />
                         </TableCell>
-                        <TableCell className="text-right font-mono text-slate-500">
+                        <TableCell className={`text-right font-mono text-slate-500 py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
                           {originalRow && originalRow.cumulativeHours > 0
                             ? originalRow.cumulativeHours.toFixed(1)
                             : '0.0'}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className={`text-right py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
                           <Input
                             type="number"
                             step="0.1"
                             min="0"
                             value={editRow.rtPerHour}
                             onChange={(e) => updateEditableRow(editRow.month, 'rtPerHour', e.target.value)}
-                            className="w-24 h-7 text-sm text-right font-mono bg-slate-900 border-slate-600"
+                            className="w-28 h-7 text-sm text-right font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20"
                             placeholder="2.5"
                           />
                         </TableCell>
-                        <TableCell className="text-right font-mono text-slate-500">
-                          —
+                        <TableCell className={`text-right font-mono text-slate-400 py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
+                          {estSalary > 0 ? formatCurrency(estSalary) : '—'}
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className={`text-center py-1.5 px-3 ${isChanged ? 'border-r border-emerald-500/20' : 'border-r border-slate-700/30'}`}>
                           <Input
                             type="number"
                             step="0.5"
                             min="0"
                             value={editRow.customRate}
                             onChange={(e) => updateEditableRow(editRow.month, 'customRate', e.target.value)}
-                            className="w-24 h-7 text-sm text-center font-mono bg-slate-900 border-slate-600 mx-auto"
+                            className="w-24 h-7 text-sm text-center font-mono bg-slate-900 border-slate-600 focus:border-emerald-500 focus:ring-emerald-500/20 mx-auto"
                             placeholder="—"
                           />
                         </TableCell>
@@ -830,7 +882,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                   })
                 ) : (
                   /* ── View Mode Rows ── */
-                  monthlyData.map((row, index) => {
+                  monthlyData.map((row) => {
                     const isThresholdRow = thresholdCrossMonth === row.month;
                     const isCustomRate = employeeInfo?.customHourlyRate != null;
                     const rateColor = getRateColor(row.rtPerHour, isCustomRate);
@@ -847,7 +899,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                             : 'opacity-50'
                         }`}
                       >
-                        <TableCell className="font-medium text-white whitespace-nowrap">
+                        <TableCell className="font-medium text-white whitespace-nowrap border-r border-slate-700/20">
                           <div className="flex items-center gap-2">
                             {formatMonthShort(row.month)}
                             {isThresholdRow && (
@@ -858,10 +910,10 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                             )}
                           </div>
                         </TableCell>
-                        <TableCell className="text-right font-mono text-slate-200">
+                        <TableCell className="text-right font-mono text-slate-200 border-r border-slate-700/20">
                           {row.totalHours > 0 ? row.totalHours.toFixed(1) : '0.0'}
                         </TableCell>
-                        <TableCell className="text-right font-mono">
+                        <TableCell className="text-right font-mono border-r border-slate-700/20">
                           <span className={
                             row.cumulativeHours >= (employeeInfo?.hoursThreshold || 1000)
                               ? 'text-red-400'
@@ -870,7 +922,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                             {row.cumulativeHours > 0 ? row.cumulativeHours.toFixed(1) : '0.0'}
                           </span>
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-right border-r border-slate-700/20">
                           {row.totalHours > 0 ? (
                             <Badge className={`text-xs px-2 py-0.5 h-6 font-mono ${getRateBadgeClasses(rateColor)}`}>
                               {row.rtPerHour.toFixed(4)}
@@ -879,7 +931,7 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                             <span className="text-slate-600 font-mono">—</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-right font-mono text-slate-200">
+                        <TableCell className="text-right font-mono text-slate-200 border-r border-slate-700/20">
                           {row.totalHours > 0 ? formatCurrency(estimatedSalary) : '—'}
                         </TableCell>
                         <TableCell className="text-center">
@@ -897,19 +949,19 @@ export function EmployeeHoursLedger({ employeeId, onBack }: EmployeeHoursLedgerP
                 {/* ── Yearly Total Row ── */}
                 {monthlyData.length > 0 && (
                   <TableRow className="border-t-2 border-slate-600 bg-slate-800/80">
-                    <TableCell className="font-bold text-white">
+                    <TableCell className={`font-bold text-white ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                       Year Total
                     </TableCell>
-                    <TableCell className="text-right font-mono font-bold text-white">
+                    <TableCell className={`text-right font-mono font-bold text-white ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                       {yearlyTotals.totalHours.toFixed(1)}
                     </TableCell>
-                    <TableCell className="text-right font-mono text-slate-400">
+                    <TableCell className={`text-right font-mono text-slate-400 ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                       —
                     </TableCell>
-                    <TableCell className="text-right text-slate-400">
+                    <TableCell className={`text-right text-slate-400 ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                       —
                     </TableCell>
-                    <TableCell className="text-right font-mono font-bold text-white">
+                    <TableCell className={`text-right font-mono font-bold text-white ${isEditMode ? 'border-r border-slate-700/30' : ''}`}>
                       {formatCurrency(yearlyTotals.totalSalary)}
                     </TableCell>
                     <TableCell className="text-center text-slate-400">
