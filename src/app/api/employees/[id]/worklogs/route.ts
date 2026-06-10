@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { recalcEmployeeFromMonth, recalcEmployeeFull, getEmployeeRates, computeSalaryBreakdown } from '@/lib/recalculation';
 
 // GET /api/employees/[id]/worklogs
-// Get all WorkLog entries for an employee
+// Get all WorkLog entries for an employee, with SalaryRecord fallback for months without WorkLog entries
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -12,12 +12,14 @@ export async function GET(
     const { id } = await params;
     const { searchParams } = new URL(request.url);
     const year = searchParams.get('year');
+    const yearNum = year ? parseInt(year, 10) : null;
 
     const where: Record<string, unknown> = { employeeId: id, deletedAt: null };
-    if (year) {
-      where.year = parseInt(year, 10);
+    if (yearNum !== null) {
+      where.year = yearNum;
     }
 
+    // 1. Fetch work logs (filtered by year if provided)
     const workLogs = await db.workLog.findMany({
       where,
       orderBy: [{ year: 'asc' }, { month: 'asc' }],
@@ -26,7 +28,7 @@ export async function GET(
       },
     });
 
-    // Get employee info for rate calculations
+    // 2. Get employee info for rate calculations
     const employee = await db.employee.findUnique({
       where: { id },
       select: {
@@ -53,32 +55,78 @@ export async function GET(
     const { lowRate, highRate, isCustom } = getEmployeeRates(employee);
     const threshold = employee.hoursThreshold || 1000;
 
-    // Compute cumulative hours and salary breakdown for each month
-    let cumulative = 0;
+    // 3. Fetch ALL work logs (no year filter) for cumulative calculation
     const allLogs = await db.workLog.findMany({
       where: { employeeId: id, deletedAt: null },
       orderBy: [{ year: 'asc' }, { month: 'asc' }],
     });
 
-    // Compute cumulative before each log entry
-    const cumulativeMap = new Map<string, number>();
-    let runningTotal = 0;
-    for (const log of allLogs) {
-      const key = `${log.year}-${String(log.month).padStart(2, '0')}`;
-      cumulativeMap.set(key, runningTotal);
-      runningTotal += log.hoursWorked;
-    }
-
-    // Also get existing salary records for paid status and deduction/advance
-    const salaryRecords = await db.salaryRecord.findMany({
+    // 4. Fetch ALL salary records (no year filter) for cumulative calculation and fallback entries
+    const allSalaryRecords = await db.salaryRecord.findMany({
       where: {
         empId: id,
         isDeleted: false,
-        ...(year ? { year: parseInt(year, 10) } : {}),
       },
     });
 
-    // Build monthly data with cumulative info
+    // 5. Build combined month data for cumulative calculation
+    // For each month, total hours = sum of work log hours + salary record hours for (siteId, month) combos not covered by work logs
+    const combinedMonthHours = new Map<string, number>(); // monthKey -> total hours
+
+    // Add work log hours
+    for (const log of allLogs) {
+      const key = `${log.year}-${String(log.month).padStart(2, '0')}`;
+      combinedMonthHours.set(key, (combinedMonthHours.get(key) || 0) + log.hoursWorked);
+    }
+
+    // Build set of (siteId, monthKey) from ALL work logs for deduplication
+    const allWorkLogSiteMonthSet = new Set<string>();
+    for (const log of allLogs) {
+      const key = `${log.siteId}|${log.year}-${String(log.month).padStart(2, '0')}`;
+      allWorkLogSiteMonthSet.add(key);
+    }
+
+    // Aggregate salary record hours by (siteId, month) for combos NOT covered by work logs
+    const salarySiteMonthHours = new Map<string, { monthKey: string; totalHours: number }>();
+    for (const sr of allSalaryRecords) {
+      const siteMonthKey = `${sr.siteId}|${sr.month}`;
+      if (!allWorkLogSiteMonthSet.has(siteMonthKey)) {
+        const existing = salarySiteMonthHours.get(siteMonthKey);
+        if (existing) {
+          existing.totalHours += sr.totalHours;
+        } else {
+          salarySiteMonthHours.set(siteMonthKey, { monthKey: sr.month, totalHours: sr.totalHours });
+        }
+      }
+    }
+
+    // Add salary record hours to combined month hours
+    for (const [, data] of salarySiteMonthHours) {
+      combinedMonthHours.set(data.monthKey, (combinedMonthHours.get(data.monthKey) || 0) + data.totalHours);
+    }
+
+    // 6. Compute cumulative before each month (from combined data)
+    const sortedMonthKeys = Array.from(combinedMonthHours.keys()).sort();
+    const cumulativeMap = new Map<string, number>();
+    let runningTotal = 0;
+    for (const key of sortedMonthKeys) {
+      cumulativeMap.set(key, runningTotal);
+      runningTotal += combinedMonthHours.get(key)!;
+    }
+
+    // 7. Filter salary records for the requested year (for paid status and synthetic entries)
+    const salaryRecords = yearNum !== null
+      ? allSalaryRecords.filter(sr => sr.year === yearNum)
+      : allSalaryRecords;
+
+    // 8. Build set of (siteId, monthKey) from filtered work logs for deduplication
+    const filteredWorkLogKeys = new Set<string>();
+    for (const log of workLogs) {
+      const monthKey = `${log.year}-${String(log.month).padStart(2, '0')}`;
+      filteredWorkLogKeys.add(`${log.siteId}|${monthKey}`);
+    }
+
+    // 9. Build monthly data from work logs
     const monthlyData = workLogs.map(log => {
       const monthKey = `${log.year}-${String(log.month).padStart(2, '0')}`;
       const cumulativeBefore = cumulativeMap.get(monthKey) || 0;
@@ -90,7 +138,7 @@ export async function GET(
         isCustom ? highRate : highRate,
       );
 
-      // Find matching salary records for this month
+      // Find matching salary records for this month+site
       const monthSalaryRecords = salaryRecords.filter(
         sr => sr.month === monthKey && sr.siteId === log.siteId
       );
@@ -137,16 +185,114 @@ export async function GET(
         // Timestamps
         createdAt: log.createdAt.toISOString(),
         updatedAt: log.updatedAt.toISOString(),
+        // Source indicator
+        isSynthetic: false,
       };
     });
 
-    // Aggregate totals
-    const aggregateTotalHours = allLogs.reduce((sum, l) => sum + l.hoursWorked, 0);
+    // 10. Create synthetic entries for salary records that don't have corresponding work logs
+    // Group salary records by (siteId, month) to aggregate standard+premium tiers into a single entry
+    const salaryBySiteMonth = new Map<string, {
+      siteId: string;
+      siteName: string;
+      month: string;
+      year: number;
+      totalHours: number;
+      stdRecord: typeof salaryRecords[0] | undefined;
+      premRecord: typeof salaryRecords[0] | undefined;
+    }>();
+
+    for (const sr of salaryRecords) {
+      const key = `${sr.siteId}|${sr.month}`;
+      if (filteredWorkLogKeys.has(key)) continue; // Skip if work log exists for this site+month
+
+      const existing = salaryBySiteMonth.get(key);
+      if (existing) {
+        existing.totalHours += sr.totalHours;
+        if (sr.rateTier === 'standard') existing.stdRecord = sr;
+        if (sr.rateTier === 'premium') existing.premRecord = sr;
+      } else {
+        salaryBySiteMonth.set(key, {
+          siteId: sr.siteId,
+          siteName: sr.siteName,
+          month: sr.month,
+          year: sr.year,
+          totalHours: sr.totalHours,
+          stdRecord: sr.rateTier === 'standard' ? sr : undefined,
+          premRecord: sr.rateTier === 'premium' ? sr : undefined,
+        });
+      }
+    }
+
+    // Convert grouped salary records into synthetic work-log-shaped entries
+    const syntheticEntries = Array.from(salaryBySiteMonth.values()).map(srGroup => {
+      const monthNum = parseInt(srGroup.month.split('-')[1], 10);
+      const cumulativeBefore = cumulativeMap.get(srGroup.month) || 0;
+      const breakdown = computeSalaryBreakdown(
+        srGroup.totalHours,
+        cumulativeBefore,
+        threshold,
+        isCustom ? lowRate : lowRate,
+        isCustom ? highRate : highRate,
+      );
+
+      const deduction = srGroup.stdRecord?.deduction ?? srGroup.premRecord?.deduction ?? 0;
+      const advance = srGroup.stdRecord?.advance ?? srGroup.premRecord?.advance ?? 0;
+      const isPaid = (srGroup.stdRecord?.isPaid ?? false) || (srGroup.premRecord?.isPaid ?? false);
+
+      return {
+        logId: null as number | null,
+        employeeId: id,
+        siteId: srGroup.siteId,
+        siteName: srGroup.siteName,
+        year: srGroup.year,
+        month: monthNum,
+        monthKey: srGroup.month,
+        hoursWorked: srGroup.totalHours,
+        allowances: 0,
+        deductions: 0,
+        cumulativeBefore,
+        cumulativeAfter: cumulativeBefore + srGroup.totalHours,
+        // Rate info
+        lowRate,
+        highRate,
+        isCustom,
+        // Salary breakdown
+        belowHours: breakdown.belowHours,
+        aboveHours: breakdown.aboveHours,
+        belowSalary: breakdown.belowSalary,
+        aboveSalary: breakdown.aboveSalary,
+        totalSalary: breakdown.totalSalary,
+        blendedRate: breakdown.blendedRate,
+        // Financial
+        deduction,
+        advance,
+        balanceSalary: parseFloat((breakdown.totalSalary - deduction - advance).toFixed(2)),
+        isPaid,
+        // Record IDs for updates
+        standardRecordId: srGroup.stdRecord?.id ?? null,
+        premiumRecordId: srGroup.premRecord?.id ?? null,
+        // Timestamps
+        createdAt: (srGroup.stdRecord ?? srGroup.premRecord)!.createdAt.toISOString(),
+        updatedAt: (srGroup.stdRecord ?? srGroup.premRecord)!.updatedAt.toISOString(),
+        // Source indicator
+        isSynthetic: true,
+      };
+    });
+
+    // 11. Combine and sort all entries chronologically
+    const allEntries = [...monthlyData, ...syntheticEntries].sort((a, b) => {
+      if (a.year !== b.year) return a.year - b.year;
+      return a.month - b.month;
+    });
+
+    // 12. Aggregate total hours from ALL sources (work logs + salary record fallbacks)
+    const aggregateTotalHours = runningTotal;
 
     return NextResponse.json({
       success: true,
       data: {
-        workLogs: monthlyData,
+        workLogs: allEntries,
         employeeInfo: {
           id: employee.id,
           fullName: employee.fullName,

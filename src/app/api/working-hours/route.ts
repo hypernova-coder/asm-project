@@ -1,6 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
+/**
+ * Helper: Sync WorkLog entry from TotalEmployeeWorkingHours data.
+ * When working hours are saved, we also need a WorkLog entry so the
+ * Employee Hours Ledger (which reads from WorkLog) displays the data.
+ */
+async function syncWorkLogFromWorkingHours(
+  empId: string,
+  month: string, // YYYY-MM
+  totalWorkingHours: number,
+): Promise<void> {
+  try {
+    // Get the employee's current site
+    const employee = await db.employee.findUnique({
+      where: { id: empId },
+      select: { currentSite: true },
+    });
+
+    let siteId = employee?.currentSite;
+    if (!siteId) return; // Can't create WorkLog without a site
+
+    // Try to find site by ID first, then by name as fallback
+    let siteExists = await db.site.findUnique({ where: { id: siteId } });
+    if (!siteExists) {
+      // currentSite might be a name instead of an ID — look up by name
+      const siteByName = await db.site.findFirst({ where: { name: siteId } });
+      if (siteByName) {
+        siteId = siteByName.id;
+      } else {
+        return; // Site not found by ID or name
+      }
+    }
+
+    const [yearStr, monthStr] = month.split('-');
+    const yearNum = parseInt(yearStr, 10);
+    const monthNum = parseInt(monthStr, 10);
+
+    if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) return;
+
+    await db.workLog.upsert({
+      where: {
+        employeeId_siteId_year_month: {
+          employeeId: empId,
+          siteId,
+          year: yearNum,
+          month: monthNum,
+        },
+      },
+      update: {
+        hoursWorked: totalWorkingHours,
+        deletedAt: null, // un-soft-delete if previously deleted
+      },
+      create: {
+        employeeId: empId,
+        siteId,
+        year: yearNum,
+        month: monthNum,
+        hoursWorked: totalWorkingHours,
+        allowances: 0,
+        deductions: 0,
+      },
+    });
+  } catch (error: unknown) {
+    console.error('[working-hours] WorkLog sync failed:', error);
+    // Don't fail the main operation if WorkLog sync fails
+  }
+}
+
 // GET /api/working-hours?month=YYYY-MM&empId=...
 export async function GET(request: NextRequest) {
   try {
@@ -90,6 +157,9 @@ export async function POST(request: NextRequest) {
         },
       });
 
+      // Sync WorkLog entry so Employee Hours Ledger shows this data
+      await syncWorkLogFromWorkingHours(empId, month, workingHour.totalWorkingHours);
+
       return NextResponse.json({
         success: true,
         data: {
@@ -112,6 +182,9 @@ export async function POST(request: NextRequest) {
           isDeleted: false,
         },
       });
+
+      // Sync WorkLog entry so Employee Hours Ledger shows this data
+      await syncWorkLogFromWorkingHours(empId, month, workingHour.totalWorkingHours);
 
       return NextResponse.json({
         success: true,
@@ -136,6 +209,9 @@ export async function POST(request: NextRequest) {
           isDeleted: false,
         },
       });
+
+      // Sync WorkLog entry so Employee Hours Ledger shows this data
+      await syncWorkLogFromWorkingHours(empId, month, workingHour.totalWorkingHours);
 
       return NextResponse.json(
         {

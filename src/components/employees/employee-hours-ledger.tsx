@@ -62,7 +62,7 @@ interface EmployeeHoursLedgerProps {
 
 /** Shape of each workLog entry returned by GET /api/employees/[id]/worklogs */
 interface WorkLogEntry {
-  logId: number;
+  logId: number | null;
   employeeId: string;
   siteId: string;
   siteName: string;
@@ -91,6 +91,7 @@ interface WorkLogEntry {
   premiumRecordId: string | null;
   createdAt: string;
   updatedAt: string;
+  isSynthetic?: boolean;    // true if entry is from SalaryRecord fallback, not a real WorkLog
 }
 
 /** employeeInfo returned alongside workLogs */

@@ -1,6 +1,68 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
+/**
+ * Helper: Sync WorkLog entry when working hours are updated.
+ * Ensures Employee Hours Ledger (which reads from WorkLog) displays the data.
+ */
+async function syncWorkLogForEmployee(
+  empId: string,
+  month: string, // YYYY-MM
+  totalWorkingHours: number,
+): Promise<void> {
+  try {
+    const employee = await db.employee.findUnique({
+      where: { id: empId },
+      select: { currentSite: true },
+    });
+    let siteId = employee?.currentSite;
+    if (!siteId) return;
+
+    // Try to find site by ID first, then by name as fallback
+    let siteExists = await db.site.findUnique({ where: { id: siteId } });
+    if (!siteExists) {
+      // currentSite might be a name instead of an ID — look up by name
+      const siteByName = await db.site.findFirst({ where: { name: siteId } });
+      if (siteByName) {
+        siteId = siteByName.id;
+      } else {
+        return; // Site not found by ID or name
+      }
+    }
+
+    const [yearStr, monthStr] = month.split('-');
+    const yearNum = parseInt(yearStr, 10);
+    const monthNum = parseInt(monthStr, 10);
+    if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) return;
+
+    await db.workLog.upsert({
+      where: {
+        employeeId_siteId_year_month: {
+          employeeId: empId,
+          siteId,
+          year: yearNum,
+          month: monthNum,
+        },
+      },
+      update: {
+        hoursWorked: totalWorkingHours,
+        deletedAt: null,
+      },
+      create: {
+        employeeId: empId,
+        siteId,
+        year: yearNum,
+        month: monthNum,
+        hoursWorked: totalWorkingHours,
+        allowances: 0,
+        deductions: 0,
+      },
+    });
+  } catch (error: unknown) {
+    console.error('[accounts/working-hours] WorkLog sync failed:', error);
+  }
+}
+
 // Helper: Calculate RT/HR based on aggregate working hours and team leader/supervisor status
 function calculateRtPerHour(
   totalWorkingHours: number,
@@ -310,6 +372,9 @@ export async function POST(request: NextRequest) {
           },
         });
 
+        // Sync WorkLog entry so Employee Hours Ledger shows this data
+        await syncWorkLogForEmployee(eid, currentMonth, 0);
+
         results.push({
           id: record.id,
           empId: record.empId,
@@ -385,6 +450,9 @@ export async function POST(request: NextRequest) {
         isCustom: parsedIsCustom,
       },
     });
+
+    // Sync WorkLog entry so Employee Hours Ledger shows this data
+    await syncWorkLogForEmployee(empId, currentMonth, record.totalWorkingHours);
 
     return NextResponse.json({
       success: true,
@@ -525,6 +593,9 @@ export async function PUT(request: NextRequest) {
         }
       }
 
+      // Sync WorkLog entry so Employee Hours Ledger shows this data
+      await syncWorkLogForEmployee(empId, currentMonth, currentMonthRecord.totalWorkingHours);
+
       return NextResponse.json({
         success: true,
         data: {
@@ -571,6 +642,9 @@ export async function PUT(request: NextRequest) {
           },
         },
       });
+
+      // Sync WorkLog entry so Employee Hours Ledger shows this data
+      await syncWorkLogForEmployee(empId, month, upserted.totalWorkingHours);
 
       return NextResponse.json({
         success: true,
@@ -628,6 +702,9 @@ export async function PUT(request: NextRequest) {
       data: updateData,
       include: { employee: true },
     });
+
+    // Sync WorkLog entry so Employee Hours Ledger shows this data
+    await syncWorkLogForEmployee(updated.empId, updated.month, updated.totalWorkingHours);
 
     return NextResponse.json({
       success: true,
