@@ -202,8 +202,9 @@ export function EmployeeHoursDirectory() {
     const aboveThreshold = employees.filter(e => e.thresholdStatus === 'above').length;
     const belowThreshold = total - aboveThreshold;
     const customRate = employees.filter(e => e.customHourlyRate != null).length;
+    const customThreshold = employees.filter(e => e.hoursThreshold !== 1000).length;
     const totalHours = employees.reduce((sum, e) => sum + e.cumulativeHours, 0);
-    return { total, aboveThreshold, belowThreshold, customRate, totalHours };
+    return { total, aboveThreshold, belowThreshold, customRate, customThreshold, totalHours };
   }, [employees]);
 
   // ── Edit mode handlers ──
@@ -503,7 +504,7 @@ export function EmployeeHoursDirectory() {
       )}
 
       {/* ─── Summary Cards ─────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
         <Card className="bg-slate-800/50 border-slate-700/50">
           <CardContent className="p-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-1">
@@ -538,6 +539,15 @@ export function EmployeeHoursDirectory() {
               <p className="text-xs text-slate-500">Custom Rates</p>
             </div>
             <p className="text-2xl font-bold text-violet-400">{stats.customRate}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-slate-800/50 border-slate-700/50">
+          <CardContent className="p-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <AlertTriangle className="h-4 w-4 text-orange-400" />
+              <p className="text-xs text-slate-500">Custom Threshold</p>
+            </div>
+            <p className="text-2xl font-bold text-orange-400">{stats.customThreshold}</p>
           </CardContent>
         </Card>
       </div>

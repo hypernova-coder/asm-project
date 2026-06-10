@@ -166,6 +166,109 @@ export async function GET(request: NextRequest) {
       siteMap.get(record.siteId)!.records.push(record);
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // ALSO include sites/employees from EmpCountSitePerMonth that have
+    // NO salary records yet (so they still show up in the accounts view)
+    // ─────────────────────────────────────────────────────────────────
+    const empCountRecords = await db.empCountSitePerMonth.findMany({
+      where: {
+        month,
+        deletedDate: null,
+      },
+      select: {
+        empId: true,
+        empName: true,
+        siteId: true,
+        siteName: true,
+      },
+    });
+
+    // Add empCount sites to siteMap if not already present
+    for (const ecr of empCountRecords) {
+      if (!siteMap.has(ecr.siteId)) {
+        siteMap.set(ecr.siteId, { siteId: ecr.siteId, siteName: ecr.siteName, records: [] });
+      }
+    }
+
+    // Collect empIds from empCount that aren't in salaryRecords
+    const salaryEmpIds = new Set(allSalaryRecords.map((r) => r.empId));
+    const missingEmpIds = empCountRecords
+      .map((r) => r.empId)
+      .filter((id) => !salaryEmpIds.has(id))
+      .filter((id, idx, arr) => arr.indexOf(id) === idx); // unique
+
+    // Fetch employee details for missing employees
+    let missingEmployeesMap = new Map<string, typeof employees[0]>();
+    if (missingEmpIds.length > 0) {
+      const missingEmps = await db.employee.findMany({
+        where: { id: { in: missingEmpIds } },
+        select: {
+          id: true,
+          fullName: true,
+          employeeId: true,
+          isTeamLeader: true,
+          isSupervisor: true,
+          hoursThreshold: true,
+          nationality: true,
+          trade: true,
+          customHourlyRate: true,
+          role: true,
+        },
+      });
+      for (const e of missingEmps) {
+        missingEmployeesMap.set(e.id, e);
+        employeeMap.set(e.id, e);
+      }
+    }
+
+    // Also compute cumulative + aggregate for the missing employees
+    if (missingEmpIds.length > 0) {
+      const allMissingSalaryRecords = await db.salaryRecord.findMany({
+        where: { empId: { in: missingEmpIds }, isDeleted: false },
+        select: { empId: true, totalHours: true, month: true },
+      });
+      for (const sr of allMissingSalaryRecords) {
+        if (sr.month < month) {
+          cumulativeHoursMap.set(sr.empId, (cumulativeHoursMap.get(sr.empId) || 0) + sr.totalHours);
+        }
+        aggregateHoursMap.set(sr.empId, (aggregateHoursMap.get(sr.empId) || 0) + sr.totalHours);
+      }
+    }
+
+    // Also fetch working hours for missing employees
+    if (missingEmpIds.length > 0) {
+      const missingWh = await db.totalEmployeeWorkingHours.findMany({
+        where: { empId: { in: missingEmpIds }, isDeleted: false },
+        select: {
+          id: true,
+          empId: true,
+          totalWorkingHours: true,
+          rtPerHour: true,
+          isCustom: true,
+          month: true,
+        },
+      });
+      for (const wh of missingWh) {
+        if (!whByEmp.has(wh.empId)) whByEmp.set(wh.empId, []);
+        whByEmp.get(wh.empId)!.push(wh);
+      }
+    }
+
+    // Group empCount records by siteId -> empIds for stub entries
+    const empCountBySite = new Map<string, { empId: string; empName: string; siteName: string }[]>();
+    for (const ecr of empCountRecords) {
+      // Only include if NOT already in salary records for this site
+      const siteSalaryEmpIds = new Set(
+        (siteMap.get(ecr.siteId)?.records || []).map((r) => r.empId)
+      );
+      if (siteSalaryEmpIds.has(ecr.empId)) continue;
+
+      if (!empCountBySite.has(ecr.siteId)) {
+        empCountBySite.set(ecr.siteId, []);
+      }
+      empCountBySite.get(ecr.siteId)!.push({ empId: ecr.empId, empName: ecr.empName, siteName: ecr.siteName });
+    }
+
     // Fetch site info for all sites in the results
     const siteIds = Array.from(siteMap.keys());
     const sites = siteIds.length > 0
@@ -289,8 +392,74 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      // ── Add stub entries for employees assigned via EmpCountSitePerMonth
+      //     that have NO salary records yet (so they still show up) ──
+      const stubEmpsForSite = empCountBySite.get(sId) || [];
+      for (const stub of stubEmpsForSite) {
+        // Skip if already added from salary records
+        if (empRecordsMap.has(stub.empId)) continue;
+
+        const emp = employeeMap.get(stub.empId);
+        const hasBonus = emp?.isTeamLeader || emp?.isSupervisor || false;
+        const threshold = emp?.hoursThreshold || 1000;
+        const previousCumulativeHours = cumulativeHoursMap.get(stub.empId) || 0;
+        const aggregateTotal = aggregateHoursMap.get(stub.empId) || 0;
+        const employeeCustomRate = emp?.customHourlyRate ?? null;
+
+        const empWhRecords = whByEmp.get(stub.empId) || [];
+        const currentMonthWh = empWhRecords.find((wh) => wh.month === month);
+        const isCustom = employeeCustomRate != null
+          ? true
+          : (currentMonthWh?.isCustom ?? false);
+        const customRtPerHour = employeeCustomRate != null
+          ? employeeCustomRate
+          : (currentMonthWh?.rtPerHour ?? 2.5);
+
+        const lowRate = employeeCustomRate !== null
+          ? employeeCustomRate
+          : (hasBonus ? 3.0 : 2.5);
+        const highRate = employeeCustomRate !== null
+          ? employeeCustomRate
+          : (hasBonus ? 5.5 : 5.0);
+        const calculatedRtPerHour = isCustom
+          ? customRtPerHour
+          : aggregateTotal >= threshold ? highRate : lowRate;
+
+        const totalWorkingHours = currentMonthWh?.totalWorkingHours ?? 0;
+
+        employeeEntries.push({
+          empId: stub.empId,
+          empName: stub.empName,
+          employeeCode: emp?.employeeId || '',
+          nationality: emp?.nationality || '',
+          trade: emp?.trade || '',
+          isTeamLeader: emp?.isTeamLeader ?? false,
+          isSupervisor: emp?.isSupervisor ?? false,
+          rateTier: 'standard',
+          salaryRecord: null,
+          workingHours: {
+            id: currentMonthWh?.id,
+            empId: stub.empId,
+            empName: stub.empName,
+            totalWorkingHours,
+            rtPerHour: isCustom ? customRtPerHour : calculatedRtPerHour,
+            isCustom,
+            calculatedRtPerHour,
+            previousCumulativeHours,
+            hoursThreshold: threshold,
+            customHourlyRate: employeeCustomRate,
+          },
+        });
+      }
+
       // Calculate site totals
       const siteSalaryRecords = sData.records;
+      const allSiteEmpIds = [
+        ...new Set([
+          ...siteSalaryRecords.map((r) => r.empId),
+          ...stubEmpsForSite.map((s) => s.empId),
+        ]),
+      ];
       siteResults.push({
         site: {
           id: sId,
@@ -298,7 +467,7 @@ export async function GET(request: NextRequest) {
           clientName: siteInfo?.clientName || null,
           projectName: siteInfo?.projectName || null,
         },
-        employeeCount: new Set(siteSalaryRecords.map((r) => r.empId)).size,
+        employeeCount: allSiteEmpIds.length,
         totalHours: siteSalaryRecords.reduce((sum, r) => sum + r.totalHours, 0),
         totalSalary: siteSalaryRecords.reduce((sum, r) => sum + r.totalSalary, 0),
         totalDeductions: siteSalaryRecords.reduce((sum, r) => sum + r.deduction, 0),
