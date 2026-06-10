@@ -6,9 +6,13 @@ PGDATA="/home/z/.local/pgdata"
 PG_SOCKET="/tmp/pg-socket"
 export LD_LIBRARY_PATH="/tmp/pg_extract/usr/lib/postgresql/17/lib:/tmp/pg_client_extract/usr/lib/postgresql/17/lib"
 
+# Override DATABASE_URL to ensure PostgreSQL is used (system env might have SQLite URL)
+export DATABASE_URL="postgresql://z@localhost:5432/myproject"
+
 # Check if PostgreSQL is already running
 if "$PG_CLIENT_BIN/pg_isready" -h localhost -p 5432 -q 2>/dev/null; then
   echo "✅ PostgreSQL is already running on port 5432"
+  echo "✅ DATABASE_URL set to: $DATABASE_URL"
   exit 0
 fi
 
@@ -33,6 +37,7 @@ echo "🚀 Starting PostgreSQL server..."
 for i in {1..10}; do
   if "$PG_CLIENT_BIN/pg_isready" -h localhost -p 5432 -q 2>/dev/null; then
     echo "✅ PostgreSQL started successfully on port 5432"
+    echo "✅ DATABASE_URL set to: $DATABASE_URL"
     "$PG_CLIENT_BIN/psql" -h localhost -U z -d postgres -c "SELECT 1 FROM pg_database WHERE datname='myproject'" 2>/dev/null | grep -q 1 || \
       "$PG_CLIENT_BIN/createdb" -h localhost -U z myproject 2>/dev/null
     exit 0

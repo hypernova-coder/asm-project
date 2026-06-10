@@ -64,3 +64,28 @@ Work Log:
 Stage Summary:
 - All code pushed to GitHub successfully
 - 7 files changed, 368 insertions, 16 deletions
+
+---
+Task ID: 5
+Agent: main
+Task: Fix save hours error from user screenshot
+
+Work Log:
+- Analyzed user screenshot showing accounts page with 2 employees (NPC-SHARJA site)
+- Identified root cause: DATABASE_URL system env variable set to SQLite URL, overriding .env PostgreSQL URL
+- Fixed start-pg.sh to export DATABASE_URL="postgresql://z@localhost:5432/myproject"
+- Fixed package.json dev script to also export DATABASE_URL
+- Found 4 critical bugs via code review subagent:
+  1. savedRecords type missing totalHours/empName/siteName/rtPerHour - caused WorkLog sync to save 0 hours and TotalEmployeeWorkingHours creation to fail on null empName
+  2. WorkLog sync used pre-allocation data (savedRecords) instead of post-allocation salary records
+  3. Recalculation engine used proportional allocation (inconsistent with allocation engine's sequential allocation)
+  4. String/number comparison bug in recalcEmployeeFull (comparing YYYY-MM string with number)
+- All 4 bugs fixed in bulk-save/route.ts and recalculation.ts
+- Tested bulk-save API locally - returns 200 with correct data
+- Verified SalaryRecord, WorkLog, and TotalEmployeeWorkingHours all correctly created
+
+Stage Summary:
+- DATABASE_URL override issue fixed (start-pg.sh + package.json)
+- 4 critical bugs fixed in save flow
+- Save operation tested and verified working
+- Lint check passes

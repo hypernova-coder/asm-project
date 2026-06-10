@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "dev": "bash scripts/start-pg.sh && next dev -p 3000 2>&1 | tee dev.log",
+    "dev": "bash scripts/start-pg.sh && export DATABASE_URL=\"postgresql://z@localhost:5432/myproject\" && next dev -p 3000 2>&1 | tee dev.log",
     "build": "npx prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "node railway-start.js",
     "lint": "eslint .",

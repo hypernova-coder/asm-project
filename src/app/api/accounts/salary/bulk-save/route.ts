@@ -103,6 +103,10 @@ export async function POST(request: NextRequest) {
       year: number;
       rateTier: string;
       action: 'created' | 'updated' | 'restored';
+      totalHours: number;
+      empName: string;
+      siteName: string;
+      rtPerHour: number;
     }> = [];
 
     for (const record of records) {
@@ -151,6 +155,10 @@ export async function POST(request: NextRequest) {
           year: updated.year,
           rateTier: updated.rateTier,
           action: existing.isDeleted ? 'restored' : 'updated',
+          totalHours: updated.totalHours,
+          empName: updated.empName,
+          siteName: updated.siteName,
+          rtPerHour: updated.rtPerHour,
         });
       } else {
         // ── No id provided: check unique key ──
@@ -197,6 +205,10 @@ export async function POST(request: NextRequest) {
             year: updated.year,
             rateTier: updated.rateTier,
             action: existingByKey.isDeleted ? 'restored' : 'updated',
+            totalHours: updated.totalHours,
+            empName: updated.empName,
+            siteName: updated.siteName,
+            rtPerHour: updated.rtPerHour,
           });
         } else {
           // Create new
@@ -231,6 +243,10 @@ export async function POST(request: NextRequest) {
             year: created.year,
             rateTier: created.rateTier,
             action: 'created',
+            totalHours: created.totalHours,
+            empName: created.empName,
+            siteName: created.siteName,
+            rtPerHour: created.rtPerHour,
           });
         }
       }
@@ -331,20 +347,33 @@ export async function POST(request: NextRequest) {
       }
 
       // ── Sync WorkLog entries so the employee hours ledger reflects accounts data ──
-      // Group saved records by (empId, siteId, month, year) to compute total hours per employee-site-month
+      // IMPORTANT: Use post-allocation salary records (not savedRecords) because
+      // the allocation engine may have changed the split, created new records,
+      // or soft-deleted existing ones. The WorkLog must reflect the final state.
+      const affectedEmpIdsForWorkLog = new Set(savedRecords.map((r) => r.empId));
+      const affectedMonthsForWorkLog = new Set(savedRecords.map((r) => r.month));
+      const postAllocationRecords = await db.salaryRecord.findMany({
+        where: {
+          empId: { in: Array.from(affectedEmpIdsForWorkLog) },
+          month: { in: Array.from(affectedMonthsForWorkLog) },
+          isDeleted: false,
+        },
+      });
+
+      // Group post-allocation records by (empId, siteId, month, year) to compute total hours per employee-site-month
       const workLogSyncMap = new Map<string, { empId: string; siteId: string; year: number; month: number; totalHours: number }>();
-      for (const record of savedRecords) {
+      for (const record of postAllocationRecords) {
         const key = `${record.empId}|${record.siteId}|${record.month}|${record.year}`;
         const existing = workLogSyncMap.get(key);
         if (existing) {
-          existing.totalHours += record.totalHours ?? 0;
+          existing.totalHours += record.totalHours;
         } else {
           workLogSyncMap.set(key, {
             empId: record.empId,
             siteId: record.siteId,
             year: record.year,
             month: parseInt(record.month.split('-')[1], 10),
-            totalHours: record.totalHours ?? 0,
+            totalHours: record.totalHours,
           });
         }
       }

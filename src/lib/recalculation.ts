@@ -228,8 +228,6 @@ export async function recalcEmployeeFromMonth(
       continue;
     }
 
-    const { belowHours, aboveHours } = computeMonthSplit(md.hoursWorked, cumulative, threshold);
-
     if (isCustom) {
       // Custom rate: all hours at the custom rate as a single "standard" record
       const totalSalary = md.hoursWorked * lowRate; // lowRate == highRate for custom
@@ -341,10 +339,64 @@ export async function recalcEmployeeFromMonth(
         });
       }
     } else {
-      // Role-based rates: split into below/above threshold
-      const belowSalary = belowHours * lowRate;
-      const aboveSalary = aboveHours * highRate;
-      const totalSalary = belowSalary + aboveSalary;
+      // Role-based rates: use sequential allocation across sites
+      // (matching the allocation engine's algorithm for consistency)
+      //
+      // Sequential Allocation:
+      //   1. consumedThreshold = min(cumulative, threshold)
+      //   2. Sort sites alphabetically by site name
+      //   3. Walk sites sequentially, consuming the remaining threshold
+      //   4. Split each site's hours into below (standard) and above (premium)
+      let consumedThreshold = Math.min(cumulative, threshold);
+
+      // Sort sites alphabetically by name for deterministic allocation
+      const sortedSiteHours = [...md.siteHours].sort((a, b) =>
+        a.siteName.localeCompare(b.siteName),
+      );
+
+      // Compute per-site splits and total salary
+      let totalSalary = 0;
+      const siteSplits: Array<{
+        siteId: string;
+        siteName: string;
+        siteBelow: number;
+        siteAbove: number;
+      }> = [];
+
+      for (const sh of sortedSiteHours) {
+        const remainingThreshold = threshold - consumedThreshold;
+        let siteBelow = 0;
+        let siteAbove = 0;
+
+        if (sh.hours <= 0) {
+          siteBelow = 0;
+          siteAbove = 0;
+        } else if (remainingThreshold >= sh.hours) {
+          // Site fully inside remaining threshold → all hours at low rate
+          siteBelow = sh.hours;
+          siteAbove = 0;
+          consumedThreshold += sh.hours;
+        } else if (remainingThreshold > 0) {
+          // Site crosses the threshold → split
+          siteBelow = remainingThreshold;
+          siteAbove = sh.hours - remainingThreshold;
+          consumedThreshold = threshold;
+        } else {
+          // Threshold already exhausted → all hours at high rate
+          siteBelow = 0;
+          siteAbove = sh.hours;
+        }
+
+        siteSplits.push({
+          siteId: sh.siteId,
+          siteName: sh.siteName,
+          siteBelow,
+          siteAbove,
+        });
+
+        totalSalary += siteBelow * lowRate + siteAbove * highRate;
+      }
+
       const blendedRate = md.hoursWorked > 0 ? totalSalary / md.hoursWorked : 0;
 
       // Update TotalEmployeeWorkingHours
@@ -365,20 +417,14 @@ export async function recalcEmployeeFromMonth(
         },
       });
 
-      // Distribute below/above hours across sites proportionally
-      const totalSiteHours = md.siteHours.reduce((s, sh) => s + sh.hours, 0);
-
-      for (const sh of md.siteHours) {
-        const siteProportion = totalSiteHours > 0 ? sh.hours / totalSiteHours : 0;
-        const siteBelow = belowHours * siteProportion;
-        const siteAbove = aboveHours * siteProportion;
-
+      // Create/update/soft-delete salary records per site
+      for (const split of siteSplits) {
         // Get existing records for carry-forward of deduction/advance/isPaid
         const existingStd = await db.salaryRecord.findUnique({
           where: {
             empId_siteId_month_year_rateTier: {
               empId: employeeId,
-              siteId: sh.siteId,
+              siteId: split.siteId,
               month: md.monthKey,
               year: md.year,
               rateTier: 'standard',
@@ -389,7 +435,7 @@ export async function recalcEmployeeFromMonth(
           where: {
             empId_siteId_month_year_rateTier: {
               empId: employeeId,
-              siteId: sh.siteId,
+              siteId: split.siteId,
               month: md.monthKey,
               year: md.year,
               rateTier: 'premium',
@@ -400,8 +446,8 @@ export async function recalcEmployeeFromMonth(
         const existingIsPaid = existingStd?.isPaid || existingPrem?.isPaid || false;
 
         // Standard (below threshold) record
-        if (siteBelow > 0.001) {
-          const stdSalary = siteBelow * lowRate;
+        if (split.siteBelow > 0.001) {
+          const stdSalary = split.siteBelow * lowRate;
           const stdDeduction = existingStd?.deduction ?? 0;
           const stdAdvance = existingStd?.advance ?? 0;
 
@@ -409,7 +455,7 @@ export async function recalcEmployeeFromMonth(
             where: {
               empId_siteId_month_year_rateTier: {
                 empId: employeeId,
-                siteId: sh.siteId,
+                siteId: split.siteId,
                 month: md.monthKey,
                 year: md.year,
                 rateTier: 'standard',
@@ -417,11 +463,11 @@ export async function recalcEmployeeFromMonth(
             },
             update: {
               empName: employee.fullName,
-              siteName: sh.siteName,
+              siteName: split.siteName,
               nationality: employee.nationality || '',
               trade: employee.trade || '',
               employeeCode: employee.employeeId || '',
-              totalHours: parseFloat(siteBelow.toFixed(2)),
+              totalHours: parseFloat(split.siteBelow.toFixed(2)),
               rtPerHour: lowRate,
               totalSalary: parseFloat(stdSalary.toFixed(2)),
               balanceSalary: parseFloat((stdSalary - stdDeduction - stdAdvance).toFixed(2)),
@@ -433,15 +479,15 @@ export async function recalcEmployeeFromMonth(
             create: {
               empId: employeeId,
               empName: employee.fullName,
-              siteId: sh.siteId,
-              siteName: sh.siteName,
+              siteId: split.siteId,
+              siteName: split.siteName,
               month: md.monthKey,
               year: md.year,
               nationality: employee.nationality || '',
               trade: employee.trade || '',
               employeeCode: employee.employeeId || '',
               slNo: 0,
-              totalHours: parseFloat(siteBelow.toFixed(2)),
+              totalHours: parseFloat(split.siteBelow.toFixed(2)),
               rtPerHour: lowRate,
               totalSalary: parseFloat(stdSalary.toFixed(2)),
               deduction: 0,
@@ -460,8 +506,8 @@ export async function recalcEmployeeFromMonth(
         }
 
         // Premium (above threshold) record
-        if (siteAbove > 0.001) {
-          const premSalary = siteAbove * highRate;
+        if (split.siteAbove > 0.001) {
+          const premSalary = split.siteAbove * highRate;
           const premDeduction = existingPrem?.deduction ?? 0;
           const premAdvance = existingPrem?.advance ?? 0;
 
@@ -469,7 +515,7 @@ export async function recalcEmployeeFromMonth(
             where: {
               empId_siteId_month_year_rateTier: {
                 empId: employeeId,
-                siteId: sh.siteId,
+                siteId: split.siteId,
                 month: md.monthKey,
                 year: md.year,
                 rateTier: 'premium',
@@ -477,11 +523,11 @@ export async function recalcEmployeeFromMonth(
             },
             update: {
               empName: employee.fullName,
-              siteName: sh.siteName,
+              siteName: split.siteName,
               nationality: employee.nationality || '',
               trade: employee.trade || '',
               employeeCode: employee.employeeId || '',
-              totalHours: parseFloat(siteAbove.toFixed(2)),
+              totalHours: parseFloat(split.siteAbove.toFixed(2)),
               rtPerHour: highRate,
               totalSalary: parseFloat(premSalary.toFixed(2)),
               balanceSalary: parseFloat((premSalary - premDeduction - premAdvance).toFixed(2)),
@@ -493,15 +539,15 @@ export async function recalcEmployeeFromMonth(
             create: {
               empId: employeeId,
               empName: employee.fullName,
-              siteId: sh.siteId,
-              siteName: sh.siteName,
+              siteId: split.siteId,
+              siteName: split.siteName,
               month: md.monthKey,
               year: md.year,
               nationality: employee.nationality || '',
               trade: employee.trade || '',
               employeeCode: employee.employeeId || '',
               slNo: 0,
-              totalHours: parseFloat(siteAbove.toFixed(2)),
+              totalHours: parseFloat(split.siteAbove.toFixed(2)),
               rtPerHour: highRate,
               totalSalary: parseFloat(premSalary.toFixed(2)),
               deduction: 0,
@@ -554,7 +600,8 @@ export async function recalcEmployeeFull(employeeId: string): Promise<{
     fromYear = earliestLog.year;
     fromMonth = earliestLog.month;
   }
-  if (earliestSalary && (earliestSalary.year < fromYear || (earliestSalary.year === fromYear && earliestSalary.month < fromMonth))) {
+  const earliestSalaryMonth = earliestSalary ? parseInt(earliestSalary.month.split('-')[1], 10) : 0;
+  if (earliestSalary && (earliestSalary.year < fromYear || (earliestSalary.year === fromYear && earliestSalaryMonth < fromMonth))) {
     fromYear = earliestSalary.year;
     fromMonth = parseInt(earliestSalary.month.split('-')[1], 10);
   }
