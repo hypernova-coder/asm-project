@@ -98,12 +98,33 @@ export async function PUT(
     const updatableFields = [
       'fullName', 'nationality', 'phone', 'email', 'address',
       'emergencyContact', 'position', 'trade', 'companyName', 'passportStatus',
-      'idStatus', 'currentSite', 'photo', 'status',
+      'idStatus', 'currentSite', 'photo', 'status', 'employeeId',
     ];
 
     for (const field of updatableFields) {
       if (body[field] !== undefined) {
         data[field] = body[field];
+      }
+    }
+
+    // Validate employeeId uniqueness if being updated
+    if (body.employeeId !== undefined) {
+      if (!body.employeeId || !String(body.employeeId).trim()) {
+        return NextResponse.json(
+          { success: false, error: 'Employee ID cannot be empty' },
+          { status: 400 }
+        );
+      }
+      if (body.employeeId !== existing.employeeId) {
+        const duplicateEmployee = await db.employee.findUnique({
+          where: { employeeId: body.employeeId },
+        });
+        if (duplicateEmployee) {
+          return NextResponse.json(
+            { success: false, error: `Employee ID "${body.employeeId}" already exists. Please choose a different ID.` },
+            { status: 409 }
+          );
+        }
       }
     }
 
@@ -247,6 +268,14 @@ export async function PUT(
       where: { id },
       data: data as Parameters<typeof db.employee.update>[0]['data'],
     });
+
+    // If employeeId was updated, also update employeeCode in salary records
+    if (body.employeeId && body.employeeId !== existing.employeeId) {
+      await db.salaryRecord.updateMany({
+        where: { empId: id },
+        data: { employeeCode: body.employeeId },
+      });
+    }
 
     const decrypted = decryptEmployee({
       ...employee,

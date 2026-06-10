@@ -19,6 +19,7 @@ import {
   Trash2,
   Save,
   XSquare,
+  Users,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -49,6 +50,8 @@ import { cn } from '@/lib/utils';
 interface SiteOption {
   id: string;
   name: string;
+  clientName?: string | null;
+  employeeCount?: number;
 }
 
 interface SalaryRecord {
@@ -108,9 +111,10 @@ interface SiteFilterProps {
   selectedSiteId: string;
   selectedSiteName: string;
   onSiteChange: (siteId: string, siteName: string) => void;
+  loading?: boolean;
 }
 
-function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange }: SiteFilterProps) {
+function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange, loading }: SiteFilterProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -141,19 +145,21 @@ function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange }: S
     <div ref={containerRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        onClick={() => !loading && setOpen(!open)}
         className={cn(
           'flex items-center gap-2 h-9 rounded-lg border px-3 text-sm transition-colors text-left min-w-[200px]',
-          selectedSiteId
-            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
-            : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+          loading
+            ? 'bg-slate-800 border-slate-700 text-slate-500 cursor-wait'
+            : selectedSiteId
+              ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
+              : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
         )}
       >
         <MapPin className="h-4 w-4 shrink-0" />
         <span className="truncate flex-1">
-          {selectedSiteName || 'Select Site'}
+          {loading ? 'Loading sites...' : selectedSiteName || 'Select Site'}
         </span>
-        {selectedSiteId && (
+        {selectedSiteId && !loading && (
           <span
             role="button"
             tabIndex={0}
@@ -168,8 +174,8 @@ function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange }: S
         )}
       </button>
 
-      {open && (
-        <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 overflow-hidden min-w-[260px]">
+      {open && !loading && (
+        <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 overflow-hidden min-w-[300px]">
           <div className="p-2 border-b border-slate-700">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
@@ -194,7 +200,7 @@ function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange }: S
           </div>
           <div className="max-h-56 overflow-y-auto">
             {filtered.length === 0 ? (
-              <div className="px-3 py-4 text-center text-sm text-slate-500">No sites found</div>
+              <div className="px-3 py-4 text-center text-sm text-slate-500">No sites found for this month/year</div>
             ) : (
               filtered.map((site) => (
                 <button
@@ -211,7 +217,12 @@ function SiteFilter({ sites, selectedSiteId, selectedSiteName, onSiteChange }: S
                   )}
                 >
                   <MapPin className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                  <span className="truncate">{site.name}</span>
+                  <span className="truncate flex-1">{site.name}</span>
+                  {site.employeeCount != null && (
+                    <span className="text-xs text-slate-500 shrink-0">
+                      {site.employeeCount} emp
+                    </span>
+                  )}
                 </button>
               ))
             )}
@@ -357,7 +368,7 @@ export function AccountsPage() {
   const [sites, setSites] = useState<SiteOption[]>([]);
   const [selectedSiteId, setSelectedSiteId] = useState('');
   const [selectedSiteName, setSelectedSiteName] = useState('');
-  const [loadingSites, setLoadingSites] = useState(true);
+  const [loadingSites, setLoadingSites] = useState(false);
 
   const [salaryRecords, setSalaryRecords] = useState<SalaryRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
@@ -381,29 +392,43 @@ export function AccountsPage() {
 
   const monthParam = `${year}-${month.padStart(2, '0')}`;
 
-  // Fetch sites
-  useEffect(() => {
-    const fetchSites = async () => {
-      try {
-        setLoadingSites(true);
-        const res = await fetch('/api/sites');
-        const data = await res.json();
-        if (data.success) {
-          setSites(
-            (data.data.sites || []).map((s: { id: string; name: string }) => ({
-              id: s.id,
-              name: s.name,
-            }))
-          );
-        }
-      } catch {
-        // silently fail
-      } finally {
-        setLoadingSites(false);
+  // Fetch sites for the selected month/year
+  const fetchSitesForMonth = useCallback(async (m: string, y: string) => {
+    const mp = `${y}-${m.padStart(2, '0')}`;
+    try {
+      setLoadingSites(true);
+      const res = await fetch(`/api/accounts/sites-for-month?month=${mp}&year=${y}`);
+      const data = await res.json();
+      if (data.success) {
+        setSites(
+          (data.data.sites || []).map((s: { id: string; name: string; clientName?: string | null; employeeCount?: number }) => ({
+            id: s.id,
+            name: s.name,
+            clientName: s.clientName,
+            employeeCount: s.employeeCount,
+          }))
+        );
+      } else {
+        setSites([]);
       }
-    };
-    fetchSites();
+    } catch {
+      setSites([]);
+    } finally {
+      setLoadingSites(false);
+    }
   }, []);
+
+  // Fetch sites when month/year changes
+  useEffect(() => {
+    fetchSitesForMonth(month, year);
+    // Reset site selection when month/year changes
+    setSelectedSiteId('');
+    setSelectedSiteName('');
+    setSalaryRecords([]);
+    setIsEditing(false);
+    setEditBuffer(new Map());
+    autoGenerateAttempted.current = false;
+  }, [month, year, fetchSitesForMonth]);
 
   // Fetch salary records
   const fetchSalaryRecords = useCallback(async () => {
@@ -472,13 +497,15 @@ export function AccountsPage() {
         if (refetchData.success) {
           setSalaryRecords(refetchData.data.records || []);
         }
+        // Refresh sites list to update employee counts
+        fetchSitesForMonth(month, year);
       }
     } catch {
       // Silent fail for auto-generate
     } finally {
       setGenerating(false);
     }
-  }, [selectedSiteId, selectedSiteName, monthParam, year]);
+  }, [selectedSiteId, selectedSiteName, monthParam, year, fetchSitesForMonth]);
 
   useEffect(() => {
     if (selectedSiteId) {
@@ -514,6 +541,7 @@ export function AccountsPage() {
           description: data.data.message || `${data.data.created || 0} records created`,
         });
         fetchSalaryRecords();
+        fetchSitesForMonth(month, year);
       } else {
         toast({ title: 'Error', description: data.error || 'Failed to generate salary records', variant: 'destructive' });
       }
@@ -522,7 +550,7 @@ export function AccountsPage() {
     } finally {
       setGenerating(false);
     }
-  }, [selectedSiteId, selectedSiteName, monthParam, year, fetchSalaryRecords]);
+  }, [selectedSiteId, selectedSiteName, monthParam, year, fetchSalaryRecords, fetchSitesForMonth]);
 
   // Update individual salary record (for inline edits outside of site edit mode)
   const handleUpdateRecord = useCallback(
@@ -836,67 +864,10 @@ export function AccountsPage() {
   // Count of changed records in edit buffer
   const changedCount = editBuffer.size;
 
-  // No site selected prompt
-  if (!selectedSiteId) {
-    return (
-      <div className="flex flex-col gap-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold text-white">Accounts</h2>
-            <p className="text-slate-400 mt-1">
-              Manage employee salary records and payments.
-            </p>
-          </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <SiteFilter
-              sites={sites}
-              selectedSiteId={selectedSiteId}
-              selectedSiteName={selectedSiteName}
-              onSiteChange={handleSiteChange}
-            />
-            <Select value={month} onValueChange={setMonth}>
-              <SelectTrigger className="w-[140px] bg-slate-800 border-slate-700 text-slate-200">
-                <SelectValue placeholder="Month" />
-              </SelectTrigger>
-              <SelectContent className="dropdown-upward bg-slate-800 border-slate-700">
-                {MONTHS.map((m) => (
-                  <SelectItem key={m.value} value={m.value} className="text-slate-200 focus:bg-slate-700 focus:text-white">
-                    {m.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={year} onValueChange={setYear}>
-              <SelectTrigger className="w-[110px] bg-slate-800 border-slate-700 text-slate-200">
-                <SelectValue placeholder="Year" />
-              </SelectTrigger>
-              <SelectContent className="dropdown-upward bg-slate-800 border-slate-700">
-                {yearOptions.map((y) => (
-                  <SelectItem key={y} value={y} className="text-slate-200 focus:bg-slate-700 focus:text-white">
-                    {y}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        {/* Prompt Card */}
-        <Card className="bg-slate-800/50 border-slate-700/50">
-          <CardContent className="flex flex-col items-center justify-center py-20 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-500/10 mb-4">
-              <Building2 className="h-8 w-8 text-emerald-400/60" />
-            </div>
-            <h3 className="text-lg font-semibold text-white mb-2">Select a Site</h3>
-            <p className="text-sm text-slate-400 max-w-md">
-              Choose a site from the dropdown above to view and manage salary records for that site. Employees will be auto-loaded.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // Unique employees count
+  const uniqueEmployeeCount = useMemo(() => {
+    return new Set(salaryRecords.map(r => r.empId)).size;
+  }, [salaryRecords]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -904,22 +875,12 @@ export function AccountsPage() {
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-white">Accounts</h2>
-          <div className="flex items-center gap-2 mt-1">
-            <Building2 className="h-4 w-4 text-emerald-400" />
-            <p className="text-emerald-400 font-medium text-sm">{selectedSiteName}</p>
-          </div>
           <p className="text-slate-400 mt-1">
-            Salary records for {MONTHS.find((m) => m.value === month)?.label} {year}
+            Manage employee salary records and payments for {MONTHS.find((m) => m.value === month)?.label} {year}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          <SiteFilter
-            sites={sites}
-            selectedSiteId={selectedSiteId}
-            selectedSiteName={selectedSiteName}
-            onSiteChange={handleSiteChange}
-          />
-          <Select value={month} onValueChange={setMonth}>
+          <Select value={month} onValueChange={(v) => { setMonth(v); }}>
             <SelectTrigger className="w-[140px] bg-slate-800 border-slate-700 text-slate-200">
               <CalendarDays className="h-4 w-4 mr-2 text-slate-400" />
               <SelectValue placeholder="Month" />
@@ -932,7 +893,7 @@ export function AccountsPage() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={year} onValueChange={setYear}>
+          <Select value={year} onValueChange={(v) => { setYear(v); }}>
             <SelectTrigger className="w-[110px] bg-slate-800 border-slate-700 text-slate-200">
               <SelectValue placeholder="Year" />
             </SelectTrigger>
@@ -944,20 +905,92 @@ export function AccountsPage() {
               ))}
             </SelectContent>
           </Select>
-          <Button
-            onClick={handleGenerate}
-            disabled={generating || !selectedSiteId}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
-          >
-            {generating ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            Re-Generate
-          </Button>
+          <SiteFilter
+            sites={sites}
+            selectedSiteId={selectedSiteId}
+            selectedSiteName={selectedSiteName}
+            onSiteChange={handleSiteChange}
+            loading={loadingSites}
+          />
+          {selectedSiteId && (
+            <Button
+              onClick={handleGenerate}
+              disabled={generating || !selectedSiteId}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+            >
+              {generating ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Re-Generate
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Sites overview - show when no site is selected */}
+      {!selectedSiteId && (
+        <Card className="bg-slate-800/50 border-slate-700/50">
+          <CardHeader className="px-4">
+            <CardTitle className="text-base text-white flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-slate-400" />
+              Sites for {MONTHS.find((m) => m.value === month)?.label} {year}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4">
+            {loadingSites ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-16 w-full bg-slate-700 rounded-lg" />
+                ))}
+              </div>
+            ) : sites.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-700/50 mb-4">
+                  <Building2 className="h-8 w-8 text-slate-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white mb-1">No sites found</h3>
+                <p className="text-sm text-slate-500 max-w-sm">
+                  No sites have activity for {MONTHS.find((m) => m.value === month)?.label} {year}. Try selecting a different month or year, or generate salary records first.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {sites.map((site) => (
+                  <button
+                    key={site.id}
+                    type="button"
+                    onClick={() => handleSiteChange(site.id, site.name)}
+                    className={cn(
+                      'flex flex-col gap-2 p-4 rounded-lg border text-left transition-all',
+                      'bg-slate-800/80 border-slate-700/60 hover:bg-slate-700/60 hover:border-emerald-500/30'
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
+                        <Building2 className="h-4 w-4 text-emerald-400" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{site.name}</p>
+                        {site.clientName && (
+                          <p className="text-xs text-slate-500 truncate">{site.clientName}</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs">
+                      <div className="flex items-center gap-1 text-slate-400">
+                        <Users className="h-3 w-3" />
+                        <span>{site.employeeCount ?? 0} employees</span>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Auto-generating indicator */}
       {generating && (
@@ -967,6 +1000,21 @@ export function AccountsPage() {
             <span className="text-emerald-300 text-sm">Auto-generating salary records from employee data...</span>
           </CardContent>
         </Card>
+      )}
+
+      {/* Site header when selected */}
+      {selectedSiteId && (
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10">
+            <Building2 className="h-5 w-5 text-emerald-400" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-white">{selectedSiteName}</h3>
+            <p className="text-sm text-slate-400">
+              {uniqueEmployeeCount} employee{uniqueEmployeeCount !== 1 ? 's' : ''} • {MONTHS.find((m) => m.value === month)?.label} {year}
+            </p>
+          </div>
+        </div>
       )}
 
       {/* Summary Cards */}
@@ -1028,400 +1076,270 @@ export function AccountsPage() {
       )}
 
       {/* Salary Records Table */}
-      <Card className="bg-slate-800/50 border-slate-700/50">
-        <CardHeader className="px-4 flex flex-row items-center justify-between">
-          <CardTitle className="text-base text-white flex items-center gap-2">
-            <FileText className="h-4 w-4 text-slate-400" />
-            Salary Records
-          </CardTitle>
-          {/* Edit Action Buttons - nested within the header/dropdown bar */}
-          {salaryRecords.length > 0 && !isEditing && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleEnterEditMode}
-              className="gap-1.5 bg-amber-600/10 border-amber-500/30 text-amber-400 hover:bg-amber-600/20 hover:text-amber-300"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              Edit
-            </Button>
-          )}
-          {isEditing && (
-            <div className="flex items-center gap-2">
-              {changedCount > 0 && (
-                <span className="text-xs text-amber-400 font-medium">
-                  {changedCount} record{changedCount !== 1 ? 's' : ''} modified
-                </span>
-              )}
+      {selectedSiteId && (
+        <Card className="bg-slate-800/50 border-slate-700/50">
+          <CardHeader className="px-4 flex flex-row items-center justify-between">
+            <CardTitle className="text-base text-white flex items-center gap-2">
+              <FileText className="h-4 w-4 text-slate-400" />
+              Salary Records
+            </CardTitle>
+            {/* Edit Action Buttons */}
+            {salaryRecords.length > 0 && !isEditing && (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleCancelEditMode}
-                disabled={savingEdits}
-                className="gap-1.5 bg-slate-700/50 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+                onClick={handleEnterEditMode}
+                className="gap-1.5 bg-amber-600/10 border-amber-500/30 text-amber-400 hover:bg-amber-600/20 hover:text-amber-300"
               >
-                <XSquare className="h-3.5 w-3.5" />
-                Cancel
+                <Pencil className="h-3.5 w-3.5" />
+                Edit
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSaveEdits}
-                disabled={savingEdits || changedCount === 0}
-                className="gap-1.5 bg-emerald-600/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/20 hover:text-emerald-300"
-              >
-                {savingEdits ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Save className="h-3.5 w-3.5" />
+            )}
+            {isEditing && (
+              <div className="flex items-center gap-2">
+                {changedCount > 0 && (
+                  <span className="text-xs text-amber-400 font-medium">
+                    {changedCount} record{changedCount !== 1 ? 's' : ''} modified
+                  </span>
                 )}
-                Save
-              </Button>
-            </div>
-          )}
-        </CardHeader>
-        <CardContent className="px-4">
-          {loadingRecords ? (
-            <div className="space-y-3">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <Skeleton key={i} className="h-12 w-full bg-slate-700 rounded-lg" />
-              ))}
-            </div>
-          ) : salaryRecords.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-700/50 mb-4">
-                <FileText className="h-8 w-8 text-slate-500" />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancelEditMode}
+                  disabled={savingEdits}
+                  className="gap-1.5 bg-slate-700/50 border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+                >
+                  <XSquare className="h-3.5 w-3.5" />
+                  Cancel
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSaveEdits}
+                  disabled={savingEdits || changedCount === 0}
+                  className="gap-1.5 bg-emerald-600/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/20 hover:text-emerald-300"
+                >
+                  {savingEdits ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Save className="h-3.5 w-3.5" />
+                  )}
+                  Save
+                </Button>
               </div>
-              <h3 className="text-base font-semibold text-white mb-1">No salary records</h3>
-              <p className="text-sm text-slate-500 max-w-sm">
-                Generate salary records from attendance data by clicking the &quot;Re-Generate&quot; button above.
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto max-h-[600px] overflow-y-auto rounded-lg">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-slate-700 hover:bg-transparent">
-                    <TableHead className="text-slate-400 font-semibold text-xs w-10">Sl</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Emp Code</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Employee Name</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Nationality</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Trade</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-right">Total Hrs</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Rate/Hr</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-center">Custom Rate</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-right">Total Salary</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Deduction</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Advance</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-right">Balance</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-center">Rate Tier</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-center">Status</TableHead>
-                    {isEditing && (
-                      <TableHead className="text-slate-400 font-semibold text-xs text-center w-10">Del</TableHead>
-                    )}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {effectiveRecords.map((record, idx) => {
-                    const isModified = editBuffer.has(record.id);
-                    return (
-                      <TableRow
-                        key={record.id}
-                        className={cn(
-                          'border-slate-700/50 hover:bg-slate-700/30',
-                          record.isPaid && 'bg-green-500/5',
-                          isEditing && isModified && 'bg-amber-500/5'
-                        )}
-                      >
-                        <TableCell className="text-slate-400 text-xs font-mono">{idx + 1}</TableCell>
-                        <TableCell className="text-slate-300 text-xs font-mono">{record.employeeCode}</TableCell>
-                        <TableCell className="text-white text-sm font-medium">{record.empName}</TableCell>
-                        <TableCell className="text-slate-400 text-xs">{record.nationality || '—'}</TableCell>
-                        <TableCell className="text-slate-400 text-xs">{record.trade || '—'}</TableCell>
-                        {/* Total Hours - editable in site edit mode */}
-                        <TableCell className="text-right">
-                          {isEditing ? (
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.5"
-                              value={getEffectiveValue(record, 'totalHours')}
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                if (!isNaN(val) && val >= 0) {
-                                  handleEditFieldChange(record.id, 'totalHours', val);
-                                }
-                              }}
-                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1 text-right"
-                            />
-                          ) : (
-                            <span className="text-slate-200 text-xs font-mono">
-                              {record.totalHours.toFixed(1)}
-                            </span>
-                          )}
-                        </TableCell>
-                        {/* Rate/Hr - editable in site edit mode */}
-                        <TableCell>
-                          {isEditing ? (
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={getEffectiveValue(record, 'rtPerHour')}
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                if (!isNaN(val) && val >= 0) {
-                                  handleEditFieldChange(record.id, 'rtPerHour', val);
-                                }
-                              }}
-                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1"
-                            />
-                          ) : (
-                            <EditableCell
-                              value={record.rtPerHour}
-                              recordId={record.id}
-                              field="rtPerHour"
-                              onSave={handleUpdateRecord}
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <CustomRateCell
-                            empId={record.empId}
-                            customHourlyRate={record.customHourlyRate}
-                            currentRtPerHour={record.rtPerHour}
-                            monthParam={monthParam}
-                            onSave={handleSetCustomRate}
-                          />
-                        </TableCell>
-                        <TableCell className="text-emerald-400 text-xs text-right font-mono font-semibold">
-                          {record.totalSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </TableCell>
-                        {/* Deduction - editable in site edit mode */}
-                        <TableCell>
-                          {isEditing ? (
-                            <Input
-                              type="number"
-                              min="0"
-                              step="1"
-                              value={getEffectiveValue(record, 'deduction')}
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                if (!isNaN(val) && val >= 0) {
-                                  handleEditFieldChange(record.id, 'deduction', val);
-                                }
-                              }}
-                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1"
-                            />
-                          ) : (
-                            <EditableCell
-                              value={record.deduction}
-                              recordId={record.id}
-                              field="deduction"
-                              onSave={handleUpdateRecord}
-                            />
-                          )}
-                        </TableCell>
-                        {/* Advance - editable in site edit mode */}
-                        <TableCell>
-                          {isEditing ? (
-                            <Input
-                              type="number"
-                              min="0"
-                              step="1"
-                              value={getEffectiveValue(record, 'advance')}
-                              onChange={(e) => {
-                                const val = parseFloat(e.target.value);
-                                if (!isNaN(val) && val >= 0) {
-                                  handleEditFieldChange(record.id, 'advance', val);
-                                }
-                              }}
-                              className="h-7 w-20 bg-slate-900 border-amber-500/40 text-white text-xs px-2 py-1"
-                            />
-                          ) : (
-                            <EditableCell
-                              value={record.advance}
-                              recordId={record.id}
-                              field="advance"
-                              onSave={handleUpdateRecord}
-                            />
-                          )}
-                        </TableCell>
-                        <TableCell className={cn(
-                          'text-xs text-right font-mono font-semibold',
-                          record.balanceSalary >= 0 ? 'text-white' : 'text-red-400'
-                        )}>
-                          {record.balanceSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Badge
-                            className={cn(
-                              'text-[10px] px-2 py-0.5',
-                              record.rateTier === 'premium'
-                                ? 'bg-amber-500/15 text-amber-400 border-amber-500/25'
-                                : 'bg-slate-600/30 text-slate-300 border-slate-500/25'
-                            )}
-                          >
-                            {record.rateTier === 'premium' ? 'Premium' : 'Standard'}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <button
-                            onClick={() => handleTogglePaid(record)}
-                            className="focus:outline-none"
-                            title={record.isPaid ? 'Click to mark as unpaid' : 'Click to mark as paid'}
-                          >
+            )}
+          </CardHeader>
+          <CardContent className="px-4">
+            {loadingRecords ? (
+              <div className="space-y-3">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Skeleton key={i} className="h-12 w-full bg-slate-700 rounded-lg" />
+                ))}
+              </div>
+            ) : salaryRecords.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-700/50 mb-4">
+                  <FileText className="h-8 w-8 text-slate-500" />
+                </div>
+                <h3 className="text-base font-semibold text-white mb-1">No salary records</h3>
+                <p className="text-sm text-slate-500 max-w-sm">
+                  Generate salary records from attendance data by clicking the &quot;Re-Generate&quot; button above.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto max-h-[600px] overflow-y-auto rounded-lg">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-slate-700 hover:bg-transparent">
+                      <TableHead className="text-slate-400 text-xs font-medium">S.No</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium">Emp Code</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium">Name</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium">Nationality</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium">Trade</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium">Rate Tier</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-right">Total Hours</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-right">Rate/Hr</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-right">Total Salary</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-right">Deduction</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-right">Advance</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-right">Balance</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-center">Custom Rate</TableHead>
+                      <TableHead className="text-slate-400 text-xs font-medium text-center">Paid</TableHead>
+                      {!isEditing && (
+                        <TableHead className="text-slate-400 text-xs font-medium text-center">Actions</TableHead>
+                      )}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {effectiveRecords.map((record) => {
+                      const isStandard = record.rateTier === 'standard';
+                      const rateColor = isStandard
+                        ? 'text-emerald-400'
+                        : 'text-green-400';
+
+                      return (
+                        <TableRow key={record.id} className="border-slate-700/50 hover:bg-slate-700/30">
+                          <TableCell className="text-slate-300 text-xs">{record.slNo}</TableCell>
+                          <TableCell className="text-slate-300 text-xs font-mono">{record.employeeCode}</TableCell>
+                          <TableCell className="text-white text-xs font-medium">{record.empName}</TableCell>
+                          <TableCell className="text-slate-400 text-xs">{record.nationality}</TableCell>
+                          <TableCell className="text-slate-400 text-xs">{record.trade}</TableCell>
+                          <TableCell>
                             <Badge
+                              variant="outline"
                               className={cn(
-                                'text-[10px] px-2 py-0.5 cursor-pointer transition-colors',
-                                record.isPaid
-                                  ? 'bg-green-500/15 text-green-400 border-green-500/25 hover:bg-green-500/25'
-                                  : 'bg-red-500/15 text-red-400 border-red-500/25 hover:bg-red-500/25'
+                                'text-[10px] px-1.5 py-0 h-5',
+                                isStandard
+                                  ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10'
+                                  : 'border-green-500/30 text-green-400 bg-green-500/10'
                               )}
                             >
-                              {record.isPaid ? 'Paid' : 'Unpaid'}
+                              {isStandard ? 'Below' : 'Above'}
                             </Badge>
-                          </button>
-                        </TableCell>
-                        {/* Delete button - only visible in edit mode */}
-                        {isEditing && (
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {isEditing ? (
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={getEffectiveValue(record, 'totalHours')}
+                                onChange={(e) => handleEditFieldChange(record.id, 'totalHours', parseFloat(e.target.value) || 0)}
+                                className="h-7 w-20 bg-slate-900 border-amber-500/30 text-white text-xs px-2 py-1 text-right"
+                              />
+                            ) : (
+                              <span className="text-white text-xs">{record.totalHours.toFixed(1)}</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {isEditing ? (
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={getEffectiveValue(record, 'rtPerHour')}
+                                onChange={(e) => handleEditFieldChange(record.id, 'rtPerHour', parseFloat(e.target.value) || 0)}
+                                className="h-7 w-20 bg-slate-900 border-amber-500/30 text-white text-xs px-2 py-1 text-right"
+                              />
+                            ) : (
+                              <span className={cn('text-xs font-medium', rateColor)}>
+                                {record.rtPerHour.toFixed(2)}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right text-white text-xs">
+                            {(getEffectiveValue(record, 'totalHours') * getEffectiveValue(record, 'rtPerHour')).toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {isEditing ? (
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={getEffectiveValue(record, 'deduction')}
+                                onChange={(e) => handleEditFieldChange(record.id, 'deduction', parseFloat(e.target.value) || 0)}
+                                className="h-7 w-20 bg-slate-900 border-amber-500/30 text-white text-xs px-2 py-1 text-right"
+                              />
+                            ) : (
+                              <span className="text-red-400 text-xs">{record.deduction.toFixed(2)}</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {isEditing ? (
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={getEffectiveValue(record, 'advance')}
+                                onChange={(e) => handleEditFieldChange(record.id, 'advance', parseFloat(e.target.value) || 0)}
+                                className="h-7 w-20 bg-slate-900 border-amber-500/30 text-white text-xs px-2 py-1 text-right"
+                              />
+                            ) : (
+                              <span className="text-amber-400 text-xs">{record.advance.toFixed(2)}</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right text-white text-xs font-medium">
+                            {(getEffectiveValue(record, 'totalHours') * getEffectiveValue(record, 'rtPerHour') - getEffectiveValue(record, 'deduction') - getEffectiveValue(record, 'advance')).toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <CustomRateCell
+                              empId={record.empId}
+                              customHourlyRate={record.customHourlyRate}
+                              currentRtPerHour={record.rtPerHour}
+                              monthParam={monthParam}
+                              onSave={handleSetCustomRate}
+                            />
+                          </TableCell>
                           <TableCell className="text-center">
                             <button
-                              onClick={() => handleSoftDelete(record)}
-                              className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                              title="Delete record"
+                              onClick={() => handleTogglePaid(record)}
+                              className={cn(
+                                'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors',
+                                record.isPaid
+                                  ? 'bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                                  : 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                              )}
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
+                              {record.isPaid ? (
+                                <>
+                                  <CheckCircle2 className="h-3 w-3" />
+                                  Paid
+                                </>
+                              ) : (
+                                <>
+                                  <XCircle className="h-3 w-3" />
+                                  Unpaid
+                                </>
+                              )}
                             </button>
                           </TableCell>
-                        )}
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-                <TableFooter>
-                  <TableRow className="border-slate-700 hover:bg-transparent bg-slate-900/60">
-                    <TableCell colSpan={5} className="text-white text-sm font-bold">
-                      Totals ({effectiveRecords.length} employees)
-                    </TableCell>
-                    <TableCell className="text-slate-200 text-xs text-right font-mono font-bold">
-                      {totals.totalHours.toFixed(1)}
-                    </TableCell>
-                    <TableCell className="text-slate-400 text-xs">—</TableCell>
-                    <TableCell className="text-slate-400 text-xs">—</TableCell>
-                    <TableCell className="text-emerald-400 text-xs text-right font-mono font-bold">
-                      {totals.totalSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </TableCell>
-                    <TableCell className="text-amber-400 text-xs font-mono font-bold">
-                      {totals.deduction.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </TableCell>
-                    <TableCell className="text-amber-400 text-xs font-mono font-bold">
-                      {totals.advance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </TableCell>
-                    <TableCell className={cn(
-                      'text-xs text-right font-mono font-bold',
-                      totals.balanceSalary >= 0 ? 'text-white' : 'text-red-400'
-                    )}>
-                      {totals.balanceSalary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </TableCell>
-                    <TableCell className="text-slate-400 text-xs">—</TableCell>
-                    <TableCell className="text-slate-400 text-xs">—</TableCell>
-                    {isEditing && <TableCell className="text-slate-400 text-xs">—</TableCell>}
-                  </TableRow>
-                </TableFooter>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                          {!isEditing && (
+                            <TableCell className="text-center">
+                              <button
+                                onClick={() => handleSoftDelete(record)}
+                                className="text-slate-500 hover:text-red-400 transition-colors p-1"
+                                title="Delete record"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </TableCell>
+                          )}
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                  <TableFooter>
+                    <TableRow className="border-slate-700 bg-slate-800/80">
+                      <TableCell colSpan={6} className="text-xs font-semibold text-slate-300">
+                        Total ({uniqueEmployeeCount} employee{uniqueEmployeeCount !== 1 ? 's' : ''})
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-semibold text-white">
+                        {totals.totalHours.toFixed(1)}
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-semibold text-white">
+                        —
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-semibold text-white">
+                        {totals.totalSalary.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-semibold text-red-400">
+                        {totals.deduction.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-semibold text-amber-400">
+                        {totals.advance.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-right text-xs font-semibold text-white">
+                        {totals.balanceSalary.toFixed(2)}
+                      </TableCell>
+                      <TableCell colSpan={isEditing ? 1 : 2} />
+                    </TableRow>
+                  </TableFooter>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
-  );
-}
-
-/* ───────── Editable Cell (for non-edit-mode inline editing) ───────── */
-
-interface EditableCellProps {
-  value: number;
-  recordId: string;
-  field: 'deduction' | 'advance' | 'rtPerHour';
-  onSave: (recordId: string, field: string, value: number) => Promise<void>;
-}
-
-function EditableCell({ value, recordId, field, onSave }: EditableCellProps) {
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(String(value));
-  const [saving, setSaving] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editing]);
-
-  const handleSave = useCallback(async () => {
-    const numVal = parseFloat(editValue);
-    if (isNaN(numVal) || numVal < 0) {
-      toast({ title: 'Invalid value', description: 'Please enter a valid positive number', variant: 'destructive' });
-      setEditValue(String(value));
-      setEditing(false);
-      return;
-    }
-    if (numVal === value) {
-      setEditing(false);
-      return;
-    }
-    setSaving(true);
-    try {
-      await onSave(recordId, field, numVal);
-      setEditing(false);
-    } catch {
-      setEditValue(String(value));
-    } finally {
-      setSaving(false);
-    }
-  }, [editValue, value, recordId, field, onSave]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSave();
-    } else if (e.key === 'Escape') {
-      setEditValue(String(value));
-      setEditing(false);
-    }
-  };
-
-  if (editing) {
-    return (
-      <div className="flex items-center gap-1">
-        <Input
-          ref={inputRef}
-          type="number"
-          min="0"
-          step={field === 'rtPerHour' ? '0.1' : '1'}
-          value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onBlur={handleSave}
-          onKeyDown={handleKeyDown}
-          disabled={saving}
-          className="h-7 w-20 bg-slate-900 border-slate-600 text-white text-xs px-2 py-1"
-        />
-        {saving && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
-      </div>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => {
-        setEditValue(String(value));
-        setEditing(true);
-      }}
-      className="px-2 py-1 rounded text-xs hover:bg-slate-700/50 transition-colors text-slate-200 cursor-pointer min-w-[40px] text-left"
-      title="Click to edit"
-    >
-      {field === 'rtPerHour' ? value.toFixed(2) : value.toLocaleString()}
-    </button>
   );
 }
